@@ -1,0 +1,160 @@
+# Continuous Integration pipeline for BCC (Blitzy C Compiler)
+#
+# This workflow validates the compiler across four phases:
+#   1. Build — Compile in both release and debug modes
+#   2. Test  — Run all unit tests and integration tests
+#   3. Clippy — Lint with warnings-as-errors enforcement
+#   4. Fmt   — Verify consistent code formatting
+#
+# The project has zero external Rust crate dependencies (only std),
+# but requires cross-architecture system CRT objects and QEMU for
+# multi-architecture testing of x86-64, i686, AArch64, and RISC-V 64.
+
+name: CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Job 1: Build — Compile the compiler in release and debug modes
+  # ---------------------------------------------------------------------------
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install cross-compilation system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libc6-dev \
+            libc6-dev-i386-cross \
+            libc6-dev-arm64-cross \
+            libc6-dev-riscv64-cross \
+            qemu-user-static
+
+      - name: Install Rust stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-build-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-build-
+
+      - name: Build (release)
+        run: cargo build --release
+
+      - name: Build (debug)
+        run: cargo build
+
+  # ---------------------------------------------------------------------------
+  # Job 2: Test — Run all unit tests and integration tests
+  # ---------------------------------------------------------------------------
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install cross-compilation system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libc6-dev \
+            libc6-dev-i386-cross \
+            libc6-dev-arm64-cross \
+            libc6-dev-riscv64-cross \
+            qemu-user-static
+
+      - name: Install Rust stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-test-
+
+      - name: Run tests
+        run: cargo test
+
+      - name: Run ignored (slow) tests
+        run: cargo test -- --ignored
+
+  # ---------------------------------------------------------------------------
+  # Job 3: Clippy — Lint the codebase with warnings treated as errors
+  # ---------------------------------------------------------------------------
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install cross-compilation system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libc6-dev \
+            libc6-dev-i386-cross \
+            libc6-dev-arm64-cross \
+            libc6-dev-riscv64-cross \
+            qemu-user-static
+
+      - name: Install Rust stable toolchain with clippy
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo registry and build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-clippy-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-clippy-
+
+      - name: Run clippy (warnings as errors)
+        run: cargo clippy -- -D warnings
+
+  # ---------------------------------------------------------------------------
+  # Job 4: Fmt — Verify code formatting consistency
+  # ---------------------------------------------------------------------------
+  fmt:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable toolchain with rustfmt
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
