@@ -1,0 +1,11 @@
+[package]
+name = "bcc"
+version = "0.1.0"
+edition = "2021"
+description = "A complete C11 compiler written in pure Rust targeting Linux ELF output across four architectures"
+
+[dependencies]
+# Zero external dependencies - uses only Rust standard library (std)
+
+[profile.release]
+opt-level = 3
