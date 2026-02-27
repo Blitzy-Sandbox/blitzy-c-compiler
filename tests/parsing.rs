@@ -1656,7 +1656,10 @@ fn parse_with_explicit_output() {
 
     // Verify the output file was created
     if !out_path.exists() {
-        eprintln!("[SKIP] Compiler did not produce output file at {}", out_path.display());
+        eprintln!(
+            "[SKIP] Compiler did not produce output file at {}",
+            out_path.display()
+        );
         return;
     }
 }

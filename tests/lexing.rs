@@ -1101,7 +1101,9 @@ int main(void) {
 
     // If the compiler doesn't detect the '@' as invalid, skip the position check.
     if result.success {
-        eprintln!("[SKIP] lex_source_position_multiline: compiler does not yet reject '@' character");
+        eprintln!(
+            "[SKIP] lex_source_position_multiline: compiler does not yet reject '@' character"
+        );
         return;
     }
 

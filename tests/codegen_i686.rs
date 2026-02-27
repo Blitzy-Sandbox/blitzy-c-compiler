@@ -163,13 +163,12 @@ fn extract_text_section_elf32(data: &[u8]) -> Option<Vec<u8>> {
         }
 
         // sh_name (offset 0 in section header entry) is an index into shstrtab
-        let sh_name_idx =
-            u32::from_le_bytes([
-                data[sh_start],
-                data[sh_start + 1],
-                data[sh_start + 2],
-                data[sh_start + 3],
-            ]) as usize;
+        let sh_name_idx = u32::from_le_bytes([
+            data[sh_start],
+            data[sh_start + 1],
+            data[sh_start + 2],
+            data[sh_start + 3],
+        ]) as usize;
 
         // Read the section name from the string table.
         let name_start = shstrtab_offset + sh_name_idx;
@@ -471,11 +470,7 @@ int main(void) {
 
     // Verify architecture is EM_386.
     let e_machine = u16::from_le_bytes([binary_data[18], binary_data[19]]);
-    assert_eq!(
-        e_machine,
-        common::EM_386,
-        "Expected EM_386 in i686 object"
-    );
+    assert_eq!(e_machine, common::EM_386, "Expected EM_386 in i686 object");
 
     // Attempt to extract the .text section and scan for potential REX bytes.
     // Note: In 32-bit mode, 0x40-0x4F are INC/DEC single-byte opcodes,
@@ -908,10 +903,7 @@ int main(void) {
 
     // Verify little-endian encoding: EI_DATA at offset 5 should be 1 (ELFDATA2LSB).
     let data = fs::read(output_path).expect("Failed to read binary");
-    assert!(
-        data.len() >= 6,
-        "Binary too small to contain EI_DATA field"
-    );
+    assert!(data.len() >= 6, "Binary too small to contain EI_DATA field");
     assert_eq!(
         data[5], 1,
         "Expected ELFDATA2LSB (1) at EI_DATA, got {}",
@@ -1023,7 +1015,8 @@ int get_counter(void) {
     // Verify e_type is ET_REL (1) — relocatable object file.
     let e_type = read_elf_type(&data);
     assert_eq!(
-        e_type, 1,
+        e_type,
+        1,
         "Expected ET_REL (1) for relocatable object, got {} ({})",
         e_type,
         match e_type {
@@ -1074,7 +1067,8 @@ int shared_mul(int a, int b) {
     // Verify e_type is ET_DYN (3) — shared object file.
     let e_type = read_elf_type(&data);
     assert_eq!(
-        e_type, 3,
+        e_type,
+        3,
         "Expected ET_DYN (3) for shared library, got {} ({})",
         e_type,
         match e_type {
@@ -1666,15 +1660,18 @@ fn i686_pathbuf_usage() {
     let output_path = PathBuf::from(dir.path().join("test_pathbuf.o"));
 
     // Verify PathBuf display formatting works.
-    let _display = format!("Source: {}, Output: {}", source_path.display(), output_path.display());
+    let _display = format!(
+        "Source: {}, Output: {}",
+        source_path.display(),
+        output_path.display()
+    );
 
     // Verify as_path() conversion.
     let _as_path = source_path.as_path();
     let _as_path2 = output_path.as_path();
 
     // Write a source file and compile it.
-    fs::write(&source_path, "int main(void) { return 0; }\n")
-        .expect("Failed to write source file");
+    fs::write(&source_path, "int main(void) { return 0; }\n").expect("Failed to write source file");
 
     let bcc = common::get_bcc_binary();
     let _output = Command::new(&bcc)
@@ -1716,8 +1713,7 @@ fn i686_compiler_status_check() {
     let dir = common::TempDir::new("i686_status_test");
     let source_path = dir.path().join("status_test.c");
 
-    fs::write(&source_path, "int main(void) { return 0; }\n")
-        .expect("Failed to write source file");
+    fs::write(&source_path, "int main(void) { return 0; }\n").expect("Failed to write source file");
 
     let output_path = dir.path().join("status_test.o");
 
@@ -1742,10 +1738,7 @@ fn i686_compiler_status_check() {
             );
         }
         Err(e) => {
-            eprintln!(
-                "i686 compiler status check: failed to get status: {}",
-                e
-            );
+            eprintln!("i686 compiler status check: failed to get status: {}", e);
         }
     }
 }

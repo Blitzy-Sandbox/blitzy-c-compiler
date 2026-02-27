@@ -286,8 +286,14 @@ fn has_section(binary_data: &[u8], section_name: &str) -> bool {
         return false;
     }
     let e_shoff = u64::from_le_bytes([
-        binary_data[40], binary_data[41], binary_data[42], binary_data[43],
-        binary_data[44], binary_data[45], binary_data[46], binary_data[47],
+        binary_data[40],
+        binary_data[41],
+        binary_data[42],
+        binary_data[43],
+        binary_data[44],
+        binary_data[45],
+        binary_data[46],
+        binary_data[47],
     ]) as usize;
     let e_shentsize = u16::from_le_bytes([binary_data[58], binary_data[59]]) as usize;
     let e_shnum = u16::from_le_bytes([binary_data[60], binary_data[61]]) as usize;
@@ -301,10 +307,14 @@ fn has_section(binary_data: &[u8], section_name: &str) -> bool {
         return false;
     }
     let shstrtab_off = u64::from_le_bytes([
-        binary_data[shstrtab_hdr + 24], binary_data[shstrtab_hdr + 25],
-        binary_data[shstrtab_hdr + 26], binary_data[shstrtab_hdr + 27],
-        binary_data[shstrtab_hdr + 28], binary_data[shstrtab_hdr + 29],
-        binary_data[shstrtab_hdr + 30], binary_data[shstrtab_hdr + 31],
+        binary_data[shstrtab_hdr + 24],
+        binary_data[shstrtab_hdr + 25],
+        binary_data[shstrtab_hdr + 26],
+        binary_data[shstrtab_hdr + 27],
+        binary_data[shstrtab_hdr + 28],
+        binary_data[shstrtab_hdr + 29],
+        binary_data[shstrtab_hdr + 30],
+        binary_data[shstrtab_hdr + 31],
     ]) as usize;
 
     for i in 0..e_shnum {
@@ -313,8 +323,10 @@ fn has_section(binary_data: &[u8], section_name: &str) -> bool {
             continue;
         }
         let sh_name_off = u32::from_le_bytes([
-            binary_data[sh_off], binary_data[sh_off + 1],
-            binary_data[sh_off + 2], binary_data[sh_off + 3],
+            binary_data[sh_off],
+            binary_data[sh_off + 1],
+            binary_data[sh_off + 2],
+            binary_data[sh_off + 3],
         ]) as usize;
         let name_start = shstrtab_off + sh_name_off;
         if name_start >= binary_data.len() {
@@ -525,7 +537,10 @@ fn aarch64_load_store_pair() {
     };
     let data = read_binary(output_path);
     let text = extract_text_section(&data);
-    assert!(!text.is_empty(), "Expected non-empty .text section for LDP/STP test");
+    assert!(
+        !text.is_empty(),
+        "Expected non-empty .text section for LDP/STP test"
+    );
     assert_eq!(text.len() % 4, 0, ".text section is not 4-byte aligned");
 }
 
@@ -638,10 +653,7 @@ fn aarch64_fixed_width_encoding() {
 
     // Extract .text section and verify each 4-byte word is within the section
     let text = extract_text_section(&data);
-    assert!(
-        !text.is_empty(),
-        "Expected non-empty .text section"
-    );
+    assert!(!text.is_empty(), "Expected non-empty .text section");
     assert_eq!(
         text.len() % 4,
         0,
@@ -696,7 +708,11 @@ fn aarch64_data_processing_encoding() {
     let data = read_binary(output_path);
     let text = extract_text_section(&data);
     assert!(!text.is_empty(), "Expected non-empty .text section");
-    assert_eq!(text.len() % 4, 0, "Data-processing .text not 4-byte aligned");
+    assert_eq!(
+        text.len() % 4,
+        0,
+        "Data-processing .text not 4-byte aligned"
+    );
 }
 
 /// Verify load/store instruction encoding with offset modes.
@@ -793,7 +809,10 @@ fn aarch64_branch_encoding() {
     };
     let data = read_binary(output_path);
     let text = extract_text_section(&data);
-    assert!(!text.is_empty(), "Expected non-empty .text for branch encoding test");
+    assert!(
+        !text.is_empty(),
+        "Expected non-empty .text for branch encoding test"
+    );
     assert_eq!(text.len() % 4, 0, "Branch .text not 4-byte aligned");
 
     // Verify the text section contains multiple instructions (branches are present)
@@ -846,7 +865,10 @@ fn aarch64_move_wide_encoding() {
     };
     let data = read_binary(output_path);
     let text = extract_text_section(&data);
-    assert!(!text.is_empty(), "Expected non-empty .text for move wide encoding test");
+    assert!(
+        !text.is_empty(),
+        "Expected non-empty .text for move wide encoding test"
+    );
     assert_eq!(text.len() % 4, 0, "Move wide .text not 4-byte aligned");
 }
 
@@ -1212,18 +1234,14 @@ fn aarch64_relocatable_object() {
     fs::write(&source_path, source_content).expect("Failed to write C source file");
 
     // Verify the file was written correctly using fs::read_to_string
-    let read_back = fs::read_to_string(&source_path)
-        .expect("Failed to read back C source file");
+    let read_back = fs::read_to_string(&source_path).expect("Failed to read back C source file");
     assert!(
         read_back.contains("int add("),
         "Source file content verification failed"
     );
 
     // Compile via the helper (which uses compile_source internally)
-    let result = compile_aarch64_object(
-        source_content,
-        &[],
-    );
+    let result = compile_aarch64_object(source_content, &[]);
     assert!(
         result.success,
         "AArch64 relocatable object test compilation failed:\nstderr: {}",
@@ -1284,11 +1302,7 @@ fn aarch64_shared_library() {
 
     // Use Command.args() for passing multiple flags at once
     let status = Command::new(&bcc)
-        .args(&[
-            "--target", common::TARGET_AARCH64,
-            "-shared", "-fPIC",
-            "-o",
-        ])
+        .args(&["--target", common::TARGET_AARCH64, "-shared", "-fPIC", "-o"])
         .arg(&so_path)
         .arg(temp_source.path())
         .status()
@@ -1374,8 +1388,15 @@ fn aarch64_float_arithmetic() {
     common::verify_elf_arch(output_path, common::EM_AARCH64);
     let data = read_binary(output_path);
     let text = extract_text_section(&data);
-    assert!(!text.is_empty(), "Expected non-empty .text for float arithmetic");
-    assert_eq!(text.len() % 4, 0, "Float arithmetic .text not 4-byte aligned");
+    assert!(
+        !text.is_empty(),
+        "Expected non-empty .text for float arithmetic"
+    );
+    assert_eq!(
+        text.len() % 4,
+        0,
+        "Float arithmetic .text not 4-byte aligned"
+    );
 }
 
 /// Test double-precision floating-point arithmetic: FADD, FSUB, FMUL, FDIV (D registers).
@@ -1602,9 +1623,9 @@ fn aarch64_execute_fibonacci() {
             obj_result.stderr
         );
         let output_path = match obj_result.output_path.as_ref().filter(|p| p.exists()) {
-        Some(p) => p,
-        None => return, // Backend not yet producing output; compilation was verified above
-    };
+            Some(p) => p,
+            None => return, // Backend not yet producing output; compilation was verified above
+        };
         common::verify_elf_arch(output_path, common::EM_AARCH64);
         common::verify_elf_class(output_path, common::ELFCLASS64);
         eprintln!(

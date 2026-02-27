@@ -295,9 +295,7 @@ int main(void) {
     let binary_data = fs::read(output_path).expect("Failed to read output binary");
 
     // Check for R-type OP instructions (opcode 0x33 = 0110011).
-    let r_type_ops = find_instructions(&binary_data, |instr| {
-        extract_opcode(instr) == OPCODE_OP
-    });
+    let r_type_ops = find_instructions(&binary_data, |instr| extract_opcode(instr) == OPCODE_OP);
     assert!(
         !r_type_ops.is_empty(),
         "Expected R-type ALU instructions (ADD/SUB/MUL/DIV) in the RISC-V binary"
@@ -341,8 +339,11 @@ int main(void) {
         let funct3 = extract_funct3(instr);
         // AND=funct3(111), OR=funct3(110), XOR=funct3(100), SLL=funct3(001), SRL/SRA=funct3(101)
         opcode == OPCODE_OP
-            && (funct3 == 0b111 || funct3 == 0b110 || funct3 == 0b100
-                || funct3 == 0b001 || funct3 == 0b101)
+            && (funct3 == 0b111
+                || funct3 == 0b110
+                || funct3 == 0b100
+                || funct3 == 0b001
+                || funct3 == 0b101)
     });
     assert!(
         !bitwise_instrs.is_empty(),
@@ -385,9 +386,8 @@ int main(void) {
     let binary_data = fs::read(output_path).expect("Failed to read output binary");
 
     // Verify B-type branch instructions exist (opcode BRANCH = 0x63 = 1100011).
-    let branch_instrs = find_instructions(&binary_data, |instr| {
-        extract_opcode(instr) == OPCODE_BRANCH
-    });
+    let branch_instrs =
+        find_instructions(&binary_data, |instr| extract_opcode(instr) == OPCODE_BRANCH);
     assert!(
         !branch_instrs.is_empty(),
         "Expected B-type branch instructions (BEQ/BNE/BLT/BGE) in the RISC-V binary"
@@ -426,12 +426,9 @@ int main(void) {
     let binary_data = fs::read(output_path).expect("Failed to read output binary");
 
     // Verify LOAD instructions (opcode 0x03) and STORE instructions (opcode 0x23) exist.
-    let load_instrs = find_instructions(&binary_data, |instr| {
-        extract_opcode(instr) == OPCODE_LOAD
-    });
-    let store_instrs = find_instructions(&binary_data, |instr| {
-        extract_opcode(instr) == OPCODE_STORE
-    });
+    let load_instrs = find_instructions(&binary_data, |instr| extract_opcode(instr) == OPCODE_LOAD);
+    let store_instrs =
+        find_instructions(&binary_data, |instr| extract_opcode(instr) == OPCODE_STORE);
     assert!(
         !load_instrs.is_empty(),
         "Expected LOAD instructions in the RISC-V binary"
@@ -472,9 +469,8 @@ int main(void) {
     let binary_data = fs::read(output_path).expect("Failed to read output binary");
 
     // Verify I-type OP-IMM instructions (opcode 0x13 = 0010011) exist.
-    let imm_instrs = find_instructions(&binary_data, |instr| {
-        extract_opcode(instr) == OPCODE_OP_IMM
-    });
+    let imm_instrs =
+        find_instructions(&binary_data, |instr| extract_opcode(instr) == OPCODE_OP_IMM);
     assert!(
         !imm_instrs.is_empty(),
         "Expected I-type immediate instructions (ADDI/ANDI/ORI/XORI/SLTI) in the RISC-V binary"
@@ -519,11 +515,36 @@ int main(void) { return add_values(3, 4) - sub_values(10, 5); }
         let funct7 = extract_funct7(instr);
 
         // Verify register fields are valid (0-31).
-        assert!(rd < 32, "R-type rd out of range at offset {}: {}", offset, rd);
-        assert!(rs1 < 32, "R-type rs1 out of range at offset {}: {}", offset, rs1);
-        assert!(rs2 < 32, "R-type rs2 out of range at offset {}: {}", offset, rs2);
-        assert!(funct3 < 8, "R-type funct3 out of range at offset {}: {}", offset, funct3);
-        assert!(funct7 < 128, "R-type funct7 out of range at offset {}: {}", offset, funct7);
+        assert!(
+            rd < 32,
+            "R-type rd out of range at offset {}: {}",
+            offset,
+            rd
+        );
+        assert!(
+            rs1 < 32,
+            "R-type rs1 out of range at offset {}: {}",
+            offset,
+            rs1
+        );
+        assert!(
+            rs2 < 32,
+            "R-type rs2 out of range at offset {}: {}",
+            offset,
+            rs2
+        );
+        assert!(
+            funct3 < 8,
+            "R-type funct3 out of range at offset {}: {}",
+            offset,
+            funct3
+        );
+        assert!(
+            funct7 < 128,
+            "R-type funct7 out of range at offset {}: {}",
+            offset,
+            funct7
+        );
 
         // Verify the opcode field is correct.
         assert!(
@@ -577,9 +598,24 @@ int main(void) { return add_immediate(10); }
         let funct3 = extract_funct3(instr);
         let _imm = extract_i_imm(instr);
 
-        assert!(rd < 32, "I-type rd out of range at offset {}: {}", offset, rd);
-        assert!(rs1 < 32, "I-type rs1 out of range at offset {}: {}", offset, rs1);
-        assert!(funct3 < 8, "I-type funct3 out of range at offset {}: {}", offset, funct3);
+        assert!(
+            rd < 32,
+            "I-type rd out of range at offset {}: {}",
+            offset,
+            rd
+        );
+        assert!(
+            rs1 < 32,
+            "I-type rs1 out of range at offset {}: {}",
+            offset,
+            rs1
+        );
+        assert!(
+            funct3 < 8,
+            "I-type funct3 out of range at offset {}: {}",
+            offset,
+            funct3
+        );
     }
 }
 
@@ -610,9 +646,8 @@ int main(void) {
     let binary_data = fs::read(output_path).expect("Failed to read output binary");
 
     // Find S-type store instructions (opcode 0x23 = 0100011).
-    let s_type_instrs = find_instructions(&binary_data, |instr| {
-        extract_opcode(instr) == OPCODE_STORE
-    });
+    let s_type_instrs =
+        find_instructions(&binary_data, |instr| extract_opcode(instr) == OPCODE_STORE);
 
     assert!(
         !s_type_instrs.is_empty(),
@@ -626,10 +661,25 @@ int main(void) {
         let funct3 = extract_funct3(instr);
         let _imm = extract_s_imm(instr);
 
-        assert!(rs1 < 32, "S-type rs1 out of range at offset {}: {}", offset, rs1);
-        assert!(rs2 < 32, "S-type rs2 out of range at offset {}: {}", offset, rs2);
+        assert!(
+            rs1 < 32,
+            "S-type rs1 out of range at offset {}: {}",
+            offset,
+            rs1
+        );
+        assert!(
+            rs2 < 32,
+            "S-type rs2 out of range at offset {}: {}",
+            offset,
+            rs2
+        );
         // funct3 values: SB=0, SH=1, SW=2, SD=3
-        assert!(funct3 <= 3, "S-type funct3 out of range at offset {}: {}", offset, funct3);
+        assert!(
+            funct3 <= 3,
+            "S-type funct3 out of range at offset {}: {}",
+            offset,
+            funct3
+        );
     }
 }
 
@@ -658,9 +708,8 @@ int main(void) { return branch_test(5, 10); }
     let binary_data = fs::read(output_path).expect("Failed to read output binary");
 
     // Find B-type branch instructions (opcode 0x63 = 1100011).
-    let b_type_instrs = find_instructions(&binary_data, |instr| {
-        extract_opcode(instr) == OPCODE_BRANCH
-    });
+    let b_type_instrs =
+        find_instructions(&binary_data, |instr| extract_opcode(instr) == OPCODE_BRANCH);
 
     assert!(
         !b_type_instrs.is_empty(),
@@ -674,8 +723,18 @@ int main(void) { return branch_test(5, 10); }
         let funct3 = extract_funct3(instr);
         let imm = extract_b_imm(instr);
 
-        assert!(rs1 < 32, "B-type rs1 out of range at offset {}: {}", offset, rs1);
-        assert!(rs2 < 32, "B-type rs2 out of range at offset {}: {}", offset, rs2);
+        assert!(
+            rs1 < 32,
+            "B-type rs1 out of range at offset {}: {}",
+            offset,
+            rs1
+        );
+        assert!(
+            rs2 < 32,
+            "B-type rs2 out of range at offset {}: {}",
+            offset,
+            rs2
+        );
         // funct3: BEQ=0, BNE=1, BLT=4, BGE=5, BLTU=6, BGEU=7
         assert!(
             funct3 == 0 || funct3 == 1 || funct3 >= 4,
@@ -731,7 +790,12 @@ int main(void) { return load_upper(); }
         let rd = extract_rd(instr);
         let u_imm = extract_u_imm(instr);
 
-        assert!(rd < 32, "U-type rd out of range at offset {}: {}", offset, rd);
+        assert!(
+            rd < 32,
+            "U-type rd out of range at offset {}: {}",
+            offset,
+            rd
+        );
         // The lower 12 bits of the raw U-type immediate field are zero by definition.
         assert_eq!(
             u_imm & 0xFFF,
@@ -765,9 +829,8 @@ int main(void) {
     let binary_data = fs::read(output_path).expect("Failed to read output binary");
 
     // Find J-type JAL instructions (opcode 0x6F = 1101111).
-    let j_type_instrs = find_instructions(&binary_data, |instr| {
-        extract_opcode(instr) == OPCODE_JAL
-    });
+    let j_type_instrs =
+        find_instructions(&binary_data, |instr| extract_opcode(instr) == OPCODE_JAL);
 
     // JAL may or may not be generated depending on the compiler's call strategy;
     // JALR (I-type, opcode 0x67) is also commonly used for function calls.
@@ -786,7 +849,12 @@ int main(void) {
         let rd = extract_rd(instr);
         let imm = extract_j_imm(instr);
 
-        assert!(rd < 32, "J-type rd out of range at offset {}: {}", offset, rd);
+        assert!(
+            rd < 32,
+            "J-type rd out of range at offset {}: {}",
+            offset,
+            rd
+        );
         // J-type immediate is always even (aligned to 2 bytes).
         assert_eq!(
             imm & 1,
@@ -879,9 +947,8 @@ int main(void) {
     let binary_data = fs::read(output_path).expect("Failed to read output binary");
 
     // Verify that store-to-stack instructions exist for the 9th and 10th arguments.
-    let store_instrs = find_instructions(&binary_data, |instr| {
-        extract_opcode(instr) == OPCODE_STORE
-    });
+    let store_instrs =
+        find_instructions(&binary_data, |instr| extract_opcode(instr) == OPCODE_STORE);
     assert!(
         !store_instrs.is_empty(),
         "Expected STORE instructions for stack-spilled arguments"
@@ -946,13 +1013,10 @@ int main(void) {
     // Verify the binary contains store-to-stack instructions (function prologues save
     // callee-saved registers to the stack). The s-registers (x8-x9, x18-x27) should
     // be saved/restored in functions that use them.
-    let store_instrs = find_instructions(&binary_data, |instr| {
-        extract_opcode(instr) == OPCODE_STORE
-    });
+    let store_instrs =
+        find_instructions(&binary_data, |instr| extract_opcode(instr) == OPCODE_STORE);
     // Also verify load-from-stack (epilogue restoring callee-saved registers).
-    let load_instrs = find_instructions(&binary_data, |instr| {
-        extract_opcode(instr) == OPCODE_LOAD
-    });
+    let load_instrs = find_instructions(&binary_data, |instr| extract_opcode(instr) == OPCODE_LOAD);
 
     assert!(
         !store_instrs.is_empty() && !load_instrs.is_empty(),
@@ -1099,7 +1163,8 @@ int main(void) { return 0; }
 
     // Also verify using the TARGET_RISCV64 constant from common.
     assert_eq!(
-        common::TARGET_RISCV64, "riscv64-linux-gnu",
+        common::TARGET_RISCV64,
+        "riscv64-linux-gnu",
         "TARGET_RISCV64 constant should be 'riscv64-linux-gnu'"
     );
 
@@ -1127,7 +1192,13 @@ int add(int a, int b) { return a + b; }
 
     let result = common::compile_source(
         source,
-        &["--target", TARGET, "-c", "-o", output_path.to_str().unwrap()],
+        &[
+            "--target",
+            TARGET,
+            "-c",
+            "-o",
+            output_path.to_str().unwrap(),
+        ],
     );
     assert!(
         result.success,
@@ -1218,9 +1289,8 @@ int shared_mul(int a, int b) { return a * b; }
 
     // Verify the shared library contains position-independent references.
     // Look for AUIPC instructions which are used in PIC mode for GOT-relative addressing.
-    let auipc_instrs = find_instructions(&binary_data, |instr| {
-        extract_opcode(instr) == OPCODE_AUIPC
-    });
+    let auipc_instrs =
+        find_instructions(&binary_data, |instr| extract_opcode(instr) == OPCODE_AUIPC);
     assert!(
         !auipc_instrs.is_empty(),
         "Expected AUIPC instructions for position-independent code in shared library"
@@ -1308,9 +1378,7 @@ int main(void) {
     });
 
     // Fallback: look for any FP instruction if D-extension specific ones aren't found.
-    let any_fp = find_instructions(&binary_data, |instr| {
-        extract_opcode(instr) == 0b1010011
-    });
+    let any_fp = find_instructions(&binary_data, |instr| extract_opcode(instr) == 0b1010011);
 
     assert!(
         !fp_instrs.is_empty() || !any_fp.is_empty(),
@@ -1353,9 +1421,7 @@ int main(void) {
     });
 
     // Fallback: any OP-FP instruction counts as floating-point comparison involvement.
-    let any_fp = find_instructions(&binary_data, |instr| {
-        extract_opcode(instr) == 0b1010011
-    });
+    let any_fp = find_instructions(&binary_data, |instr| extract_opcode(instr) == 0b1010011);
 
     assert!(
         !fp_cmp_instrs.is_empty() || !any_fp.is_empty(),
@@ -1430,9 +1496,7 @@ int main(void) {
 #[test]
 fn riscv64_execute_fibonacci() {
     if !common::is_qemu_available(TARGET) && !common::is_native_target(TARGET) {
-        eprintln!(
-            "SKIP: qemu-riscv64 not available and not running on native RISC-V 64."
-        );
+        eprintln!("SKIP: qemu-riscv64 not available and not running on native RISC-V 64.");
         return;
     }
 
@@ -1652,11 +1716,8 @@ fn riscv64_multi_file_compilation() {
     )
     .expect("Failed to write main.c");
 
-    fs::write(
-        src2_path.as_path(),
-        "int helper(int x) { return x * 2; }\n",
-    )
-    .expect("Failed to write helper.c");
+    fs::write(src2_path.as_path(), "int helper(int x) { return x * 2; }\n")
+        .expect("Failed to write helper.c");
 
     let bcc = common::get_bcc_binary();
 
@@ -1713,10 +1774,7 @@ int main(void) { return 0; }
 
     // Verify the file was written using fs::read_to_string.
     let content = fs::read_to_string(&source_path).expect("Failed to read test source");
-    assert!(
-        content.contains("return 0"),
-        "Source file content mismatch"
-    );
+    assert!(content.contains("return 0"), "Source file content mismatch");
 
     let bcc = common::get_bcc_binary();
     let output = Command::new(bcc.as_path())
@@ -1746,10 +1804,7 @@ fn riscv64_pathbuf_usage() {
     let path_ref = path.as_path();
     let display_str = format!("{}", path.display());
 
-    assert_eq!(
-        path_ref.to_str().unwrap(),
-        "/tmp/riscv64_test_artifact"
-    );
+    assert_eq!(path_ref.to_str().unwrap(), "/tmp/riscv64_test_artifact");
     assert!(
         display_str.contains("riscv64_test_artifact"),
         "PathBuf display should contain the expected path component"

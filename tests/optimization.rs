@@ -566,7 +566,10 @@ int main(void) {
     for opt in &["-O0", "-O1", "-O2"] {
         let result = compile_and_run_at_opt_level(source, opt);
         if !result.success && result.stderr.contains("no output binary") {
-            eprintln!("[SKIP] Compiler does not yet produce output binaries at {}", opt);
+            eprintln!(
+                "[SKIP] Compiler does not yet produce output binaries at {}",
+                opt
+            );
             return;
         }
         assert!(
@@ -1096,7 +1099,10 @@ int main(void) {
     for opt in &["-O0", "-O1", "-O2"] {
         let result = compile_and_run_at_opt_level(source, opt);
         if !result.success && result.stderr.contains("no output binary") {
-            eprintln!("[SKIP] Compiler does not yet produce output binaries at {}", opt);
+            eprintln!(
+                "[SKIP] Compiler does not yet produce output binaries at {}",
+                opt
+            );
             return;
         }
         assert!(

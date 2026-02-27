@@ -621,7 +621,10 @@ fn lua_compile_x86_64() {
         }
         Err(e) => {
             eprintln!("[lua] {} FAILED:\n{}", test_name, e);
-            eprintln!("[SKIP] Lua compilation/linking failed for {}: {} (compiler not fully functional)", target, e);
+            eprintln!(
+                "[SKIP] Lua compilation/linking failed for {}: {} (compiler not fully functional)",
+                target, e
+            );
             return;
         }
     }
@@ -658,7 +661,10 @@ fn lua_compile_i686() {
         }
         Err(e) => {
             eprintln!("[lua] {} FAILED:\n{}", test_name, e);
-            eprintln!("[SKIP] Lua compilation/linking failed for {}: {} (compiler not fully functional)", target, e);
+            eprintln!(
+                "[SKIP] Lua compilation/linking failed for {}: {} (compiler not fully functional)",
+                target, e
+            );
             return;
         }
     }
@@ -695,7 +701,10 @@ fn lua_compile_aarch64() {
         }
         Err(e) => {
             eprintln!("[lua] {} FAILED:\n{}", test_name, e);
-            eprintln!("[SKIP] Lua compilation/linking failed for {}: {} (compiler not fully functional)", target, e);
+            eprintln!(
+                "[SKIP] Lua compilation/linking failed for {}: {} (compiler not fully functional)",
+                target, e
+            );
             return;
         }
     }
@@ -732,7 +741,10 @@ fn lua_compile_riscv64() {
         }
         Err(e) => {
             eprintln!("[lua] {} FAILED:\n{}", test_name, e);
-            eprintln!("[SKIP] Lua compilation/linking failed for {}: {} (compiler not fully functional)", target, e);
+            eprintln!(
+                "[SKIP] Lua compilation/linking failed for {}: {} (compiler not fully functional)",
+                target, e
+            );
             return;
         }
     }
@@ -833,7 +845,10 @@ fn lua_test_suite_x86_64() {
         }
         Err(e) => {
             eprintln!("[lua] {} run FAILED: {}", test_name, e);
-            eprintln!("[SKIP] Lua smoke test failed: {} (compiler not fully functional)", e);
+            eprintln!(
+                "[SKIP] Lua smoke test failed: {} (compiler not fully functional)",
+                e
+            );
             return;
         }
     }

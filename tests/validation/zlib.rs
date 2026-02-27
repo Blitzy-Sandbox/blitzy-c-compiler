@@ -642,13 +642,18 @@ fn zlib_link_static_library() {
         Ok(()) => {
             eprintln!("[zlib] Successfully linked zlib example binary");
             if !output_binary.exists() {
-                eprintln!("[SKIP] Compiler did not produce output binary (linker not yet functional)");
+                eprintln!(
+                    "[SKIP] Compiler did not produce output binary (linker not yet functional)"
+                );
                 return;
             }
         }
         Err(e) => {
             eprintln!("[zlib] Link test failed: {}", e);
-            eprintln!("[SKIP] zlib link test failed: {} (compiler not fully functional)", e);
+            eprintln!(
+                "[SKIP] zlib link test failed: {} (compiler not fully functional)",
+                e
+            );
             return;
         }
     }

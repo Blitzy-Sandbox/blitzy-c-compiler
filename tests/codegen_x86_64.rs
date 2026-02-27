@@ -197,9 +197,7 @@ fn is_rex_w(byte: u8) -> bool {
 /// development when backend code emission is incomplete).
 fn should_skip_run(run_result: &common::RunResult) -> bool {
     if !run_result.success && run_result.stderr.contains("no output binary") {
-        eprintln!(
-            "[SKIP] Compiler does not yet produce output binaries; skipping execution check"
-        );
+        eprintln!("[SKIP] Compiler does not yet produce output binaries; skipping execution check");
         return true;
     }
     false
