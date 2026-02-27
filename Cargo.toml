@@ -2,10 +2,17 @@
 name = "bcc"
 version = "0.1.0"
 edition = "2021"
-description = "A complete C11 compiler written in pure Rust targeting Linux ELF output across four architectures"
+description = "A complete C11 compiler written in pure Rust targeting Linux ELF output across four architectures (x86-64, i686, AArch64, RISC-V 64) with integrated preprocessor, assembler, and linker"
+license = "MIT"
+build = "build.rs"
 
+# Zero external dependencies — uses only the Rust standard library (std).
+# This is an absolute constraint: no crates from crates.io or any other registry.
+# Every piece of functionality (parsing, code generation, ELF emission, DWARF
+# encoding, archive reading) is implemented using only std.
 [dependencies]
-# Zero external dependencies - uses only Rust standard library (std)
 
 [profile.release]
 opt-level = 3
+lto = true
+debug = false
