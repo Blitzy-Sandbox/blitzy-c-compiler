@@ -7,6 +7,7 @@ mod common;
 mod debug;
 mod driver;
 mod frontend;
+mod ir;
 mod linker;
 mod sema;
 
