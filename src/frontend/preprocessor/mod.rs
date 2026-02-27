@@ -2,4 +2,5 @@
 // Minimal stub enabling compilation during incremental development.
 // The full implementation will be provided by its assigned agent.
 
+pub mod expression;
 pub mod include;
