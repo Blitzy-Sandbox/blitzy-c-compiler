@@ -4,6 +4,7 @@
 // implementation by its assigned agent.
 
 mod common;
+mod frontend;
 
 fn main() {
     // Full CLI driver implementation pending.
