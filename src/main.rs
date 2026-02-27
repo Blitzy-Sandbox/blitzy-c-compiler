@@ -5,6 +5,7 @@
 
 mod common;
 mod frontend;
+mod sema;
 
 fn main() {
     // Full CLI driver implementation pending.
