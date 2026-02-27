@@ -532,9 +532,9 @@ impl SourceMap {
         file_id: FileId,
         byte_offset: u32,
     ) -> Option<(u32, Option<&Path>)> {
-        self.line_overrides.get(&(file_id, byte_offset)).map(|ov| {
-            (ov.override_line, ov.override_file.as_deref())
-        })
+        self.line_overrides
+            .get(&(file_id, byte_offset))
+            .map(|ov| (ov.override_line, ov.override_file.as_deref()))
     }
 }
 
@@ -867,7 +867,10 @@ mod tests {
     fn test_add_expansion() {
         let mut sm = SourceMap::new();
         let _id = sm.add_file(PathBuf::from("main.c"), String::from("FOO(1);\n"));
-        let _header_id = sm.add_file(PathBuf::from("header.h"), String::from("#define FOO(x) x+1\n"));
+        let _header_id = sm.add_file(
+            PathBuf::from("header.h"),
+            String::from("#define FOO(x) x+1\n"),
+        );
 
         let expansion_loc = SourceLocation {
             file_id: FileId(0),

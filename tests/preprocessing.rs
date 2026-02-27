@@ -36,8 +36,7 @@ fn compile_ok(source: &str, flags: &[&str]) -> common::CompileResult {
     assert!(
         result.success,
         "Expected compilation to succeed but it failed.\nstderr:\n{}\nstdout:\n{}",
-        result.stderr,
-        result.stdout,
+        result.stderr, result.stdout,
     );
     result
 }
@@ -130,8 +129,7 @@ int main(void) {
 fn include_quotes() {
     let dir = common::TempDir::new("include_quotes");
     let header_path = dir.path().join("local.h");
-    fs::write(&header_path, "#define LOCAL_VALUE 42\n")
-        .expect("Failed to write local.h");
+    fs::write(&header_path, "#define LOCAL_VALUE 42\n").expect("Failed to write local.h");
 
     let source = r#"
 #include "local.h"
@@ -150,8 +148,7 @@ int main(void) {
 fn include_i_flag() {
     let dir = common::TempDir::new("include_i_flag");
     let header_path = dir.path().join("myheader.h");
-    fs::write(&header_path, "#define MY_CONSTANT 100\n")
-        .expect("Failed to write myheader.h");
+    fs::write(&header_path, "#define MY_CONSTANT 100\n").expect("Failed to write myheader.h");
 
     let source = r#"
 #include <myheader.h>
@@ -169,12 +166,14 @@ int main(void) {
 fn include_nested() {
     let dir = common::TempDir::new("include_nested");
     let inner_path = dir.path().join("inner.h");
-    fs::write(&inner_path, "#define INNER_VAL 7\n")
-        .expect("Failed to write inner.h");
+    fs::write(&inner_path, "#define INNER_VAL 7\n").expect("Failed to write inner.h");
 
     let outer_path = dir.path().join("outer.h");
-    fs::write(&outer_path, "#include \"inner.h\"\n#define OUTER_VAL (INNER_VAL + 3)\n")
-        .expect("Failed to write outer.h");
+    fs::write(
+        &outer_path,
+        "#include \"inner.h\"\n#define OUTER_VAL (INNER_VAL + 3)\n",
+    )
+    .expect("Failed to write outer.h");
 
     let source = r#"
 #include "outer.h"
@@ -779,11 +778,8 @@ int main(void) {
 fn pragma_directive() {
     let dir = common::TempDir::new("pragma_test");
     let header_path = dir.path().join("pragma_once.h");
-    fs::write(
-        &header_path,
-        "#pragma once\nint pragma_value = 42;\n",
-    )
-    .expect("Failed to write pragma_once.h");
+    fs::write(&header_path, "#pragma once\nint pragma_value = 42;\n")
+        .expect("Failed to write pragma_once.h");
 
     let source = r#"
 #include "pragma_once.h"
@@ -811,8 +807,7 @@ int main(void) { return 0; }
     if !result.success {
         // The error diagnostic should contain the message text.
         assert!(
-            result.stderr.contains("custom error message")
-                || result.stderr.contains("error"),
+            result.stderr.contains("custom error message") || result.stderr.contains("error"),
             "Expected #error message in stderr.\nstderr: {}",
             result.stderr,
         );
@@ -1209,8 +1204,7 @@ fn include_nested_directories() {
     fs::create_dir_all(&sub_dir).expect("Failed to create subdir");
 
     let header_path = sub_dir.join("nested.h");
-    fs::write(&header_path, "#define NESTED_VALUE 77\n")
-        .expect("Failed to write nested.h");
+    fs::write(&header_path, "#define NESTED_VALUE 77\n").expect("Failed to write nested.h");
 
     let source = r#"
 #include "subdir/nested.h"
@@ -1229,8 +1223,7 @@ int main(void) {
 fn include_macro_expansion() {
     let dir = common::TempDir::new("include_macro");
     let header_path = dir.path().join("expanded.h");
-    fs::write(&header_path, "#define EXPANDED_OK 1\n")
-        .expect("Failed to write expanded.h");
+    fs::write(&header_path, "#define EXPANDED_OK 1\n").expect("Failed to write expanded.h");
 
     // Use a macro to define the header name for a computed include.
     let source = r#"
@@ -1285,9 +1278,7 @@ int main(void) {
 /// This exercises the Command members specified in the schema.
 #[test]
 fn direct_command_invocation() {
-    let source_file = common::write_temp_source(
-        "int main(void) { return 0; }\n",
-    );
+    let source_file = common::write_temp_source("int main(void) { return 0; }\n");
     let bcc = common::get_bcc_binary();
 
     let mut cmd = Command::new(&bcc);
@@ -1311,9 +1302,8 @@ fn direct_command_invocation() {
 /// This exercises `Command.args()` from the schema.
 #[test]
 fn direct_command_with_args() {
-    let source_file = common::write_temp_source(
-        "#define FOO 42\nint main(void) { return FOO - 42; }\n",
-    );
+    let source_file =
+        common::write_temp_source("#define FOO 42\nint main(void) { return FOO - 42; }\n");
     let bcc = common::get_bcc_binary();
 
     let output = Command::new(&bcc)
@@ -1339,8 +1329,7 @@ fn fs_operations_for_includes() {
     fs::write(&header_path, header_content).expect("Failed to write header");
 
     // Verify fs::read_to_string works for our test infrastructure.
-    let read_back = fs::read_to_string(&header_path)
-        .expect("Failed to read header back");
+    let read_back = fs::read_to_string(&header_path).expect("Failed to read header back");
     assert_eq!(read_back, header_content);
 
     // Now compile using this header to verify preprocessing.

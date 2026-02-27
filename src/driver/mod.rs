@@ -11,10 +11,12 @@ pub mod cli;
 pub mod target;
 
 // Re-export key types from cli for convenient access by main.rs and other consumers.
-pub use cli::{CliArgs, MacroDefinition, OptLevel, derive_output_path, parse_args, parse_args_from};
+pub use cli::{
+    derive_output_path, parse_args, parse_args_from, CliArgs, MacroDefinition, OptLevel,
+};
 
 // Re-export key types from target for convenient access by main.rs and other consumers.
 pub use target::{
-    AbiVariant, Architecture, ElfClass, Endianness, TargetConfig, detect_host, parse_target,
-    resolve_target,
+    detect_host, parse_target, resolve_target, AbiVariant, Architecture, ElfClass, Endianness,
+    TargetConfig,
 };

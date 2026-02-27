@@ -47,13 +47,11 @@ use std::time::{Duration, Instant};
 /// Primary download URL for the SQLite amalgamation (2024 release).
 /// The version number in the URL encodes major.minor.patch as XYYZZPP.
 /// 3.46.0 → 3460000.
-const SQLITE_URL: &str =
-    "https://www.sqlite.org/2024/sqlite-amalgamation-3460000.zip";
+const SQLITE_URL: &str = "https://www.sqlite.org/2024/sqlite-amalgamation-3460000.zip";
 
 /// Fallback download URL — an older stable release in case the primary
 /// version page has rotated.
-const SQLITE_URL_FALLBACK: &str =
-    "https://www.sqlite.org/2024/sqlite-amalgamation-3450300.zip";
+const SQLITE_URL_FALLBACK: &str = "https://www.sqlite.org/2024/sqlite-amalgamation-3450300.zip";
 
 /// Name of the SQLite amalgamation source file inside the extracted archive.
 const SQLITE_AMALGAMATION_FILE: &str = "sqlite3.c";
@@ -104,19 +102,11 @@ fn get_sqlite_defines() -> Vec<String> {
 /// or a human-readable error message on failure.
 fn fetch_sqlite_source(work_dir: &Path) -> Result<PathBuf, String> {
     // Attempt primary URL first.
-    let archive_path = match fetch_source_archive(
-        SQLITE_URL,
-        work_dir,
-        SQLITE_ARCHIVE_NAME,
-    ) {
+    let archive_path = match fetch_source_archive(SQLITE_URL, work_dir, SQLITE_ARCHIVE_NAME) {
         SourceFetchResult::Success(p) => p,
         _ => {
             // Try fallback URL.
-            match fetch_source_archive(
-                SQLITE_URL_FALLBACK,
-                work_dir,
-                SQLITE_ARCHIVE_NAME,
-            ) {
+            match fetch_source_archive(SQLITE_URL_FALLBACK, work_dir, SQLITE_ARCHIVE_NAME) {
                 SourceFetchResult::Success(p) => p,
                 SourceFetchResult::NetworkUnavailable(msg) => {
                     return Err(format!("Network unavailable: {}", msg));
@@ -341,8 +331,7 @@ fn elf_has_section(path: &Path, needle: &str) -> bool {
     }
     // e_shoff (section header table offset): bytes 40..48
     let e_shoff = u64::from_le_bytes([
-        data[40], data[41], data[42], data[43],
-        data[44], data[45], data[46], data[47],
+        data[40], data[41], data[42], data[43], data[44], data[45], data[46], data[47],
     ]) as usize;
     // e_shentsize: bytes 58..60
     let e_shentsize = u16::from_le_bytes([data[58], data[59]]) as usize;
@@ -362,16 +351,24 @@ fn elf_has_section(path: &Path, needle: &str) -> bool {
     }
     // sh_offset is at byte 24 within the section header (ELF64).
     let shstr_off = u64::from_le_bytes([
-        data[shstr_hdr_off + 24], data[shstr_hdr_off + 25],
-        data[shstr_hdr_off + 26], data[shstr_hdr_off + 27],
-        data[shstr_hdr_off + 28], data[shstr_hdr_off + 29],
-        data[shstr_hdr_off + 30], data[shstr_hdr_off + 31],
+        data[shstr_hdr_off + 24],
+        data[shstr_hdr_off + 25],
+        data[shstr_hdr_off + 26],
+        data[shstr_hdr_off + 27],
+        data[shstr_hdr_off + 28],
+        data[shstr_hdr_off + 29],
+        data[shstr_hdr_off + 30],
+        data[shstr_hdr_off + 31],
     ]) as usize;
     let shstr_size = u64::from_le_bytes([
-        data[shstr_hdr_off + 32], data[shstr_hdr_off + 33],
-        data[shstr_hdr_off + 34], data[shstr_hdr_off + 35],
-        data[shstr_hdr_off + 36], data[shstr_hdr_off + 37],
-        data[shstr_hdr_off + 38], data[shstr_hdr_off + 39],
+        data[shstr_hdr_off + 32],
+        data[shstr_hdr_off + 33],
+        data[shstr_hdr_off + 34],
+        data[shstr_hdr_off + 35],
+        data[shstr_hdr_off + 36],
+        data[shstr_hdr_off + 37],
+        data[shstr_hdr_off + 38],
+        data[shstr_hdr_off + 39],
     ]) as usize;
 
     if shstr_off + shstr_size > data.len() {
@@ -387,8 +384,10 @@ fn elf_has_section(path: &Path, needle: &str) -> bool {
             break;
         }
         let sh_name = u32::from_le_bytes([
-            data[hdr_off], data[hdr_off + 1],
-            data[hdr_off + 2], data[hdr_off + 3],
+            data[hdr_off],
+            data[hdr_off + 1],
+            data[hdr_off + 2],
+            data[hdr_off + 3],
         ]) as usize;
         if sh_name < strtab.len() {
             let end = strtab[sh_name..]
@@ -604,11 +603,8 @@ fn sqlite_compile_time_under_60s() {
         }
     };
 
-    let (success, duration) = measure_sqlite_compilation_time(
-        &source_dir,
-        "x86_64-linux-gnu",
-        "-O0",
-    );
+    let (success, duration) =
+        measure_sqlite_compilation_time(&source_dir, "x86_64-linux-gnu", "-O0");
 
     let secs = duration.as_secs_f64();
     eprintln!("SQLite -O0 compile time: {:.2}s", secs);
@@ -981,11 +977,7 @@ fn sqlite_compile_with_debug() {
 
     let defines = get_sqlite_defines();
     let inc_flag = format!("-I{}", source_dir.display());
-    let mut flags: Vec<String> = vec![
-        "-O0".to_string(),
-        "-g".to_string(),
-        inc_flag,
-    ];
+    let mut flags: Vec<String> = vec!["-O0".to_string(), "-g".to_string(), inc_flag];
     flags.extend(defines);
     let flag_refs: Vec<&str> = flags.iter().map(|s| s.as_str()).collect();
 
@@ -1018,7 +1010,11 @@ fn sqlite_compile_with_debug() {
     );
     eprintln!(
         "  .debug_abbrev: {}",
-        if has_debug_abbrev { "present" } else { "MISSING" }
+        if has_debug_abbrev {
+            "present"
+        } else {
+            "MISSING"
+        }
     );
 
     assert!(

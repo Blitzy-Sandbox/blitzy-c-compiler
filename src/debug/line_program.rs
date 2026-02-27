@@ -518,8 +518,7 @@ impl LineProgramBuilder {
         let address_advance = addr_delta / min_len;
 
         // Compute the special opcode value.
-        let opcode =
-            (line_delta - line_base) + (line_range * address_advance as i32) + opcode_base;
+        let opcode = (line_delta - line_base) + (line_range * address_advance as i32) + opcode_base;
 
         // The opcode must fit in a single byte [opcode_base, 255].
         if opcode >= opcode_base && opcode <= 255 {
@@ -644,8 +643,7 @@ impl LineProgramBuilder {
         // header_length measures from just after the header_length field to
         // the first byte of the opcode stream (i.e., the end of the file table).
         let header_length = (buf.len() - header_content_start) as u32;
-        buf[header_length_pos..header_length_pos + 4]
-            .copy_from_slice(&header_length.to_le_bytes());
+        buf[header_length_pos..header_length_pos + 4].copy_from_slice(&header_length.to_le_bytes());
 
         // -- Opcode stream --------------------------------------------------
         buf.extend_from_slice(&self.opcodes);
@@ -691,8 +689,7 @@ impl LineProgramBuilder {
         // Collect unique file IDs and register them in the line program.
         // We build a mapping from LineMappingEntry.file_id (which corresponds
         // to the SourceMap's FileId index) to the line program's 1-based file index.
-        let mut file_id_map: std::collections::HashMap<u32, u32> =
-            std::collections::HashMap::new();
+        let mut file_id_map: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
         for entry in mappings {
             if !file_id_map.contains_key(&entry.file_id) {
                 let source_file_id = FileId(entry.file_id);
@@ -938,9 +935,7 @@ mod tests {
         let data = builder.serialize();
         // The serialized data should contain the file name "test.c\0" somewhere.
         let name_bytes = b"test.c\0";
-        let pos = data
-            .windows(name_bytes.len())
-            .position(|w| w == name_bytes);
+        let pos = data.windows(name_bytes.len()).position(|w| w == name_bytes);
         assert!(
             pos.is_some(),
             "File name 'test.c' not found in serialized data"
@@ -974,9 +969,15 @@ mod tests {
         assert_eq!(opcodes[0], 0x00); // Extended prefix
         assert_eq!(opcodes[1], 9); // ULEB128(9) = 0x09
         assert_eq!(opcodes[2], DW_LNE_SET_ADDRESS); // 0x02
-        // Address 0x401000 in little-endian.
+                                                    // Address 0x401000 in little-endian.
         let addr = u64::from_le_bytes([
-            opcodes[3], opcodes[4], opcodes[5], opcodes[6], opcodes[7], opcodes[8], opcodes[9],
+            opcodes[3],
+            opcodes[4],
+            opcodes[5],
+            opcodes[6],
+            opcodes[7],
+            opcodes[8],
+            opcodes[9],
             opcodes[10],
         ]);
         assert_eq!(addr, 0x401000);

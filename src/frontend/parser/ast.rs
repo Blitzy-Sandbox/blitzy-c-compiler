@@ -30,8 +30,8 @@
 //! - Per AAP §0.4.1: "Parser → Semantic Analyzer: Untyped AST (TranslationUnit
 //!   root node containing declarations, definitions, and type definitions)."
 
-use crate::common::source_map::SourceSpan;
 use crate::common::intern::InternId;
+use crate::common::source_map::SourceSpan;
 
 // ===========================================================================
 // TranslationUnit — AST Root
@@ -82,9 +82,7 @@ pub enum Declaration {
         span: SourceSpan,
     },
     /// Empty declaration (just `;`).
-    Empty {
-        span: SourceSpan,
-    },
+    Empty { span: SourceSpan },
 }
 
 /// A function definition: declaration specifiers, declarator (name + params),
@@ -324,9 +322,15 @@ pub enum TypeSpecifier {
 
     // === GCC Extensions ===
     /// `typeof(expr)` — type of an expression.
-    Typeof { expr: Box<Expression>, span: SourceSpan },
+    Typeof {
+        expr: Box<Expression>,
+        span: SourceSpan,
+    },
     /// `typeof(type)` — echoes a type (useful in macros).
-    TypeofType { type_name: Box<TypeSpecifier>, span: SourceSpan },
+    TypeofType {
+        type_name: Box<TypeSpecifier>,
+        span: SourceSpan,
+    },
 
     // === Qualified type (wraps inner type with qualifiers) ===
     /// A type with qualifiers applied, e.g., `const int`.
@@ -580,10 +584,7 @@ pub enum Statement {
         span: SourceSpan,
     },
     /// Goto statement: `goto label;`.
-    Goto {
-        label: InternId,
-        span: SourceSpan,
-    },
+    Goto { label: InternId, span: SourceSpan },
     /// Labeled statement: `label: body`.
     Labeled {
         label: InternId,
@@ -666,10 +667,7 @@ pub enum Expression {
 
     // === Identifier ===
     /// An identifier reference: variable, function name, enum constant.
-    Identifier {
-        name: InternId,
-        span: SourceSpan,
-    },
+    Identifier { name: InternId, span: SourceSpan },
 
     // === Binary operations ===
     /// Binary operation: `left op right`.
@@ -805,10 +803,7 @@ pub enum Expression {
         span: SourceSpan,
     },
     /// GCC label address: `&&label`.
-    LabelAddr {
-        label: InternId,
-        span: SourceSpan,
-    },
+    LabelAddr { label: InternId, span: SourceSpan },
     /// GCC `__extension__` prefix: `__extension__ expr`.
     Extension {
         expr: Box<Expression>,
@@ -854,9 +849,7 @@ pub enum Expression {
 
     // === Error recovery placeholder ===
     /// Placeholder for error recovery when an expression cannot be parsed.
-    Error {
-        span: SourceSpan,
-    },
+    Error { span: SourceSpan },
 }
 
 /// A type name, used in casts `(type_name)expr`, sizeof `sizeof(type_name)`,
@@ -1120,10 +1113,7 @@ pub enum GenericAssociation {
         span: SourceSpan,
     },
     /// Default association: `default : expr`.
-    Default {
-        expr: Expression,
-        span: SourceSpan,
-    },
+    Default { expr: Expression, span: SourceSpan },
 }
 
 // ===========================================================================
@@ -1133,8 +1123,8 @@ pub enum GenericAssociation {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::source_map::{SourceLocation, SourceSpan};
     use crate::common::intern::InternId;
+    use crate::common::source_map::{SourceLocation, SourceSpan};
 
     /// Helper: create a dummy SourceSpan for testing.
     fn dummy_span() -> SourceSpan {
@@ -1290,9 +1280,15 @@ mod tests {
     #[test]
     fn test_statement_variant_count() {
         // Verify all 18 statement variants exist by constructing each one.
-        let _compound = Statement::Compound { items: vec![], span: dummy_span() };
+        let _compound = Statement::Compound {
+            items: vec![],
+            span: dummy_span(),
+        };
         let _if_s = Statement::If {
-            condition: Box::new(Expression::Identifier { name: dummy_id(0), span: dummy_span() }),
+            condition: Box::new(Expression::Identifier {
+                name: dummy_id(0),
+                span: dummy_span(),
+            }),
             then_branch: Box::new(Statement::Null { span: dummy_span() }),
             else_branch: None,
             span: dummy_span(),
@@ -1305,22 +1301,36 @@ mod tests {
             span: dummy_span(),
         };
         let _while_s = Statement::While {
-            condition: Box::new(Expression::Identifier { name: dummy_id(0), span: dummy_span() }),
+            condition: Box::new(Expression::Identifier {
+                name: dummy_id(0),
+                span: dummy_span(),
+            }),
             body: Box::new(Statement::Null { span: dummy_span() }),
             span: dummy_span(),
         };
         let _do_while = Statement::DoWhile {
             body: Box::new(Statement::Null { span: dummy_span() }),
-            condition: Box::new(Expression::Identifier { name: dummy_id(0), span: dummy_span() }),
+            condition: Box::new(Expression::Identifier {
+                name: dummy_id(0),
+                span: dummy_span(),
+            }),
             span: dummy_span(),
         };
         let _switch = Statement::Switch {
-            expr: Box::new(Expression::Identifier { name: dummy_id(0), span: dummy_span() }),
+            expr: Box::new(Expression::Identifier {
+                name: dummy_id(0),
+                span: dummy_span(),
+            }),
             body: Box::new(Statement::Null { span: dummy_span() }),
             span: dummy_span(),
         };
         let _case = Statement::Case {
-            value: Box::new(Expression::IntegerLiteral { value: 1, suffix: IntSuffix::None, base: NumericBase::Decimal, span: dummy_span() }),
+            value: Box::new(Expression::IntegerLiteral {
+                value: 1,
+                suffix: IntSuffix::None,
+                base: NumericBase::Decimal,
+                span: dummy_span(),
+            }),
             range_end: None,
             body: Box::new(Statement::Null { span: dummy_span() }),
             span: dummy_span(),
@@ -1331,8 +1341,14 @@ mod tests {
         };
         let _break = Statement::Break { span: dummy_span() };
         let _continue = Statement::Continue { span: dummy_span() };
-        let _return = Statement::Return { value: None, span: dummy_span() };
-        let _goto = Statement::Goto { label: dummy_id(0), span: dummy_span() };
+        let _return = Statement::Return {
+            value: None,
+            span: dummy_span(),
+        };
+        let _goto = Statement::Goto {
+            label: dummy_id(0),
+            span: dummy_span(),
+        };
         let _labeled = Statement::Labeled {
             label: dummy_id(0),
             body: Box::new(Statement::Null { span: dummy_span() }),
@@ -1340,11 +1356,15 @@ mod tests {
             span: dummy_span(),
         };
         let _expr_stmt = Statement::Expression {
-            expr: Box::new(Expression::Identifier { name: dummy_id(0), span: dummy_span() }),
+            expr: Box::new(Expression::Identifier {
+                name: dummy_id(0),
+                span: dummy_span(),
+            }),
             span: dummy_span(),
         };
         let _null = Statement::Null { span: dummy_span() };
-        let _decl_stmt = Statement::Declaration(Box::new(Declaration::Empty { span: dummy_span() }));
+        let _decl_stmt =
+            Statement::Declaration(Box::new(Declaration::Empty { span: dummy_span() }));
         let _asm = Statement::Asm(AsmStatement {
             is_volatile: false,
             is_inline: false,
@@ -1357,7 +1377,10 @@ mod tests {
             span: dummy_span(),
         });
         let _computed_goto = Statement::ComputedGoto {
-            target: Box::new(Expression::Identifier { name: dummy_id(0), span: dummy_span() }),
+            target: Box::new(Expression::Identifier {
+                name: dummy_id(0),
+                span: dummy_span(),
+            }),
             span: dummy_span(),
         };
         // 18 variants total — well above the 15+ requirement.
@@ -1371,56 +1394,178 @@ mod tests {
     fn test_expression_variant_count() {
         // Verify all 32 expression variants exist by constructing each one.
         let s = dummy_span();
-        let id_expr = || Box::new(Expression::Identifier { name: dummy_id(0), span: s });
-        let type_name = || Box::new(TypeName {
-            specifiers: DeclSpecifiers {
-                storage_class: None,
-                type_qualifiers: vec![],
-                type_specifier: TypeSpecifier::Int,
-                function_specifiers: vec![],
-                attributes: vec![],
+        let id_expr = || {
+            Box::new(Expression::Identifier {
+                name: dummy_id(0),
                 span: s,
-            },
-            abstract_declarator: None,
-            span: s,
-        });
+            })
+        };
+        let type_name = || {
+            Box::new(TypeName {
+                specifiers: DeclSpecifiers {
+                    storage_class: None,
+                    type_qualifiers: vec![],
+                    type_specifier: TypeSpecifier::Int,
+                    function_specifiers: vec![],
+                    attributes: vec![],
+                    span: s,
+                },
+                abstract_declarator: None,
+                span: s,
+            })
+        };
 
         let _variants: Vec<Expression> = vec![
-            Expression::IntegerLiteral { value: 1, suffix: IntSuffix::None, base: NumericBase::Decimal, span: s },
-            Expression::FloatLiteral { value: 1.0, suffix: FloatSuffix::None, span: s },
-            Expression::StringLiteral { value: "hi".to_string(), prefix: StringPrefix::None, span: s },
-            Expression::CharLiteral { value: b'a' as u32, prefix: CharPrefix::None, span: s },
-            Expression::Identifier { name: dummy_id(0), span: s },
-            Expression::Binary { op: BinaryOp::Add, left: id_expr(), right: id_expr(), span: s },
-            Expression::UnaryPrefix { op: UnaryOp::Negate, operand: id_expr(), span: s },
-            Expression::PostIncrement { operand: id_expr(), span: s },
-            Expression::PostDecrement { operand: id_expr(), span: s },
-            Expression::Call { callee: id_expr(), args: vec![], span: s },
-            Expression::Subscript { array: id_expr(), index: id_expr(), span: s },
-            Expression::MemberAccess { object: id_expr(), member: dummy_id(1), span: s },
-            Expression::ArrowAccess { pointer: id_expr(), member: dummy_id(1), span: s },
-            Expression::Assignment { op: AssignmentOp::Assign, target: id_expr(), value: id_expr(), span: s },
-            Expression::Ternary { condition: id_expr(), then_expr: id_expr(), else_expr: id_expr(), span: s },
-            Expression::Comma { exprs: vec![], span: s },
-            Expression::Cast { type_name: type_name(), operand: id_expr(), span: s },
-            Expression::SizeofExpr { expr: id_expr(), span: s },
-            Expression::SizeofType { type_name: type_name(), span: s },
-            Expression::Alignof { type_name: type_name(), span: s },
-            Expression::Generic { controlling: id_expr(), associations: vec![], span: s },
-            Expression::CompoundLiteral {
-                type_name: type_name(),
-                initializer: Initializer::Compound { items: vec![], span: s },
+            Expression::IntegerLiteral {
+                value: 1,
+                suffix: IntSuffix::None,
+                base: NumericBase::Decimal,
                 span: s,
             },
-            Expression::StatementExpr { body: Box::new(Statement::Null { span: s }), span: s },
-            Expression::LabelAddr { label: dummy_id(0), span: s },
-            Expression::Extension { expr: id_expr(), span: s },
-            Expression::BuiltinVaArg { ap: id_expr(), type_name: type_name(), span: s },
-            Expression::BuiltinOffsetof { type_name: type_name(), member: dummy_id(0), span: s },
-            Expression::BuiltinVaStart { ap: id_expr(), param: id_expr(), span: s },
-            Expression::BuiltinVaEnd { ap: id_expr(), span: s },
-            Expression::BuiltinVaCopy { dest: id_expr(), src: id_expr(), span: s },
-            Expression::Paren { inner: id_expr(), span: s },
+            Expression::FloatLiteral {
+                value: 1.0,
+                suffix: FloatSuffix::None,
+                span: s,
+            },
+            Expression::StringLiteral {
+                value: "hi".to_string(),
+                prefix: StringPrefix::None,
+                span: s,
+            },
+            Expression::CharLiteral {
+                value: b'a' as u32,
+                prefix: CharPrefix::None,
+                span: s,
+            },
+            Expression::Identifier {
+                name: dummy_id(0),
+                span: s,
+            },
+            Expression::Binary {
+                op: BinaryOp::Add,
+                left: id_expr(),
+                right: id_expr(),
+                span: s,
+            },
+            Expression::UnaryPrefix {
+                op: UnaryOp::Negate,
+                operand: id_expr(),
+                span: s,
+            },
+            Expression::PostIncrement {
+                operand: id_expr(),
+                span: s,
+            },
+            Expression::PostDecrement {
+                operand: id_expr(),
+                span: s,
+            },
+            Expression::Call {
+                callee: id_expr(),
+                args: vec![],
+                span: s,
+            },
+            Expression::Subscript {
+                array: id_expr(),
+                index: id_expr(),
+                span: s,
+            },
+            Expression::MemberAccess {
+                object: id_expr(),
+                member: dummy_id(1),
+                span: s,
+            },
+            Expression::ArrowAccess {
+                pointer: id_expr(),
+                member: dummy_id(1),
+                span: s,
+            },
+            Expression::Assignment {
+                op: AssignmentOp::Assign,
+                target: id_expr(),
+                value: id_expr(),
+                span: s,
+            },
+            Expression::Ternary {
+                condition: id_expr(),
+                then_expr: id_expr(),
+                else_expr: id_expr(),
+                span: s,
+            },
+            Expression::Comma {
+                exprs: vec![],
+                span: s,
+            },
+            Expression::Cast {
+                type_name: type_name(),
+                operand: id_expr(),
+                span: s,
+            },
+            Expression::SizeofExpr {
+                expr: id_expr(),
+                span: s,
+            },
+            Expression::SizeofType {
+                type_name: type_name(),
+                span: s,
+            },
+            Expression::Alignof {
+                type_name: type_name(),
+                span: s,
+            },
+            Expression::Generic {
+                controlling: id_expr(),
+                associations: vec![],
+                span: s,
+            },
+            Expression::CompoundLiteral {
+                type_name: type_name(),
+                initializer: Initializer::Compound {
+                    items: vec![],
+                    span: s,
+                },
+                span: s,
+            },
+            Expression::StatementExpr {
+                body: Box::new(Statement::Null { span: s }),
+                span: s,
+            },
+            Expression::LabelAddr {
+                label: dummy_id(0),
+                span: s,
+            },
+            Expression::Extension {
+                expr: id_expr(),
+                span: s,
+            },
+            Expression::BuiltinVaArg {
+                ap: id_expr(),
+                type_name: type_name(),
+                span: s,
+            },
+            Expression::BuiltinOffsetof {
+                type_name: type_name(),
+                member: dummy_id(0),
+                span: s,
+            },
+            Expression::BuiltinVaStart {
+                ap: id_expr(),
+                param: id_expr(),
+                span: s,
+            },
+            Expression::BuiltinVaEnd {
+                ap: id_expr(),
+                span: s,
+            },
+            Expression::BuiltinVaCopy {
+                dest: id_expr(),
+                src: id_expr(),
+                span: s,
+            },
+            Expression::Paren {
+                inner: id_expr(),
+                span: s,
+            },
             Expression::Error { span: s },
         ];
         assert_eq!(_variants.len(), 32);
@@ -1433,12 +1578,24 @@ mod tests {
     #[test]
     fn test_binary_op_covers_all_operators() {
         let ops = [
-            BinaryOp::Add, BinaryOp::Sub, BinaryOp::Mul, BinaryOp::Div,
-            BinaryOp::Mod, BinaryOp::BitwiseAnd, BinaryOp::BitwiseOr,
-            BinaryOp::BitwiseXor, BinaryOp::ShiftLeft, BinaryOp::ShiftRight,
-            BinaryOp::LogicalAnd, BinaryOp::LogicalOr, BinaryOp::Equal,
-            BinaryOp::NotEqual, BinaryOp::Less, BinaryOp::Greater,
-            BinaryOp::LessEqual, BinaryOp::GreaterEqual,
+            BinaryOp::Add,
+            BinaryOp::Sub,
+            BinaryOp::Mul,
+            BinaryOp::Div,
+            BinaryOp::Mod,
+            BinaryOp::BitwiseAnd,
+            BinaryOp::BitwiseOr,
+            BinaryOp::BitwiseXor,
+            BinaryOp::ShiftLeft,
+            BinaryOp::ShiftRight,
+            BinaryOp::LogicalAnd,
+            BinaryOp::LogicalOr,
+            BinaryOp::Equal,
+            BinaryOp::NotEqual,
+            BinaryOp::Less,
+            BinaryOp::Greater,
+            BinaryOp::LessEqual,
+            BinaryOp::GreaterEqual,
         ];
         assert_eq!(ops.len(), 18);
         // Verify Copy, PartialEq
@@ -1448,9 +1605,14 @@ mod tests {
     #[test]
     fn test_unary_op_covers_all_operators() {
         let ops = [
-            UnaryOp::Plus, UnaryOp::Negate, UnaryOp::BitwiseNot,
-            UnaryOp::LogicalNot, UnaryOp::Dereference, UnaryOp::AddressOf,
-            UnaryOp::PreIncrement, UnaryOp::PreDecrement,
+            UnaryOp::Plus,
+            UnaryOp::Negate,
+            UnaryOp::BitwiseNot,
+            UnaryOp::LogicalNot,
+            UnaryOp::Dereference,
+            UnaryOp::AddressOf,
+            UnaryOp::PreIncrement,
+            UnaryOp::PreDecrement,
         ];
         assert_eq!(ops.len(), 8);
     }
@@ -1458,10 +1620,17 @@ mod tests {
     #[test]
     fn test_assignment_op_covers_all_operators() {
         let ops = [
-            AssignmentOp::Assign, AssignmentOp::AddAssign, AssignmentOp::SubAssign,
-            AssignmentOp::MulAssign, AssignmentOp::DivAssign, AssignmentOp::ModAssign,
-            AssignmentOp::AndAssign, AssignmentOp::OrAssign, AssignmentOp::XorAssign,
-            AssignmentOp::ShlAssign, AssignmentOp::ShrAssign,
+            AssignmentOp::Assign,
+            AssignmentOp::AddAssign,
+            AssignmentOp::SubAssign,
+            AssignmentOp::MulAssign,
+            AssignmentOp::DivAssign,
+            AssignmentOp::ModAssign,
+            AssignmentOp::AndAssign,
+            AssignmentOp::OrAssign,
+            AssignmentOp::XorAssign,
+            AssignmentOp::ShlAssign,
+            AssignmentOp::ShrAssign,
         ];
         assert_eq!(ops.len(), 11);
     }
@@ -1522,16 +1691,31 @@ mod tests {
 
     #[test]
     fn test_type_specifier_refs_and_typedef() {
-        let _struct_ref = TypeSpecifier::StructRef { tag: dummy_id(0), span: dummy_span() };
-        let _union_ref = TypeSpecifier::UnionRef { tag: dummy_id(1), span: dummy_span() };
-        let _enum_ref = TypeSpecifier::EnumRef { tag: dummy_id(2), span: dummy_span() };
-        let _typedef = TypeSpecifier::TypedefName { name: dummy_id(3), span: dummy_span() };
+        let _struct_ref = TypeSpecifier::StructRef {
+            tag: dummy_id(0),
+            span: dummy_span(),
+        };
+        let _union_ref = TypeSpecifier::UnionRef {
+            tag: dummy_id(1),
+            span: dummy_span(),
+        };
+        let _enum_ref = TypeSpecifier::EnumRef {
+            tag: dummy_id(2),
+            span: dummy_span(),
+        };
+        let _typedef = TypeSpecifier::TypedefName {
+            name: dummy_id(3),
+            span: dummy_span(),
+        };
     }
 
     #[test]
     fn test_type_specifier_gcc_typeof() {
         let _typeof_expr = TypeSpecifier::Typeof {
-            expr: Box::new(Expression::Identifier { name: dummy_id(0), span: dummy_span() }),
+            expr: Box::new(Expression::Identifier {
+                name: dummy_id(0),
+                span: dummy_span(),
+            }),
             span: dummy_span(),
         };
         let _typeof_type = TypeSpecifier::TypeofType {
@@ -1589,13 +1773,19 @@ mod tests {
             outputs: vec![AsmOperand {
                 symbolic_name: Some(dummy_id(0)),
                 constraint: "=r".to_string(),
-                expr: Expression::Identifier { name: dummy_id(1), span: dummy_span() },
+                expr: Expression::Identifier {
+                    name: dummy_id(1),
+                    span: dummy_span(),
+                },
                 span: dummy_span(),
             }],
             inputs: vec![AsmOperand {
                 symbolic_name: None,
                 constraint: "r".to_string(),
-                expr: Expression::Identifier { name: dummy_id(2), span: dummy_span() },
+                expr: Expression::Identifier {
+                    name: dummy_id(2),
+                    span: dummy_span(),
+                },
                 span: dummy_span(),
             }],
             clobbers: vec!["memory".to_string(), "cc".to_string()],
@@ -1656,8 +1846,12 @@ mod tests {
         // `int *const *volatile p`
         let decl = Declarator {
             pointer: vec![
-                Pointer { qualifiers: vec![TypeQualifier::Volatile] },
-                Pointer { qualifiers: vec![TypeQualifier::Const] },
+                Pointer {
+                    qualifiers: vec![TypeQualifier::Volatile],
+                },
+                Pointer {
+                    qualifiers: vec![TypeQualifier::Const],
+                },
             ],
             direct: DirectDeclarator::Identifier(dummy_id(0)),
             attributes: vec![],
@@ -1817,7 +2011,12 @@ mod tests {
 
     #[test]
     fn test_numeric_base() {
-        let bases = [NumericBase::Decimal, NumericBase::Hexadecimal, NumericBase::Octal, NumericBase::Binary];
+        let bases = [
+            NumericBase::Decimal,
+            NumericBase::Hexadecimal,
+            NumericBase::Octal,
+            NumericBase::Binary,
+        ];
         assert_eq!(bases.len(), 4);
         assert_eq!(NumericBase::Decimal, NumericBase::Decimal);
     }
@@ -1825,8 +2024,12 @@ mod tests {
     #[test]
     fn test_int_suffix() {
         let suffixes = [
-            IntSuffix::None, IntSuffix::Unsigned, IntSuffix::Long,
-            IntSuffix::ULong, IntSuffix::LongLong, IntSuffix::ULongLong,
+            IntSuffix::None,
+            IntSuffix::Unsigned,
+            IntSuffix::Long,
+            IntSuffix::ULong,
+            IntSuffix::LongLong,
+            IntSuffix::ULongLong,
         ];
         assert_eq!(suffixes.len(), 6);
     }
@@ -1840,8 +2043,11 @@ mod tests {
     #[test]
     fn test_string_prefix() {
         let prefixes = [
-            StringPrefix::None, StringPrefix::Wide, StringPrefix::Utf8,
-            StringPrefix::Utf16, StringPrefix::Utf32,
+            StringPrefix::None,
+            StringPrefix::Wide,
+            StringPrefix::Utf8,
+            StringPrefix::Utf16,
+            StringPrefix::Utf32,
         ];
         assert_eq!(prefixes.len(), 5);
     }
@@ -1849,7 +2055,10 @@ mod tests {
     #[test]
     fn test_char_prefix() {
         let prefixes = [
-            CharPrefix::None, CharPrefix::Wide, CharPrefix::Utf16, CharPrefix::Utf32,
+            CharPrefix::None,
+            CharPrefix::Wide,
+            CharPrefix::Utf16,
+            CharPrefix::Utf32,
         ];
         assert_eq!(prefixes.len(), 4);
     }
@@ -1861,8 +2070,11 @@ mod tests {
     #[test]
     fn test_storage_class() {
         let classes = [
-            StorageClass::Static, StorageClass::Extern, StorageClass::Auto,
-            StorageClass::Register, StorageClass::ThreadLocal,
+            StorageClass::Static,
+            StorageClass::Extern,
+            StorageClass::Auto,
+            StorageClass::Register,
+            StorageClass::ThreadLocal,
         ];
         assert_eq!(classes.len(), 5);
         assert_eq!(StorageClass::Static, StorageClass::Static);
@@ -1872,8 +2084,10 @@ mod tests {
     #[test]
     fn test_type_qualifier() {
         let quals = [
-            TypeQualifier::Const, TypeQualifier::Volatile,
-            TypeQualifier::Restrict, TypeQualifier::Atomic,
+            TypeQualifier::Const,
+            TypeQualifier::Volatile,
+            TypeQualifier::Restrict,
+            TypeQualifier::Atomic,
         ];
         assert_eq!(quals.len(), 4);
     }
@@ -1898,67 +2112,134 @@ mod tests {
         }
 
         let s = dummy_span();
-        assert_debug_clone(&TranslationUnit { declarations: vec![], span: s });
+        assert_debug_clone(&TranslationUnit {
+            declarations: vec![],
+            span: s,
+        });
         assert_debug_clone(&Declaration::Empty { span: s });
         assert_debug_clone(&FunctionDef {
             specifiers: DeclSpecifiers {
-                storage_class: None, type_qualifiers: vec![],
-                type_specifier: TypeSpecifier::Void, function_specifiers: vec![],
-                attributes: vec![], span: s,
+                storage_class: None,
+                type_qualifiers: vec![],
+                type_specifier: TypeSpecifier::Void,
+                function_specifiers: vec![],
+                attributes: vec![],
+                span: s,
             },
-            declarator: Declarator { pointer: vec![], direct: DirectDeclarator::Abstract, attributes: vec![], span: s },
+            declarator: Declarator {
+                pointer: vec![],
+                direct: DirectDeclarator::Abstract,
+                attributes: vec![],
+                span: s,
+            },
             body: Box::new(Statement::Null { span: s }),
-            attributes: vec![], span: s,
+            attributes: vec![],
+            span: s,
         });
         assert_debug_clone(&DeclSpecifiers {
-            storage_class: None, type_qualifiers: vec![],
-            type_specifier: TypeSpecifier::Int, function_specifiers: vec![],
-            attributes: vec![], span: s,
+            storage_class: None,
+            type_qualifiers: vec![],
+            type_specifier: TypeSpecifier::Int,
+            function_specifiers: vec![],
+            attributes: vec![],
+            span: s,
         });
         assert_debug_clone(&InitDeclarator {
-            declarator: Declarator { pointer: vec![], direct: DirectDeclarator::Abstract, attributes: vec![], span: s },
-            initializer: None, span: s,
+            declarator: Declarator {
+                pointer: vec![],
+                direct: DirectDeclarator::Abstract,
+                attributes: vec![],
+                span: s,
+            },
+            initializer: None,
+            span: s,
         });
-        assert_debug_clone(&Declarator { pointer: vec![], direct: DirectDeclarator::Abstract, attributes: vec![], span: s });
+        assert_debug_clone(&Declarator {
+            pointer: vec![],
+            direct: DirectDeclarator::Abstract,
+            attributes: vec![],
+            span: s,
+        });
         assert_debug_clone(&Pointer { qualifiers: vec![] });
         assert_debug_clone(&DirectDeclarator::Abstract);
-        assert_debug_clone(&AbstractDeclarator { pointer: vec![], direct: None, span: s });
+        assert_debug_clone(&AbstractDeclarator {
+            pointer: vec![],
+            direct: None,
+            span: s,
+        });
         assert_debug_clone(&ArraySize::Unspecified);
         assert_debug_clone(&ArraySize::VLA);
-        assert_debug_clone(&ParamList { params: vec![], variadic: false, span: s });
+        assert_debug_clone(&ParamList {
+            params: vec![],
+            variadic: false,
+            span: s,
+        });
         assert_debug_clone(&ParamDeclaration {
             specifiers: DeclSpecifiers {
-                storage_class: None, type_qualifiers: vec![],
-                type_specifier: TypeSpecifier::Int, function_specifiers: vec![],
-                attributes: vec![], span: s,
+                storage_class: None,
+                type_qualifiers: vec![],
+                type_specifier: TypeSpecifier::Int,
+                function_specifiers: vec![],
+                attributes: vec![],
+                span: s,
             },
-            declarator: None, span: s,
+            declarator: None,
+            span: s,
         });
         assert_debug_clone(&TypeSpecifier::Int);
         assert_debug_clone(&StorageClass::Static);
         assert_debug_clone(&TypeQualifier::Const);
         assert_debug_clone(&FunctionSpecifier::Inline);
-        assert_debug_clone(&StructDef { tag: None, members: vec![], attributes: vec![], span: s });
-        assert_debug_clone(&UnionDef { tag: None, members: vec![], attributes: vec![], span: s });
-        assert_debug_clone(&EnumDef { tag: None, variants: vec![], attributes: vec![], span: s });
-        assert_debug_clone(&EnumVariant { name: dummy_id(0), value: None, attributes: vec![], span: s });
-        assert_debug_clone(&Initializer::Expression(Box::new(Expression::Error { span: s })));
+        assert_debug_clone(&StructDef {
+            tag: None,
+            members: vec![],
+            attributes: vec![],
+            span: s,
+        });
+        assert_debug_clone(&UnionDef {
+            tag: None,
+            members: vec![],
+            attributes: vec![],
+            span: s,
+        });
+        assert_debug_clone(&EnumDef {
+            tag: None,
+            variants: vec![],
+            attributes: vec![],
+            span: s,
+        });
+        assert_debug_clone(&EnumVariant {
+            name: dummy_id(0),
+            value: None,
+            attributes: vec![],
+            span: s,
+        });
+        assert_debug_clone(&Initializer::Expression(Box::new(Expression::Error {
+            span: s,
+        })));
         assert_debug_clone(&DesignatedInitializer {
-            designators: vec![], initializer: Initializer::Expression(Box::new(Expression::Error { span: s })),
+            designators: vec![],
+            initializer: Initializer::Expression(Box::new(Expression::Error { span: s })),
             span: s,
         });
         assert_debug_clone(&Designator::Field(dummy_id(0)));
         assert_debug_clone(&Statement::Null { span: s });
         assert_debug_clone(&BlockItem::Statement(Statement::Null { span: s }));
-        assert_debug_clone(&ForInit::Expression(Box::new(Expression::Error { span: s })));
+        assert_debug_clone(&ForInit::Expression(Box::new(Expression::Error {
+            span: s,
+        })));
         assert_debug_clone(&Expression::Error { span: s });
         assert_debug_clone(&TypeName {
             specifiers: DeclSpecifiers {
-                storage_class: None, type_qualifiers: vec![],
-                type_specifier: TypeSpecifier::Int, function_specifiers: vec![],
-                attributes: vec![], span: s,
+                storage_class: None,
+                type_qualifiers: vec![],
+                type_specifier: TypeSpecifier::Int,
+                function_specifiers: vec![],
+                attributes: vec![],
+                span: s,
             },
-            abstract_declarator: None, span: s,
+            abstract_declarator: None,
+            span: s,
         });
         assert_debug_clone(&BinaryOp::Add);
         assert_debug_clone(&UnaryOp::Plus);
@@ -1968,19 +2249,32 @@ mod tests {
         assert_debug_clone(&FloatSuffix::None);
         assert_debug_clone(&StringPrefix::None);
         assert_debug_clone(&CharPrefix::None);
-        assert_debug_clone(&GccAttribute { name: dummy_id(0), args: vec![], span: s });
+        assert_debug_clone(&GccAttribute {
+            name: dummy_id(0),
+            args: vec![],
+            span: s,
+        });
         assert_debug_clone(&AttributeArg::Integer(42));
         assert_debug_clone(&AsmStatement {
-            is_volatile: false, is_inline: false, is_goto: false,
-            template: String::new(), outputs: vec![], inputs: vec![],
-            clobbers: vec![], goto_labels: vec![], span: s,
+            is_volatile: false,
+            is_inline: false,
+            is_goto: false,
+            template: String::new(),
+            outputs: vec![],
+            inputs: vec![],
+            clobbers: vec![],
+            goto_labels: vec![],
+            span: s,
         });
         assert_debug_clone(&AsmOperand {
-            symbolic_name: None, constraint: String::new(),
-            expr: Expression::Error { span: s }, span: s,
+            symbolic_name: None,
+            constraint: String::new(),
+            expr: Expression::Error { span: s },
+            span: s,
         });
         assert_debug_clone(&GenericAssociation::Default {
-            expr: Expression::Error { span: s }, span: s,
+            expr: Expression::Error { span: s },
+            span: s,
         });
     }
 
@@ -2040,7 +2334,9 @@ mod tests {
     #[test]
     fn test_abstract_declarator_pointer() {
         let abs_decl = AbstractDeclarator {
-            pointer: vec![Pointer { qualifiers: vec![TypeQualifier::Const] }],
+            pointer: vec![Pointer {
+                qualifiers: vec![TypeQualifier::Const],
+            }],
             direct: None,
             span: dummy_span(),
         };
@@ -2082,12 +2378,18 @@ mod tests {
     #[test]
     fn test_array_size_variants() {
         let _fixed = ArraySize::Fixed(Box::new(Expression::IntegerLiteral {
-            value: 10, suffix: IntSuffix::None, base: NumericBase::Decimal, span: dummy_span(),
+            value: 10,
+            suffix: IntSuffix::None,
+            base: NumericBase::Decimal,
+            span: dummy_span(),
         }));
         let _unspec = ArraySize::Unspecified;
         let _vla = ArraySize::VLA;
         let _static = ArraySize::Static(Box::new(Expression::IntegerLiteral {
-            value: 10, suffix: IntSuffix::None, base: NumericBase::Decimal, span: dummy_span(),
+            value: 10,
+            suffix: IntSuffix::None,
+            base: NumericBase::Decimal,
+            span: dummy_span(),
         }));
     }
 

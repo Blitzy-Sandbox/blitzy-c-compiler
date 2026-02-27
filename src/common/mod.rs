@@ -7,7 +7,7 @@ pub mod intern;
 pub mod numeric;
 pub mod source_map;
 
-pub use diagnostics::{DiagnosticEmitter, Diagnostic, Severity};
+pub use diagnostics::{Diagnostic, DiagnosticEmitter, Severity};
 pub use intern::{InternId, Interner};
 pub use numeric::BigInt;
 pub use source_map::{FileId, SourceLocation, SourceMap, SourceSpan};

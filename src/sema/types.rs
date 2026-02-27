@@ -199,9 +199,7 @@ impl IntegerKind {
             IntegerKind::Short | IntegerKind::UnsignedShort => IntegerKind::UnsignedShort,
             IntegerKind::Int | IntegerKind::UnsignedInt => IntegerKind::UnsignedInt,
             IntegerKind::Long | IntegerKind::UnsignedLong => IntegerKind::UnsignedLong,
-            IntegerKind::LongLong | IntegerKind::UnsignedLongLong => {
-                IntegerKind::UnsignedLongLong
-            }
+            IntegerKind::LongLong | IntegerKind::UnsignedLongLong => IntegerKind::UnsignedLongLong,
         }
     }
 
@@ -804,10 +802,9 @@ impl CType {
             (CType::Void, CType::Void) => true,
             (CType::Integer(ak), CType::Integer(bk)) => ak == bk,
             (CType::Float(ak), CType::Float(bk)) => ak == bk,
-            (
-                CType::Pointer { pointee: ap, .. },
-                CType::Pointer { pointee: bp, .. },
-            ) => ap.is_compatible(bp),
+            (CType::Pointer { pointee: ap, .. }, CType::Pointer { pointee: bp, .. }) => {
+                ap.is_compatible(bp)
+            }
             (
                 CType::Array {
                     element: ae,
@@ -853,9 +850,7 @@ impl CType {
                 // but for this representation we use tag comparison.
                 as_.is_union == bs_.is_union && as_.tag == bs_.tag && as_.tag.is_some()
             }
-            (CType::Enum(ae), CType::Enum(be)) => {
-                ae.tag == be.tag && ae.tag.is_some()
-            }
+            (CType::Enum(ae), CType::Enum(be)) => ae.tag == be.tag && ae.tag.is_some(),
             // Enum is compatible with int (underlying type).
             (CType::Enum(_), CType::Integer(IntegerKind::Int))
             | (CType::Integer(IntegerKind::Int), CType::Enum(_)) => true,
@@ -1151,9 +1146,7 @@ fn struct_total_size(s: &StructType, target: &TargetConfig) -> usize {
                         continue;
                     }
 
-                    if bit_offset + bw > storage_bits
-                        || bit_storage_size != storage_size as u32
-                    {
+                    if bit_offset + bw > storage_bits || bit_storage_size != storage_size as u32 {
                         if bit_offset > 0 {
                             current_offset += bit_storage_size as usize;
                         }
@@ -1872,9 +1865,7 @@ mod tests {
 
     #[test]
     fn compatible_different_integer() {
-        assert!(
-            !CType::Integer(IntegerKind::Int).is_compatible(&CType::Integer(IntegerKind::Long))
-        );
+        assert!(!CType::Integer(IntegerKind::Int).is_compatible(&CType::Integer(IntegerKind::Long)));
     }
 
     #[test]
@@ -1966,9 +1957,7 @@ mod tests {
     #[test]
     fn same_type_basic() {
         assert!(CType::Integer(IntegerKind::Int).is_same_type(&CType::Integer(IntegerKind::Int)));
-        assert!(
-            !CType::Integer(IntegerKind::Int).is_same_type(&CType::Integer(IntegerKind::Long))
-        );
+        assert!(!CType::Integer(IntegerKind::Int).is_same_type(&CType::Integer(IntegerKind::Long)));
     }
 
     #[test]

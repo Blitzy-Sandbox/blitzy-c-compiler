@@ -350,9 +350,7 @@ impl DiagnosticEmitter {
         message: String,
     ) -> Diagnostic {
         let file_name = match &location {
-            Some(loc) if !loc.is_dummy() => {
-                self.resolve_file_path(loc.file_id).to_string()
-            }
+            Some(loc) if !loc.is_dummy() => self.resolve_file_path(loc.file_id).to_string(),
             _ => String::new(),
         };
         Diagnostic::new_with_file(severity, location, message, file_name)
@@ -604,10 +602,7 @@ mod tests {
             "did you mean 'y'?".to_string(),
             "hello.c".to_string(),
         );
-        assert_eq!(
-            format!("{}", diag),
-            "hello.c:10:5: note: did you mean 'y'?"
-        );
+        assert_eq!(format!("{}", diag), "hello.c:10:5: note: did you mean 'y'?");
     }
 
     #[test]
@@ -905,25 +900,15 @@ mod tests {
         emitter.register_file(FileId(0), "hello.c");
 
         let loc = test_location(FileId(0), 10, 5);
-        let diag = emitter.make_diagnostic(
-            Severity::Note,
-            Some(loc),
-            "did you mean 'y'?".to_string(),
-        );
-        assert_eq!(
-            format!("{}", diag),
-            "hello.c:10:5: note: did you mean 'y'?"
-        );
+        let diag =
+            emitter.make_diagnostic(Severity::Note, Some(loc), "did you mean 'y'?".to_string());
+        assert_eq!(format!("{}", diag), "hello.c:10:5: note: did you mean 'y'?");
     }
 
     #[test]
     fn test_emitter_gcc_format_no_location() {
         let emitter = DiagnosticEmitter::new();
-        let diag = emitter.make_diagnostic(
-            Severity::Error,
-            None,
-            "no input files".to_string(),
-        );
+        let diag = emitter.make_diagnostic(Severity::Error, None, "no input files".to_string());
         assert_eq!(format!("{}", diag), "error: no input files");
     }
 
@@ -1015,16 +1000,10 @@ mod tests {
         let loc = test_location(FileId(0), 1, 1);
         let mut diag = Diagnostic::new(Severity::Error, Some(loc), "test".to_string());
         // Initially file_name is empty
-        assert_eq!(
-            format!("{}", diag),
-            "<unknown>:1:1: error: test"
-        );
+        assert_eq!(format!("{}", diag), "<unknown>:1:1: error: test");
         // After setting file name
         diag.set_file_name("updated.c".to_string());
-        assert_eq!(
-            format!("{}", diag),
-            "updated.c:1:1: error: test"
-        );
+        assert_eq!(format!("{}", diag), "updated.c:1:1: error: test");
     }
 
     #[test]

@@ -1050,11 +1050,7 @@ mod tests {
     #[test]
     fn test_struct_layout_i32_i8_i32() {
         let t = target_x86_64();
-        let layout = compute_struct_layout(
-            &[IrType::I32, IrType::I8, IrType::I32],
-            false,
-            &t,
-        );
+        let layout = compute_struct_layout(&[IrType::I32, IrType::I8, IrType::I32], false, &t);
         assert_eq!(layout.offsets, vec![0, 4, 8]);
         assert_eq!(layout.size, 12);
         assert_eq!(layout.alignment, 4);
@@ -1126,11 +1122,7 @@ mod tests {
         let t = target_i686();
         // struct { i32, ptr, i8 } on i686 → pointer is 4 bytes, alignment 4
         let ptr_ty = IrType::Pointer(Box::new(IrType::I8));
-        let layout = compute_struct_layout(
-            &[IrType::I32, ptr_ty, IrType::I8],
-            false,
-            &t,
-        );
+        let layout = compute_struct_layout(&[IrType::I32, ptr_ty, IrType::I8], false, &t);
         assert_eq!(layout.offsets, vec![0, 4, 8]);
         assert_eq!(layout.size, 12);
         assert_eq!(layout.alignment, 4);
@@ -1140,11 +1132,7 @@ mod tests {
     fn test_struct_layout_packed_complex() {
         let t = target_x86_64();
         // packed struct { i8, i64, i8 } → no padding: offsets [0, 1, 9], size 10
-        let layout = compute_struct_layout(
-            &[IrType::I8, IrType::I64, IrType::I8],
-            true,
-            &t,
-        );
+        let layout = compute_struct_layout(&[IrType::I8, IrType::I64, IrType::I8], true, &t);
         assert_eq!(layout.offsets, vec![0, 1, 9]);
         assert_eq!(layout.size, 10);
         assert_eq!(layout.alignment, 1);
@@ -1219,10 +1207,7 @@ mod tests {
     fn test_display_function() {
         let f = IrType::Function {
             return_type: Box::new(IrType::I32),
-            param_types: vec![
-                IrType::I32,
-                IrType::Pointer(Box::new(IrType::I8)),
-            ],
+            param_types: vec![IrType::I32, IrType::Pointer(Box::new(IrType::I8))],
             is_variadic: false,
         };
         assert_eq!(format!("{}", f), "i32 (i32, i8*)");

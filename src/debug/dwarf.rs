@@ -970,10 +970,7 @@ mod tests {
         let mut buf = Vec::new();
         write_address(&mut buf, 0x0000_0000_DEAD_BEEF, 8);
         assert_eq!(buf.len(), 8);
-        assert_eq!(
-            buf,
-            vec![0xEF, 0xBE, 0xAD, 0xDE, 0x00, 0x00, 0x00, 0x00]
-        );
+        assert_eq!(buf, vec![0xEF, 0xBE, 0xAD, 0xDE, 0x00, 0x00, 0x00, 0x00]);
     }
 
     #[test]
@@ -997,27 +994,17 @@ mod tests {
     #[test]
     fn test_abbrev_first_code_is_one() {
         let mut table = AbbreviationTable::new();
-        let code = table.add_abbreviation(
-            DW_TAG_COMPILE_UNIT,
-            true,
-            vec![(DW_AT_NAME, DW_FORM_STRP)],
-        );
+        let code =
+            table.add_abbreviation(DW_TAG_COMPILE_UNIT, true, vec![(DW_AT_NAME, DW_FORM_STRP)]);
         assert_eq!(code, 1);
     }
 
     #[test]
     fn test_abbrev_second_code_is_two() {
         let mut table = AbbreviationTable::new();
-        table.add_abbreviation(
-            DW_TAG_COMPILE_UNIT,
-            true,
-            vec![(DW_AT_NAME, DW_FORM_STRP)],
-        );
-        let code2 = table.add_abbreviation(
-            DW_TAG_SUBPROGRAM,
-            false,
-            vec![(DW_AT_NAME, DW_FORM_STRP)],
-        );
+        table.add_abbreviation(DW_TAG_COMPILE_UNIT, true, vec![(DW_AT_NAME, DW_FORM_STRP)]);
+        let code2 =
+            table.add_abbreviation(DW_TAG_SUBPROGRAM, false, vec![(DW_AT_NAME, DW_FORM_STRP)]);
         assert_eq!(code2, 2);
     }
 
@@ -1056,11 +1043,7 @@ mod tests {
     #[test]
     fn test_abbrev_serialize_single_entry() {
         let mut table = AbbreviationTable::new();
-        table.add_abbreviation(
-            DW_TAG_COMPILE_UNIT,
-            true,
-            vec![(DW_AT_NAME, DW_FORM_STRP)],
-        );
+        table.add_abbreviation(DW_TAG_COMPILE_UNIT, true, vec![(DW_AT_NAME, DW_FORM_STRP)]);
         let bytes = table.serialize();
 
         // Expected layout:
@@ -1071,10 +1054,7 @@ mod tests {
         // ULEB128(0x0e) = 0x0e            -- DW_FORM_strp
         // 0x00 0x00                       -- attr list terminator
         // 0x00                            -- table terminator
-        assert_eq!(
-            bytes,
-            vec![0x01, 0x11, 0x01, 0x03, 0x0e, 0x00, 0x00, 0x00]
-        );
+        assert_eq!(bytes, vec![0x01, 0x11, 0x01, 0x03, 0x0e, 0x00, 0x00, 0x00]);
     }
 
     #[test]
@@ -1363,10 +1343,7 @@ mod tests {
         // .debug_str should contain both strings.
         assert!(sections.debug_str.len() > 0);
         assert!(sections.debug_str.windows(6).any(|w| w == b"test.c"));
-        assert!(sections
-            .debug_str
-            .windows(9)
-            .any(|w| w == b"bcc 0.1.0"));
+        assert!(sections.debug_str.windows(9).any(|w| w == b"bcc 0.1.0"));
 
         // .debug_abbrev should have one entry + terminator.
         assert!(sections.debug_abbrev.len() > 1);

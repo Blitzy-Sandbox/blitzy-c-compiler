@@ -505,10 +505,7 @@ fn print_usage() {
 
 /// Prints the compiler version string to stdout.
 fn print_version() {
-    println!(
-        "bcc {} (Blitzy C Compiler)",
-        env!("CARGO_PKG_VERSION")
-    );
+    println!("bcc {} (Blitzy C Compiler)", env!("CARGO_PKG_VERSION"));
 }
 
 // ===========================================================================
@@ -652,15 +649,15 @@ mod tests {
     #[test]
     fn test_multiple_include_paths() {
         let cli = parse_args_from(&args(&[
-            "-I", "/usr/include", "-I/usr/local/include", "main.c",
+            "-I",
+            "/usr/include",
+            "-I/usr/local/include",
+            "main.c",
         ]))
         .unwrap();
         assert_eq!(
             cli.include_paths,
-            vec![
-                "/usr/include".to_string(),
-                "/usr/local/include".to_string()
-            ]
+            vec!["/usr/include".to_string(), "/usr/local/include".to_string()]
         );
     }
 
@@ -762,19 +759,13 @@ mod tests {
 
     #[test]
     fn test_target_separated() {
-        let cli = parse_args_from(&args(&[
-            "--target",
-            "x86_64-linux-gnu",
-            "main.c",
-        ]))
-        .unwrap();
+        let cli = parse_args_from(&args(&["--target", "x86_64-linux-gnu", "main.c"])).unwrap();
         assert_eq!(cli.target, Some("x86_64-linux-gnu".to_string()));
     }
 
     #[test]
     fn test_target_equals() {
-        let cli =
-            parse_args_from(&args(&["--target=aarch64-linux-gnu", "main.c"])).unwrap();
+        let cli = parse_args_from(&args(&["--target=aarch64-linux-gnu", "main.c"])).unwrap();
         assert_eq!(cli.target, Some("aarch64-linux-gnu".to_string()));
     }
 
@@ -919,10 +910,7 @@ mod tests {
         assert_eq!(cli.opt_level, OptLevel::O2);
         assert_eq!(
             cli.include_paths,
-            vec![
-                "/usr/include".to_string(),
-                "/usr/local/include".to_string()
-            ]
+            vec!["/usr/include".to_string(), "/usr/local/include".to_string()]
         );
         assert_eq!(cli.defines.len(), 2);
         assert_eq!(cli.defines[0].name, "NDEBUG");
@@ -964,10 +952,7 @@ mod tests {
             cli.library_paths,
             vec!["/usr/lib".to_string(), "/usr/local/lib".to_string()]
         );
-        assert_eq!(
-            cli.libraries,
-            vec!["pthread".to_string(), "m".to_string()]
-        );
+        assert_eq!(cli.libraries, vec!["pthread".to_string(), "m".to_string()]);
         assert_eq!(cli.output, Some("libfoo.so".to_string()));
     }
 

@@ -6,7 +6,6 @@
 #![allow(dead_code)]
 #![allow(unused_imports)]
 
-
 use std::env;
 use std::fs;
 use std::io::{self, Read, Write};
@@ -81,10 +80,7 @@ impl ValidationWorkDir {
     pub fn new(name: &str) -> Self {
         let counter = WORK_DIR_COUNTER.fetch_add(1, Ordering::SeqCst);
         let pid = std::process::id();
-        let dir = env::temp_dir().join(format!(
-            "bcc_validation_{}_{}_{}",
-            name, pid, counter
-        ));
+        let dir = env::temp_dir().join(format!("bcc_validation_{}_{}_{}", name, pid, counter));
         let _ = fs::create_dir_all(&dir);
         Self { path: dir }
     }
@@ -107,16 +103,19 @@ impl Drop for ValidationWorkDir {
 
 /// Fetch a source archive from `url` into `work_dir`, saving it as
 /// `archive_name`.
-pub fn fetch_source_archive(
-    url: &str,
-    work_dir: &Path,
-    archive_name: &str,
-) -> SourceFetchResult {
+pub fn fetch_source_archive(url: &str, work_dir: &Path, archive_name: &str) -> SourceFetchResult {
     let dest = work_dir.join(archive_name);
 
     // Try curl first.
     let curl_status = Command::new("curl")
-        .args(&["-sSfL", "--connect-timeout", "30", "--max-time", "300", "-o"])
+        .args(&[
+            "-sSfL",
+            "--connect-timeout",
+            "30",
+            "--max-time",
+            "300",
+            "-o",
+        ])
         .arg(&dest)
         .arg(url)
         .status();
@@ -225,8 +224,7 @@ pub fn get_bcc_binary() -> PathBuf {
     }
 
     // Fallback: search relative to CARGO_MANIFEST_DIR.
-    let manifest_dir = env::var("CARGO_MANIFEST_DIR")
-        .unwrap_or_else(|_| ".".to_string());
+    let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
 
     for profile in &["debug", "release"] {
         let candidate = PathBuf::from(&manifest_dir)
@@ -325,11 +323,7 @@ pub fn compile_multiple_files(
 // =========================================================================
 
 /// Run a compiled binary, using QEMU for non-native architectures.
-pub fn run_binary(
-    binary: &Path,
-    target: &str,
-    args: &[&str],
-) -> Result<Output, String> {
+pub fn run_binary(binary: &Path, target: &str, args: &[&str]) -> Result<Output, String> {
     if is_native_target(target) {
         Command::new(binary)
             .args(args)
@@ -395,10 +389,7 @@ pub fn is_native_target(target: &str) -> bool {
 pub fn create_validation_work_dir(name: &str) -> PathBuf {
     let counter = WORK_DIR_COUNTER.fetch_add(1, Ordering::SeqCst);
     let pid = std::process::id();
-    let dir = env::temp_dir().join(format!(
-        "bcc_validation_{}_{}_{}",
-        name, pid, counter
-    ));
+    let dir = env::temp_dir().join(format!("bcc_validation_{}_{}_{}", name, pid, counter));
     let _ = fs::create_dir_all(&dir);
     dir
 }
@@ -413,11 +404,7 @@ pub fn cleanup_work_dir(dir: &Path) {
 // =========================================================================
 
 /// Time a single compilation and return `(success, duration)`.
-pub fn measure_compilation_time(
-    source: &Path,
-    target: &str,
-    flags: &[&str],
-) -> (bool, Duration) {
+pub fn measure_compilation_time(source: &Path, target: &str, flags: &[&str]) -> (bool, Duration) {
     let bcc = get_bcc_binary();
     let out = env::temp_dir().join("bcc_timing_output.o");
 
@@ -438,9 +425,7 @@ pub fn measure_compilation_time(
 }
 
 /// Measure peak RSS of a command by wrapping it with `/usr/bin/time -v`.
-pub fn measure_peak_rss_of_command(
-    cmd: &mut Command,
-) -> Result<(Output, u64), String> {
+pub fn measure_peak_rss_of_command(cmd: &mut Command) -> Result<(Output, u64), String> {
     // Use /usr/bin/time to capture peak RSS.
     let time_output = Command::new("/usr/bin/time")
         .arg("-v")
@@ -487,7 +472,11 @@ pub fn print_validation_summary(results: &[ValidationResult]) {
             "{:<14} {:<10} {:<9} {:<7} {:<10.1}s {}/{}",
             r.target_name,
             r.architecture,
-            if r.compilation_success { "PASS" } else { "FAIL" },
+            if r.compilation_success {
+                "PASS"
+            } else {
+                "FAIL"
+            },
             tests_str,
             r.compile_time.as_secs_f64(),
             r.files_compiled,

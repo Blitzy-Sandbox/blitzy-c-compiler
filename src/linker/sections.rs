@@ -764,8 +764,24 @@ mod tests {
     #[test]
     fn test_merge_two_text_sections() {
         let inputs = vec![
-            make_input_section(".text", &[0x90, 0x90], SHT_PROGBITS, SHF_ALLOC | SHF_EXECINSTR, 1, 0, 1),
-            make_input_section(".text", &[0xCC, 0xCC, 0xCC], SHT_PROGBITS, SHF_ALLOC | SHF_EXECINSTR, 1, 0, 2),
+            make_input_section(
+                ".text",
+                &[0x90, 0x90],
+                SHT_PROGBITS,
+                SHF_ALLOC | SHF_EXECINSTR,
+                1,
+                0,
+                1,
+            ),
+            make_input_section(
+                ".text",
+                &[0xCC, 0xCC, 0xCC],
+                SHT_PROGBITS,
+                SHF_ALLOC | SHF_EXECINSTR,
+                1,
+                0,
+                2,
+            ),
         ];
 
         let merged = merge_sections(inputs, &[".text"]);
@@ -781,8 +797,24 @@ mod tests {
     #[test]
     fn test_merge_sections_with_different_alignments() {
         let inputs = vec![
-            make_input_section(".text", &[0x90; 3], SHT_PROGBITS, SHF_ALLOC | SHF_EXECINSTR, 4, 0, 1),
-            make_input_section(".text", &[0xCC; 2], SHT_PROGBITS, SHF_ALLOC | SHF_EXECINSTR, 16, 1, 1),
+            make_input_section(
+                ".text",
+                &[0x90; 3],
+                SHT_PROGBITS,
+                SHF_ALLOC | SHF_EXECINSTR,
+                4,
+                0,
+                1,
+            ),
+            make_input_section(
+                ".text",
+                &[0xCC; 2],
+                SHT_PROGBITS,
+                SHF_ALLOC | SHF_EXECINSTR,
+                16,
+                1,
+                1,
+            ),
         ];
 
         let merged = merge_sections(inputs, &[".text"]);
@@ -802,8 +834,24 @@ mod tests {
     #[test]
     fn test_merge_input_section_mapping_offsets() {
         let inputs = vec![
-            make_input_section(".data", &[1, 2, 3, 4], SHT_PROGBITS, SHF_ALLOC | SHF_WRITE, 4, 0, 2),
-            make_input_section(".data", &[5, 6], SHT_PROGBITS, SHF_ALLOC | SHF_WRITE, 4, 1, 3),
+            make_input_section(
+                ".data",
+                &[1, 2, 3, 4],
+                SHT_PROGBITS,
+                SHF_ALLOC | SHF_WRITE,
+                4,
+                0,
+                2,
+            ),
+            make_input_section(
+                ".data",
+                &[5, 6],
+                SHT_PROGBITS,
+                SHF_ALLOC | SHF_WRITE,
+                4,
+                1,
+                3,
+            ),
         ];
 
         let merged = merge_sections(inputs, &[".data"]);
@@ -839,7 +887,7 @@ mod tests {
         assert!(merged[0].data.is_empty());
         // mem_size should account for alignment between sections and sum of sizes
         assert!(merged[0].mem_size >= 300); // at least 100 + 200
-        // Max alignment
+                                            // Max alignment
         assert_eq!(merged[0].alignment, 16);
     }
 
@@ -858,9 +906,25 @@ mod tests {
     #[test]
     fn test_merge_multiple_section_names() {
         let inputs = vec![
-            make_input_section(".text", &[0x90], SHT_PROGBITS, SHF_ALLOC | SHF_EXECINSTR, 1, 0, 1),
+            make_input_section(
+                ".text",
+                &[0x90],
+                SHT_PROGBITS,
+                SHF_ALLOC | SHF_EXECINSTR,
+                1,
+                0,
+                1,
+            ),
             make_input_section(".data", &[1], SHT_PROGBITS, SHF_ALLOC | SHF_WRITE, 1, 0, 2),
-            make_input_section(".text", &[0xCC], SHT_PROGBITS, SHF_ALLOC | SHF_EXECINSTR, 1, 1, 1),
+            make_input_section(
+                ".text",
+                &[0xCC],
+                SHT_PROGBITS,
+                SHF_ALLOC | SHF_EXECINSTR,
+                1,
+                1,
+                1,
+            ),
             make_input_section(".data", &[2], SHT_PROGBITS, SHF_ALLOC | SHF_WRITE, 1, 1, 2),
         ];
 
@@ -877,7 +941,15 @@ mod tests {
     fn test_merge_section_order_respected() {
         let inputs = vec![
             make_input_section(".data", &[1], SHT_PROGBITS, SHF_ALLOC | SHF_WRITE, 1, 0, 1),
-            make_input_section(".text", &[0x90], SHT_PROGBITS, SHF_ALLOC | SHF_EXECINSTR, 1, 0, 2),
+            make_input_section(
+                ".text",
+                &[0x90],
+                SHT_PROGBITS,
+                SHF_ALLOC | SHF_EXECINSTR,
+                1,
+                0,
+                2,
+            ),
             make_input_section(".rodata", &[42], SHT_PROGBITS, SHF_ALLOC, 1, 0, 3),
         ];
 
@@ -894,7 +966,15 @@ mod tests {
     fn test_merge_unknown_sections_sorted_alphabetically() {
         let inputs = vec![
             make_input_section(".zebra", &[1], SHT_PROGBITS, SHF_ALLOC, 1, 0, 1),
-            make_input_section(".text", &[2], SHT_PROGBITS, SHF_ALLOC | SHF_EXECINSTR, 1, 0, 2),
+            make_input_section(
+                ".text",
+                &[2],
+                SHT_PROGBITS,
+                SHF_ALLOC | SHF_EXECINSTR,
+                1,
+                0,
+                2,
+            ),
             make_input_section(".apple", &[3], SHT_PROGBITS, SHF_ALLOC, 1, 0, 3),
         ];
 
@@ -957,7 +1037,7 @@ mod tests {
         let mut tab = ShStrTab::new();
         let offset = tab.add(".text");
         assert_eq!(offset, 1); // after the leading null byte
-        // Data should be: \0 . t e x t \0
+                               // Data should be: \0 . t e x t \0
         assert_eq!(tab.as_bytes(), &[0, b'.', b't', b'e', b'x', b't', 0]);
     }
 
@@ -1009,19 +1089,17 @@ mod tests {
 
     #[test]
     fn test_compute_layout_basic() {
-        let mut sections = vec![
-            MergedSection {
-                name: ".text".to_string(),
-                data: vec![0x90; 100],
-                section_type: SHT_PROGBITS,
-                flags: SHF_ALLOC | SHF_EXECINSTR,
-                alignment: 16,
-                mem_size: 100,
-                virtual_address: 0,
-                file_offset: 0,
-                input_mappings: vec![],
-            },
-        ];
+        let mut sections = vec![MergedSection {
+            name: ".text".to_string(),
+            data: vec![0x90; 100],
+            section_type: SHT_PROGBITS,
+            flags: SHF_ALLOC | SHF_EXECINSTR,
+            alignment: 16,
+            mem_size: 100,
+            virtual_address: 0,
+            file_offset: 0,
+            input_mappings: vec![],
+        }];
 
         let base = 0x400000;
         let header_size = 64 + 56; // ELF64 header + one phdr
@@ -1074,7 +1152,10 @@ mod tests {
         // Verify that BSS's contribution to memory exceeds its zero file contribution
         let file_portion = result.total_file_size;
         let mem_portion = result.total_mem_size;
-        assert!(mem_portion > file_portion, "BSS should make mem_size > file_size");
+        assert!(
+            mem_portion > file_portion,
+            "BSS should make mem_size > file_size"
+        );
 
         // Verify BSS virtual address follows data section
         assert!(sections[1].virtual_address >= sections[0].virtual_address + 4);

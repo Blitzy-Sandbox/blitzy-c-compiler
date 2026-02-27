@@ -291,8 +291,8 @@ impl TargetConfig {
             stack_alignment: 16,
             elf_machine: 3, // EM_386
             elf_osabi: 0,
-            gpr_count: 8,  // eax, ecx, edx, ebx, esp, ebp, esi, edi
-            fpr_count: 8,  // xmm0–xmm7 (or x87 st(0)–st(7))
+            gpr_count: 8, // eax, ecx, edx, ebx, esp, ebp, esi, edi
+            fpr_count: 8, // xmm0–xmm7 (or x87 st(0)–st(7))
             crt_search_paths: vec![
                 "/usr/lib/i386-linux-gnu".to_string(),
                 "/usr/i686-linux-gnu/lib".to_string(),
@@ -953,10 +953,10 @@ mod tests {
     #[test]
     fn test_alignment_of_small_type() {
         let cfg = TargetConfig::x86_64();
-        assert_eq!(cfg.alignment_of(1), 1);  // char
-        assert_eq!(cfg.alignment_of(2), 2);  // short
-        assert_eq!(cfg.alignment_of(4), 4);  // int
-        assert_eq!(cfg.alignment_of(8), 8);  // long / pointer
+        assert_eq!(cfg.alignment_of(1), 1); // char
+        assert_eq!(cfg.alignment_of(2), 2); // short
+        assert_eq!(cfg.alignment_of(4), 4); // int
+        assert_eq!(cfg.alignment_of(8), 8); // long / pointer
     }
 
     #[test]
@@ -1187,10 +1187,10 @@ mod tests {
 
     #[test]
     fn test_elf_machine_constants() {
-        assert_eq!(TargetConfig::x86_64().elf_machine, 62);   // EM_X86_64
-        assert_eq!(TargetConfig::i686().elf_machine, 3);      // EM_386
-        assert_eq!(TargetConfig::aarch64().elf_machine, 183);  // EM_AARCH64
-        assert_eq!(TargetConfig::riscv64().elf_machine, 243);  // EM_RISCV
+        assert_eq!(TargetConfig::x86_64().elf_machine, 62); // EM_X86_64
+        assert_eq!(TargetConfig::i686().elf_machine, 3); // EM_386
+        assert_eq!(TargetConfig::aarch64().elf_machine, 183); // EM_AARCH64
+        assert_eq!(TargetConfig::riscv64().elf_machine, 243); // EM_RISCV
     }
 
     #[test]

@@ -41,7 +41,7 @@
 //! destruction. Allocating types with significant `Drop` behavior (e.g., types
 //! owning heap allocations outside the arena) will result in resource leaks.
 
-use std::alloc::{self, Layout, handle_alloc_error};
+use std::alloc::{self, handle_alloc_error, Layout};
 use std::cell::RefCell;
 use std::cmp;
 use std::marker::PhantomData;
@@ -311,18 +311,14 @@ impl Arena {
             // [Insufficiency] There is no safe way to create a non-empty slice of ZSTs
             // without a backing allocation; the dangling-pointer pattern is standard.
             // [Scope] Single construction of a ZST slice reference.
-            return unsafe {
-                std::slice::from_raw_parts(
-                    ptr::dangling::<T>(),
-                    slice.len(),
-                )
-            };
+            return unsafe { std::slice::from_raw_parts(ptr::dangling::<T>(), slice.len()) };
         }
 
-        let total_size = size.checked_mul(slice.len())
+        let total_size = size
+            .checked_mul(slice.len())
             .expect("Arena::alloc_slice: total size overflow");
-        let layout = Layout::from_size_align(total_size, align)
-            .expect("Arena::alloc_slice: invalid layout");
+        let layout =
+            Layout::from_size_align(total_size, align).expect("Arena::alloc_slice: invalid layout");
 
         let raw = self.alloc_raw(layout);
 
@@ -338,11 +334,7 @@ impl Arena {
         // [Scope] Bulk copy of `slice.len()` elements into arena memory, followed by
         // slice reference construction.
         unsafe {
-            ptr::copy_nonoverlapping(
-                slice.as_ptr() as *const u8,
-                raw,
-                total_size,
-            );
+            ptr::copy_nonoverlapping(slice.as_ptr() as *const u8, raw, total_size);
             std::slice::from_raw_parts(raw as *const T, slice.len())
         }
     }
@@ -407,7 +399,8 @@ impl Arena {
 
         // The new chunk is empty, so this allocation must succeed (we ensured
         // the capacity is sufficient above).
-        let ptr = new_chunk.try_alloc(layout)
+        let ptr = new_chunk
+            .try_alloc(layout)
             .expect("Fresh chunk too small for allocation — this is a bug");
 
         chunks.push(new_chunk);
@@ -717,7 +710,10 @@ mod tests {
         // Allocate enough to force at least one chunk.
         let _v = arena.alloc(42u64);
         let after = arena.bytes_allocated();
-        assert!(after > before, "bytes_allocated should grow after allocation");
+        assert!(
+            after > before,
+            "bytes_allocated should grow after allocation"
+        );
     }
 
     #[test]
@@ -906,7 +902,7 @@ mod tests {
     #[derive(Debug, Clone, Copy)]
     struct AstNode {
         kind: ExprKind,
-        left: Option<usize>,  // Index into some external storage
+        left: Option<usize>, // Index into some external storage
         right: Option<usize>,
         line: u32,
         column: u32,

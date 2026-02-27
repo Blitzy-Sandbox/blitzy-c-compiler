@@ -263,7 +263,11 @@ impl std::fmt::Display for ElfError {
                 write!(f, "unsupported ELF class: {}", c)
             }
             ElfError::UnsupportedEndianness(e) => {
-                write!(f, "unsupported ELF data encoding: {} (only little-endian supported)", e)
+                write!(
+                    f,
+                    "unsupported ELF data encoding: {} (only little-endian supported)",
+                    e
+                )
             }
             ElfError::TruncatedData(what) => {
                 write!(f, "truncated ELF data while reading {}", what)
@@ -532,13 +536,21 @@ pub fn ehdr_size(class: u8) -> usize {
 /// Return the program header entry size in bytes for the given class.
 #[inline]
 pub fn phdr_size(class: u8) -> usize {
-    if is_64bit(class) { 56 } else { 32 }
+    if is_64bit(class) {
+        56
+    } else {
+        32
+    }
 }
 
 /// Return the section header entry size in bytes for the given class.
 #[inline]
 pub fn shdr_size(class: u8) -> usize {
-    if is_64bit(class) { 64 } else { 40 }
+    if is_64bit(class) {
+        64
+    } else {
+        40
+    }
 }
 
 // ===========================================================================
@@ -1310,8 +1322,7 @@ impl ElfObject {
                     let count = sym_data.len() / entry_size;
                     for i in 0..count {
                         let sym = Elf64Sym::read(sym_data, i * entry_size)?;
-                        let sym_name = read_string(strtab_data, sym.st_name)
-                            .unwrap_or_default();
+                        let sym_name = read_string(strtab_data, sym.st_name).unwrap_or_default();
                         symbols.push(ParsedSymbol {
                             name: sym_name,
                             value: sym.st_value,
@@ -1462,8 +1473,7 @@ impl ElfObject {
                     let count = sym_data.len() / entry_size;
                     for i in 0..count {
                         let sym = Elf32Sym::read(sym_data, i * entry_size)?;
-                        let sym_name = read_string(strtab_data, sym.st_name)
-                            .unwrap_or_default();
+                        let sym_name = read_string(strtab_data, sym.st_name).unwrap_or_default();
                         symbols.push(ParsedSymbol {
                             name: sym_name,
                             value: sym.st_value as u64,
@@ -1629,7 +1639,11 @@ impl ElfWriter {
     /// 4. Section header string table (.shstrtab)
     /// 5. Section headers
     pub fn write(&self) -> Vec<u8> {
-        let ehdr_sz = if self.is_64bit { ELF64_EHDR_SIZE } else { ELF32_EHDR_SIZE };
+        let ehdr_sz = if self.is_64bit {
+            ELF64_EHDR_SIZE
+        } else {
+            ELF32_EHDR_SIZE
+        };
         let phdr_sz = if self.is_64bit { 56usize } else { 32usize };
         let shdr_sz = if self.is_64bit { 64usize } else { 40usize };
 
@@ -2572,13 +2586,13 @@ mod tests {
             e_version: 1,
             e_entry: 0,
             e_phoff: 0,
-            e_shoff: 64,       // section headers right after ehdr
+            e_shoff: 64, // section headers right after ehdr
             e_flags: 0,
             e_ehsize: 64,
             e_phentsize: 56,
             e_phnum: 0,
             e_shentsize: 64,
-            e_shnum: 1,        // just the null section header
+            e_shnum: 1, // just the null section header
             e_shstrndx: 0,
         };
 

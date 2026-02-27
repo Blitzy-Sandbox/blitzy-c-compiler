@@ -500,7 +500,11 @@ pub fn compile_and_run(source: &str, target: &str, flags: &[&str]) -> RunResult 
                 success: false,
                 exit_status: compile_result.exit_status,
                 stdout: String::new(),
-                stderr: format!("Failed to execute binary '{}': {}", binary_path.display(), e),
+                stderr: format!(
+                    "Failed to execute binary '{}': {}",
+                    binary_path.display(),
+                    e
+                ),
             },
         }
     } else {
@@ -656,7 +660,8 @@ pub fn verify_elf_class(binary: &Path, expected_class: u8) {
         _ => "UNKNOWN",
     };
     assert_eq!(
-        actual_class, expected_class,
+        actual_class,
+        expected_class,
         "ELF class mismatch in '{}': expected {} ({}), got {} ({})",
         binary.display(),
         expected_class,
@@ -707,7 +712,8 @@ pub fn verify_elf_arch(binary: &Path, expected_arch: u16) {
         }
     };
     assert_eq!(
-        actual_arch, expected_arch,
+        actual_arch,
+        expected_arch,
         "ELF architecture mismatch in '{}': expected 0x{:04X} ({}), got 0x{:04X} ({})",
         binary.display(),
         expected_arch,
@@ -852,10 +858,7 @@ macro_rules! assert_compile_error {
 #[macro_export]
 macro_rules! assert_compile_error_contains {
     ($result:expr, $expected:expr) => {
-        assert!(
-            !$result.success,
-            "Expected compilation error but succeeded"
-        );
+        assert!(!$result.success, "Expected compilation error but succeeded");
         assert!(
             $result.stderr.contains($expected),
             "Expected error message to contain '{}', got:\n{}",

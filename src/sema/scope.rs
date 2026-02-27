@@ -260,7 +260,9 @@ impl ScopeStack {
             );
         }
         // The unwrap is safe because we've verified len > 1 above.
-        self.scopes.pop().expect("scope stack is non-empty after length check")
+        self.scopes
+            .pop()
+            .expect("scope stack is non-empty after length check")
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -276,7 +278,9 @@ impl ScopeStack {
     /// Cannot panic — the scope stack always contains at least the file scope.
     pub fn current(&self) -> &Scope {
         // File scope is always present, so `last()` always succeeds.
-        self.scopes.last().expect("scope stack always has at least file scope")
+        self.scopes
+            .last()
+            .expect("scope stack always has at least file scope")
     }
 
     /// Returns the kind of the current (innermost) scope.
@@ -561,7 +565,9 @@ impl ScopeStack {
     /// Useful for directly manipulating scope properties (e.g., resetting
     /// unreachable status when a label is encountered).
     pub fn current_mut(&mut self) -> &mut Scope {
-        self.scopes.last_mut().expect("scope stack always has at least file scope")
+        self.scopes
+            .last_mut()
+            .expect("scope stack always has at least file scope")
     }
 
     /// Clears the unreachable flag on the current scope.
