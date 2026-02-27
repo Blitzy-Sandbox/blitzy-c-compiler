@@ -7,7 +7,11 @@
 //!
 //! Entry point: `parse_args()` → `resolve_target()` → `pipeline::run()`
 
+pub mod cli;
 pub mod target;
+
+// Re-export key types from cli for convenient access by main.rs and other consumers.
+pub use cli::{CliArgs, MacroDefinition, OptLevel, derive_output_path, parse_args, parse_args_from};
 
 // Re-export key types from target for convenient access by main.rs and other consumers.
 pub use target::{
