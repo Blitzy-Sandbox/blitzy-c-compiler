@@ -1,6 +1,5 @@
-// Frontend module — declares preprocessor, lexer, and parser submodules.
+// Lexer module — declares submodules for the tokenizer.
 // Minimal stub enabling compilation during incremental development.
 // The full implementation will be provided by its assigned agent.
 
-pub mod lexer;
-pub mod preprocessor;
+pub mod source;
