@@ -5,6 +5,7 @@
 
 mod common;
 mod frontend;
+mod linker;
 mod sema;
 
 fn main() {
