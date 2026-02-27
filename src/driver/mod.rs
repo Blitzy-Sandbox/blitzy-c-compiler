@@ -1,0 +1,16 @@
+//! Driver module: CLI argument parsing, target configuration, and compilation pipeline orchestration.
+//!
+//! This module coordinates the entire compilation process:
+//! 1. `cli` — Parses GCC-compatible command-line flags
+//! 2. `target` — Resolves target triple to architecture-specific configuration
+//! 3. `pipeline` — Sequences all compiler phases: preprocessor → lexer → parser → sema → IR → optimizer → codegen → linker
+//!
+//! Entry point: `parse_args()` → `resolve_target()` → `pipeline::run()`
+
+pub mod target;
+
+// Re-export key types from target for convenient access by main.rs and other consumers.
+pub use target::{
+    AbiVariant, Architecture, ElfClass, Endianness, TargetConfig, detect_host, parse_target,
+    resolve_target,
+};

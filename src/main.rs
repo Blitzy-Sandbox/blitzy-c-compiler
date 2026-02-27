@@ -5,6 +5,7 @@
 
 mod common;
 mod debug;
+mod driver;
 mod frontend;
 mod linker;
 mod sema;
