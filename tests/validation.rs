@@ -22,6 +22,8 @@ use std::time::{Duration, Instant};
 pub mod lua;
 #[path = "validation/redis.rs"]
 pub mod redis;
+#[path = "validation/sqlite.rs"]
+pub mod sqlite;
 #[path = "validation/zlib.rs"]
 pub mod zlib;
 
