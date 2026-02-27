@@ -4,6 +4,7 @@
 // implementation by its assigned agent.
 
 mod common;
+mod debug;
 mod frontend;
 mod linker;
 mod sema;
