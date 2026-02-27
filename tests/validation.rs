@@ -18,6 +18,8 @@ use std::time::{Duration, Instant};
 // Sub-module declarations for validation test suites.
 // Each sub-module tests compilation and (optionally) execution
 // of a real-world C codebase.
+#[path = "validation/lua.rs"]
+pub mod lua;
 #[path = "validation/redis.rs"]
 pub mod redis;
 #[path = "validation/zlib.rs"]
