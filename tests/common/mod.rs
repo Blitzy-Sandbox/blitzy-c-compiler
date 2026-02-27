@@ -354,7 +354,7 @@ pub fn compile_source(source: &str, flags: &[&str]) -> CompileResult {
     let bcc = get_bcc_binary();
 
     // Determine whether the caller supplied an `-o` flag.
-    let has_output_flag = flags.iter().any(|f| *f == "-o");
+    let has_output_flag = flags.contains(&"-o");
 
     // If no `-o` flag was provided, generate a temp output path.
     let temp_dir = if !has_output_flag {
@@ -735,21 +735,28 @@ pub fn verify_elf_arch(binary: &Path, expected_arch: u16) {
 ///
 /// # Returns
 ///
-/// The QEMU binary name as a static string (e.g., `"qemu-x86_64"`).
+/// The QEMU binary name as a static string. Tries the base name first
+/// (e.g., `"qemu-x86_64"` from the `qemu-user` package), then falls back
+/// to the `-static` variant (e.g., `"qemu-x86_64-static"` from the
+/// `qemu-user-static` package). If neither is found, returns the base name
+/// for descriptive error messages.
 ///
 /// # Panics
 ///
 /// Panics with a descriptive message for unknown or unsupported target triples.
 #[allow(dead_code)]
 pub fn qemu_binary_for_target(target: &str) -> &'static str {
-    if target.starts_with("x86_64") {
-        "qemu-x86_64"
+    // Map target triple to the pair of possible QEMU binary names.
+    // The `qemu-user` package installs binaries without a suffix (e.g., `qemu-i386`),
+    // while `qemu-user-static` installs them with `-static` (e.g., `qemu-i386-static`).
+    let (base, static_variant) = if target.starts_with("x86_64") {
+        ("qemu-x86_64", "qemu-x86_64-static")
     } else if target.starts_with("i686") || target.starts_with("i386") {
-        "qemu-i386"
+        ("qemu-i386", "qemu-i386-static")
     } else if target.starts_with("aarch64") {
-        "qemu-aarch64"
+        ("qemu-aarch64", "qemu-aarch64-static")
     } else if target.starts_with("riscv64") {
-        "qemu-riscv64"
+        ("qemu-riscv64", "qemu-riscv64-static")
     } else {
         panic!(
             "Unknown target triple '{}': cannot determine QEMU binary. \
@@ -757,6 +764,26 @@ pub fn qemu_binary_for_target(target: &str) -> &'static str {
              aarch64-linux-gnu, riscv64-linux-gnu",
             target
         );
+    };
+
+    // Prefer the base name; fall back to the -static variant.
+    if Command::new(base)
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+    {
+        base
+    } else if Command::new(static_variant)
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+    {
+        static_variant
+    } else {
+        // Neither found; return the base name for descriptive error messages.
+        base
     }
 }
 
@@ -764,7 +791,9 @@ pub fn qemu_binary_for_target(target: &str) -> &'static str {
 ///
 /// Attempts to run `<qemu-binary> --version` and checks whether the command
 /// succeeds. Returns `false` gracefully if QEMU is not installed, rather than
-/// panicking.
+/// panicking. The binary resolution in [`qemu_binary_for_target`] already
+/// tries both the base name and the `-static` variant, so this function
+/// simply confirms that the resolved binary is functional.
 ///
 /// # Arguments
 ///
