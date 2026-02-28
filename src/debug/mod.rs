@@ -12,4 +12,5 @@
 // - `frame`: .debug_frame section CFI generation (pending).
 
 pub mod dwarf;
+pub mod frame;
 pub mod line_program;
