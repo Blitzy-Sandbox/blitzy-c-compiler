@@ -29,6 +29,11 @@
 //! different predecessor blocks.
 
 pub mod types;
+pub mod instructions;
 
 // Re-export key types for convenient access by downstream modules.
 pub use types::{IrType, StructLayout};
+pub use instructions::{
+    Instruction, Value, Constant, CompareOp, FloatCompareOp,
+    CastOp, Callee, LocatedInstruction, BlockId,
+};
