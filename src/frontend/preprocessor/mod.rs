@@ -3,6 +3,7 @@
 // The full implementation will be provided by its assigned agent.
 
 pub mod conditional;
+pub mod directives;
 pub mod expression;
 pub mod include;
 pub mod macros;
