@@ -13,4 +13,5 @@
 
 pub mod dwarf;
 pub mod frame;
+pub mod info;
 pub mod line_program;
