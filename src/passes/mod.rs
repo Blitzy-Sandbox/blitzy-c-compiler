@@ -15,6 +15,7 @@ use crate::ir::Function;
 
 // Submodule declarations.
 pub mod cse;
+pub mod dce;
 pub mod mem2reg;
 pub mod simplify;
 
@@ -36,5 +37,6 @@ pub trait FunctionPass {
 
 // Re-export pass types.
 pub use cse::CsePass;
+pub use dce::DcePass;
 pub use mem2reg::Mem2RegPass;
 pub use simplify::SimplifyPass;
