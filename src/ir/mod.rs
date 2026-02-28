@@ -30,6 +30,7 @@
 
 pub mod types;
 pub mod instructions;
+pub mod cfg;
 
 // Re-export key types for convenient access by downstream modules.
 pub use types::{IrType, StructLayout};
