@@ -3,6 +3,7 @@
 // the greenfield build-out. It will be replaced with the full driver
 // implementation by its assigned agent.
 
+mod codegen;
 mod common;
 mod debug;
 mod driver;
