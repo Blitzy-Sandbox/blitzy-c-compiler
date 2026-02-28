@@ -7,5 +7,6 @@
 //! Stub module declaration for section validation. The full implementation
 //! will be created by the linker/mod.rs agent.
 
+pub mod archive;
 pub mod elf;
 pub mod sections;
