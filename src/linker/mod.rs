@@ -10,3 +10,4 @@
 pub mod archive;
 pub mod elf;
 pub mod sections;
+pub mod symbols;
