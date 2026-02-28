@@ -9,5 +9,6 @@
 
 pub mod archive;
 pub mod elf;
+pub mod relocations;
 pub mod sections;
 pub mod symbols;
