@@ -4,5 +4,6 @@
 
 pub mod scope;
 pub mod storage;
+pub mod symbol_table;
 pub mod type_conversion;
 pub mod types;
