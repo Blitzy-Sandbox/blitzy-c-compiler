@@ -2,6 +2,7 @@
 // Minimal stub enabling compilation during incremental development.
 // The full implementation will be provided by its assigned agent.
 
+pub mod keywords;
 pub mod literals;
 pub mod source;
 pub mod token;
