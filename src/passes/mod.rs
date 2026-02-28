@@ -15,6 +15,7 @@ use crate::ir::Function;
 
 // Submodule declarations.
 pub mod mem2reg;
+pub mod simplify;
 
 /// Trait for optimization passes that operate on individual functions.
 ///
@@ -32,5 +33,6 @@ pub trait FunctionPass {
     fn run_on_function(&mut self, function: &mut Function) -> bool;
 }
 
-// Re-export the mem2reg pass type.
+// Re-export pass types.
 pub use mem2reg::Mem2RegPass;
+pub use simplify::SimplifyPass;
