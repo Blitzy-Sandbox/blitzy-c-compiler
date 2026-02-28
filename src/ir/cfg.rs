@@ -36,7 +36,7 @@ use crate::ir::types::IrType;
 /// Terminators are distinct from regular [`Instruction`] variants — they are
 /// stored separately in [`BasicBlock::terminator`] rather than in the
 /// instruction list.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Terminator {
     /// Unconditional branch: `br label %target`
     ///
