@@ -4,4 +4,5 @@
 
 pub mod scope;
 pub mod storage;
+pub mod type_conversion;
 pub mod types;
