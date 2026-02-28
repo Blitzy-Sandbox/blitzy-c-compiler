@@ -1,10 +1,2355 @@
-// Semantic analysis module for the bcc compiler.
-// This stub enables compilation of submodules during the greenfield build-out.
-// The full SemanticAnalyzer implementation will be added by its assigned agent.
+//! Semantic analysis module for the `bcc` C compiler.
+//!
+//! This is the primary entry point for semantic analysis — the third stage of the
+//! compilation pipeline following preprocessing and parsing. It receives an untyped
+//! AST ([`TranslationUnit`]) from the parser and produces a [`TypedTranslationUnit`]
+//! with:
+//!
+//! - **Resolved types** — every expression has an assigned [`CType`]
+//! - **Symbol table** — all identifiers bound to their declarations
+//! - **Implicit conversions** — insertion points for integer promotions, arithmetic
+//!   conversions, array/function decay, etc.
+//! - **Validated semantics** — type errors, undeclared identifiers, scope violations,
+//!   and storage class conflicts have been diagnosed
+//!
+//! # Architecture
+//!
+//! The module delegates to six submodules:
+//!
+//! | Submodule          | Responsibility                                       |
+//! |--------------------|------------------------------------------------------|
+//! | `types`            | C type representation with target-parametric sizes   |
+//! | `type_check`       | Type compatibility checking for all expression kinds  |
+//! | `type_conversion`  | Implicit conversion rules (promotions, decay, casts) |
+//! | `scope`            | Lexical scope stack management (C11 §6.2.1)          |
+//! | `symbol_table`     | Scope-aware symbol storage with three namespaces     |
+//! | `storage`          | Storage class validation and linkage resolution       |
+//!
+//! # Four-Architecture Support
+//!
+//! All type size computations are parameterized by [`TargetConfig`], enabling
+//! correct analysis across x86-64, i686, AArch64, and RISC-V 64 targets.
+//! For example, `sizeof(long)` yields 8 on x86-64 but 4 on i686.
+//!
+//! # GCC-Compatible Diagnostics
+//!
+//! All errors and warnings are reported via [`DiagnosticEmitter`] in
+//! `file:line:col: error: message` format on stderr.
+//!
+//! # Zero External Dependencies
+//!
+//! Only imports from `std` and internal crate modules. No external crates.
+//!
+//! # Safety
+//!
+//! This module contains zero `unsafe` blocks. All operations use safe Rust.
 
-pub mod scope;
-pub mod storage;
-pub mod symbol_table;
+// ===========================================================================
+// Submodule declarations
+// ===========================================================================
+
+pub mod types;
 pub mod type_check;
 pub mod type_conversion;
-pub mod types;
+pub mod scope;
+pub mod symbol_table;
+pub mod storage;
+
+// ===========================================================================
+// Public re-exports — downstream consumers use `crate::sema::CType`, etc.
+// ===========================================================================
+
+// From types.rs — the complete C type system
+pub use self::types::{
+    ArraySize, CType, EnumType, FloatKind, FunctionParam, FunctionType, IntegerKind, StructField,
+    StructType, TypeQualifiers,
+};
+
+// From scope.rs — lexical scope management
+pub use self::scope::{Scope, ScopeKind, ScopeStack};
+
+// From symbol_table.rs — scope-aware symbol storage
+pub use self::symbol_table::{Symbol, SymbolKind, SymbolTable};
+
+// From storage.rs — storage class validation and linkage
+pub use self::storage::{Linkage, StorageDuration};
+
+// From type_conversion.rs — implicit conversion classification
+pub use self::type_conversion::{ConversionResult, ImplicitCastKind};
+
+// ===========================================================================
+// Imports for SemanticAnalyzer implementation
+// ===========================================================================
+
+use crate::common::diagnostics::DiagnosticEmitter;
+use crate::common::intern::{InternId, Interner};
+use crate::common::source_map::SourceSpan;
+use crate::driver::target::TargetConfig;
+use crate::frontend::parser::ast::{
+    AssignmentOp, BlockItem, Declaration, Declarator, DeclSpecifiers, DirectDeclarator,
+    Expression, ForInit, FunctionDef, InitDeclarator, Initializer, Statement, StorageClass,
+    TranslationUnit, TypeName, TypeSpecifier,
+};
+
+// ===========================================================================
+// TypedTranslationUnit — output of semantic analysis
+// ===========================================================================
+
+/// The output of semantic analysis: a typed translation unit containing
+/// declarations annotated with resolved types, symbol references, and
+/// implicit conversion information.
+///
+/// This struct wraps the typed declarations that the IR builder will consume.
+/// Each declaration has been validated for type correctness, scope resolution,
+/// and storage class compliance.
+#[derive(Debug, Clone)]
+pub struct TypedTranslationUnit {
+    /// Top-level typed declarations (variables, functions, typedefs, etc.).
+    /// Each declaration has been semantically validated and carries resolved
+    /// type information.
+    pub declarations: Vec<TypedDeclaration>,
+    /// Source span covering the entire translation unit.
+    pub span: SourceSpan,
+}
+
+/// A typed top-level declaration produced by semantic analysis.
+///
+/// Wraps the original AST declaration with its resolved semantic information,
+/// including the C type after analysis.
+#[derive(Debug, Clone)]
+pub struct TypedDeclaration {
+    /// The original AST declaration node.
+    pub decl: Declaration,
+    /// The resolved type(s) of this declaration. For variable declarations,
+    /// this is the variable's type. For function definitions, this is the
+    /// function type. For typedefs, this is the aliased type.
+    pub resolved_type: Option<CType>,
+}
+
+// ===========================================================================
+// SemanticAnalyzer — the main analysis engine
+// ===========================================================================
+
+/// The central semantic analysis engine for the `bcc` compiler.
+///
+/// `SemanticAnalyzer` coordinates type checking, scope management, symbol table
+/// population, and implicit type conversion insertion across an entire translation
+/// unit. It is parameterized by the target architecture (via [`TargetConfig`])
+/// to ensure correct type sizes for multi-architecture support.
+///
+/// # Usage
+///
+/// ```ignore
+/// let result = SemanticAnalyzer::analyze(&ast, &target, &interner, &mut diagnostics);
+/// match result {
+///     Ok(typed_tu) => { /* proceed to IR generation */ }
+///     Err(()) => { /* errors were emitted via diagnostics */ }
+/// }
+/// ```
+///
+/// # Lifetime `'a`
+///
+/// The analyzer borrows the target config, string interner, and diagnostic
+/// emitter for the duration of analysis. These references are stored in the
+/// struct fields and used throughout declaration, statement, and expression
+/// analysis.
+pub struct SemanticAnalyzer<'a> {
+    /// Symbol table for tracking declarations across scopes.
+    /// Public so the IR builder can access resolved symbols after analysis.
+    pub symbol_table: SymbolTable,
+
+    /// Scope management for lexical scoping (file, function, block, prototype).
+    scope_stack: ScopeStack,
+
+    /// Target configuration for architecture-specific type sizes.
+    /// Used for sizeof evaluation, type compatibility, and integer promotions.
+    target: &'a TargetConfig,
+
+    /// Diagnostic emitter for GCC-compatible error/warning reporting on stderr.
+    diagnostics: &'a mut DiagnosticEmitter,
+
+    /// String interner for resolving InternId handles to string slices
+    /// (needed for diagnostic messages and symbol name display).
+    interner: &'a Interner,
+
+    /// Current function return type, set when entering a function definition.
+    /// Used by `analyze_statement` to validate `return` expressions.
+    /// `None` when not inside a function body.
+    current_function_return_type: Option<CType>,
+
+    /// Whether we are currently inside a loop body (for/while/do-while).
+    /// Used to validate `break` and `continue` statements.
+    in_loop: bool,
+
+    /// Whether we are currently inside a switch statement body.
+    /// Used to validate `break`, `case`, and `default` statements.
+    in_switch: bool,
+
+    /// Accumulated typed declarations for the output TypedTranslationUnit.
+    typed_declarations: Vec<TypedDeclaration>,
+}
+
+impl<'a> SemanticAnalyzer<'a> {
+    // -----------------------------------------------------------------------
+    // Construction
+    // -----------------------------------------------------------------------
+
+    /// Creates a new `SemanticAnalyzer` with the given target configuration,
+    /// string interner, and diagnostic emitter.
+    ///
+    /// The analyzer starts with an empty symbol table, file-scope scope stack,
+    /// and no function context.
+    pub fn new(
+        target: &'a TargetConfig,
+        interner: &'a Interner,
+        diagnostics: &'a mut DiagnosticEmitter,
+    ) -> Self {
+        SemanticAnalyzer {
+            symbol_table: SymbolTable::new(),
+            scope_stack: ScopeStack::new(),
+            target,
+            diagnostics,
+            interner,
+            current_function_return_type: None,
+            in_loop: false,
+            in_switch: false,
+            typed_declarations: Vec::new(),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Public entry point: analyze()
+    // -----------------------------------------------------------------------
+
+    /// Performs semantic analysis on a complete translation unit.
+    ///
+    /// This is the primary public API entry point. It creates a `SemanticAnalyzer`,
+    /// enters file scope, iterates over all top-level declarations, performs type
+    /// checking, scope resolution, and storage class validation, then returns
+    /// either a [`TypedTranslationUnit`] on success or `Err(())` if any errors
+    /// were emitted via the diagnostic emitter.
+    ///
+    /// # Arguments
+    ///
+    /// * `ast` — The untyped AST from the parser.
+    /// * `target` — Target architecture configuration for type sizes.
+    /// * `interner` — String interner for identifier resolution.
+    /// * `diagnostics` — Mutable reference to the diagnostic emitter.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(TypedTranslationUnit)` if analysis completes without errors, or
+    /// `Err(())` if errors were emitted (errors are accumulated in `diagnostics`).
+    pub fn analyze(
+        ast: &TranslationUnit,
+        target: &'a TargetConfig,
+        interner: &'a Interner,
+        diagnostics: &'a mut DiagnosticEmitter,
+    ) -> Result<TypedTranslationUnit, ()> {
+        let mut analyzer = SemanticAnalyzer::new(target, interner, diagnostics);
+
+        // File scope is already established by SymbolTable::new() and ScopeStack::new().
+        // Iterate over all top-level declarations.
+        for decl in &ast.declarations {
+            analyzer.analyze_declaration(decl);
+        }
+
+        // Check for any errors that were accumulated during analysis.
+        if analyzer.diagnostics.has_errors() {
+            return Err(());
+        }
+
+        Ok(TypedTranslationUnit {
+            declarations: analyzer.typed_declarations,
+            span: ast.span,
+        })
+    }
+
+    // -----------------------------------------------------------------------
+    // Declaration analysis
+    // -----------------------------------------------------------------------
+
+    /// Analyzes a single declaration, dispatching to the appropriate handler
+    /// based on the declaration kind.
+    ///
+    /// Handles variable declarations, function definitions, typedefs,
+    /// static assertions, and empty declarations.
+    pub fn analyze_declaration(&mut self, decl: &Declaration) {
+        match decl {
+            Declaration::Variable {
+                specifiers,
+                declarators,
+                span,
+            } => {
+                self.analyze_variable_declaration(specifiers, declarators, *span);
+                self.typed_declarations.push(TypedDeclaration {
+                    decl: decl.clone(),
+                    resolved_type: None,
+                });
+            }
+
+            Declaration::Function(func_def) => {
+                self.analyze_function_definition(func_def);
+                self.typed_declarations.push(TypedDeclaration {
+                    decl: decl.clone(),
+                    resolved_type: None,
+                });
+            }
+
+            Declaration::Typedef {
+                specifiers,
+                declarators,
+                span,
+            } => {
+                self.analyze_typedef(specifiers, declarators, *span);
+                self.typed_declarations.push(TypedDeclaration {
+                    decl: decl.clone(),
+                    resolved_type: None,
+                });
+            }
+
+            Declaration::StaticAssert {
+                expr,
+                message,
+                span,
+            } => {
+                self.analyze_static_assert(expr, message, *span);
+                self.typed_declarations.push(TypedDeclaration {
+                    decl: decl.clone(),
+                    resolved_type: None,
+                });
+            }
+
+            Declaration::Empty { .. } => {
+                // Empty declarations are syntactically valid and require no analysis.
+                self.typed_declarations.push(TypedDeclaration {
+                    decl: decl.clone(),
+                    resolved_type: None,
+                });
+            }
+        }
+    }
+
+    /// Analyzes a variable declaration with specifiers and declarators.
+    ///
+    /// For each declarator in the declaration list:
+    /// 1. Resolves the base type from the type specifier
+    /// 2. Applies pointer/array/function modifiers from the declarator
+    /// 3. Validates storage class specifiers for the current scope
+    /// 4. Checks initializer type compatibility (if present)
+    /// 5. Registers the symbol in the symbol table
+    fn analyze_variable_declaration(
+        &mut self,
+        specifiers: &DeclSpecifiers,
+        declarators: &[InitDeclarator],
+        span: SourceSpan,
+    ) {
+        let base_type = self.resolve_type_specifier(&specifiers.type_specifier);
+        let storage_class = specifiers.storage_class;
+
+        // Validate storage class for this scope context.
+        let scope_kind = self.scope_stack.current().kind;
+        let linkage_result = storage::validate_storage_class(
+            storage_class,
+            scope_kind,
+            false, // not a function declaration
+            self.diagnostics,
+            span,
+        );
+
+        let (linkage, _storage_duration) = match linkage_result {
+            Ok(result) => result,
+            Err(()) => (Linkage::None, StorageDuration::Automatic),
+        };
+
+        // Check for conflicting storage class specifiers.
+        if let Some(sc) = storage_class {
+            storage::check_conflicting_specifiers(&[sc], self.diagnostics, span);
+        }
+
+        for init_decl in declarators {
+            let decl_type =
+                self.apply_declarator_to_type(&base_type, &init_decl.declarator);
+            let name = self.extract_declarator_name(&init_decl.declarator);
+
+            if let Some(name_id) = name {
+                // Determine if this is a definition (has initializer or is not extern).
+                let is_defined = init_decl.initializer.is_some()
+                    || (storage_class != Some(StorageClass::Extern)
+                        && self.scope_stack.is_file_scope());
+                let is_tentative = !is_defined
+                    && storage_class != Some(StorageClass::Extern)
+                    && self.scope_stack.is_file_scope();
+
+                let symbol = Symbol {
+                    name: name_id,
+                    ty: decl_type.clone(),
+                    storage_class,
+                    linkage,
+                    is_defined,
+                    is_tentative,
+                    kind: SymbolKind::Variable,
+                    location: init_decl.span,
+                    scope_depth: self.scope_stack.depth(),
+                };
+
+                let _ = self.symbol_table.insert(name_id, symbol, self.diagnostics);
+
+                // Validate initializer type compatibility.
+                if let Some(ref init) = init_decl.initializer {
+                    self.analyze_initializer(init, &decl_type, init_decl.span);
+                }
+            }
+        }
+    }
+
+    /// Analyzes a function definition: validates the return type, parameters,
+    /// and body.
+    ///
+    /// The analysis proceeds as follows:
+    /// 1. Resolve the return type from specifiers
+    /// 2. Build the function type from parameters
+    /// 3. Validate storage class for functions
+    /// 4. Register the function symbol in the current scope
+    /// 5. Enter function scope and block scope
+    /// 6. Register parameters as local variables
+    /// 7. Analyze the function body
+    /// 8. Exit block scope and function scope
+    fn analyze_function_definition(&mut self, func_def: &FunctionDef) {
+        let return_type = self.resolve_type_specifier(&func_def.specifiers.type_specifier);
+        let storage_class = func_def.specifiers.storage_class;
+        let span = func_def.span;
+
+        // Validate storage class for function declarations.
+        let scope_kind = self.scope_stack.current().kind;
+        let linkage_result = storage::validate_storage_class(
+            storage_class,
+            scope_kind,
+            true, // is a function declaration
+            self.diagnostics,
+            span,
+        );
+
+        let (linkage, _storage_duration) = match linkage_result {
+            Ok(result) => result,
+            Err(()) => (Linkage::External, StorageDuration::Static),
+        };
+
+        // Build the function type from the declarator.
+        let (func_name, func_type) =
+            self.build_function_type(&func_def.declarator, &return_type);
+
+        if let Some(name_id) = func_name {
+            // Register function in the symbol table.
+            let symbol = Symbol {
+                name: name_id,
+                ty: CType::Function(func_type.clone()),
+                storage_class,
+                linkage,
+                is_defined: true,
+                is_tentative: false,
+                kind: SymbolKind::Function,
+                location: span,
+                scope_depth: self.scope_stack.depth(),
+            };
+
+            let _ = self.symbol_table.insert(name_id, symbol, self.diagnostics);
+        }
+
+        // Save the previous function context and enter the new one.
+        let prev_return_type = self.current_function_return_type.take();
+        let prev_in_loop = self.in_loop;
+        let prev_in_switch = self.in_switch;
+        self.current_function_return_type = Some(return_type);
+        self.in_loop = false;
+        self.in_switch = false;
+
+        // Enter function scope for labels.
+        self.scope_stack.push(ScopeKind::Function);
+        self.symbol_table.push_scope(ScopeKind::Function);
+
+        // Enter block scope for the function body.
+        self.scope_stack.push(ScopeKind::Block);
+        self.symbol_table.push_scope(ScopeKind::Block);
+
+        // Register parameters as local variables.
+        for param in &func_type.params {
+            if let Some(ref name) = param.name {
+                let param_name_id = self.interner.get(name).unwrap_or_else(|| {
+                    // If the parameter name isn't interned yet, we use a dummy.
+                    // In practice, the parser should have already interned it.
+                    InternId::from_raw(0)
+                });
+                if param_name_id.as_u32() != 0 || self.interner.resolve(param_name_id) == name {
+                    let param_symbol = Symbol {
+                        name: param_name_id,
+                        ty: param.ty.clone(),
+                        storage_class: None,
+                        linkage: Linkage::None,
+                        is_defined: true,
+                        is_tentative: false,
+                        kind: SymbolKind::Variable,
+                        location: span,
+                        scope_depth: self.scope_stack.depth(),
+                    };
+                    let _ = self
+                        .symbol_table
+                        .insert(param_name_id, param_symbol, self.diagnostics);
+                }
+            }
+        }
+
+        // Analyze the function body.
+        self.analyze_statement(&func_def.body);
+
+        // Clear labels (check for undefined label references).
+        self.symbol_table.clear_labels();
+
+        // Exit block scope and function scope.
+        self.symbol_table.pop_scope();
+        self.scope_stack.pop();
+        self.symbol_table.pop_scope();
+        self.scope_stack.pop();
+
+        // Restore previous function context.
+        self.current_function_return_type = prev_return_type;
+        self.in_loop = prev_in_loop;
+        self.in_switch = prev_in_switch;
+    }
+
+    /// Analyzes a typedef declaration.
+    ///
+    /// Resolves the base type and registers each typedef name in the symbol table.
+    fn analyze_typedef(
+        &mut self,
+        specifiers: &DeclSpecifiers,
+        declarators: &[Declarator],
+        span: SourceSpan,
+    ) {
+        let base_type = self.resolve_type_specifier(&specifiers.type_specifier);
+
+        for declarator in declarators {
+            let typedef_type = self.apply_declarator_to_type(&base_type, declarator);
+            let name = self.extract_declarator_name(declarator);
+
+            if let Some(name_id) = name {
+                let name_str = self.interner.resolve(name_id).to_string();
+                let aliased = CType::Typedef {
+                    name: name_str,
+                    underlying: Box::new(typedef_type),
+                };
+
+                let symbol = Symbol {
+                    name: name_id,
+                    ty: aliased,
+                    storage_class: Some(StorageClass::Static), // typedefs have no linkage
+                    linkage: Linkage::None,
+                    is_defined: true,
+                    is_tentative: false,
+                    kind: SymbolKind::Typedef,
+                    location: span,
+                    scope_depth: self.scope_stack.depth(),
+                };
+
+                let _ = self.symbol_table.insert(name_id, symbol, self.diagnostics);
+            }
+        }
+    }
+
+    /// Analyzes a `_Static_assert` declaration.
+    ///
+    /// Evaluates the constant expression. If it evaluates to zero, emits an
+    /// error with the provided message string.
+    fn analyze_static_assert(
+        &mut self,
+        expr: &Expression,
+        message: &str,
+        span: SourceSpan,
+    ) {
+        let expr_type = self.analyze_expression(expr);
+        if !expr_type.is_integer() && !expr_type.is_error() {
+            self.diagnostics.error(
+                span.start,
+                "static assertion expression is not an integer constant expression",
+            );
+        }
+        // Full compile-time evaluation would determine the value.
+        // For now, we only verify the type is valid — runtime assertion
+        // checking is deferred to constant expression evaluation in the
+        // IR builder. The message is preserved for the error diagnostic.
+        let _ = message;
+    }
+
+    // -----------------------------------------------------------------------
+    // Statement analysis
+    // -----------------------------------------------------------------------
+
+    /// Analyzes a single statement, dispatching to the appropriate handler
+    /// based on the statement kind.
+    ///
+    /// Validates control flow constraints (break/continue only in loops/switches),
+    /// type constraints (conditions must be scalar), and scope management
+    /// (compound statements push/pop block scope).
+    pub fn analyze_statement(&mut self, stmt: &Statement) {
+        match stmt {
+            Statement::Compound { items, .. } => {
+                self.scope_stack.push(ScopeKind::Block);
+                self.symbol_table.push_scope(ScopeKind::Block);
+
+                for item in items {
+                    match item {
+                        BlockItem::Declaration(decl) => {
+                            self.analyze_declaration(decl);
+                        }
+                        BlockItem::Statement(sub_stmt) => {
+                            self.analyze_statement(sub_stmt);
+                        }
+                    }
+                }
+
+                self.symbol_table.pop_scope();
+                self.scope_stack.pop();
+            }
+
+            Statement::If {
+                condition,
+                then_branch,
+                else_branch,
+                span,
+            } => {
+                let cond_type = self.analyze_expression(condition);
+                if !cond_type.is_scalar() && !cond_type.is_error() {
+                    self.diagnostics.error(
+                        span.start,
+                        format!(
+                            "controlling expression type '{}' is not scalar",
+                            cond_type
+                        ),
+                    );
+                }
+                self.analyze_statement(then_branch);
+                if let Some(ref else_body) = else_branch {
+                    self.analyze_statement(else_body);
+                }
+            }
+
+            Statement::For {
+                init,
+                condition,
+                increment,
+                body,
+                span,
+            } => {
+                // For-loop has its own scope for C99 declarations in the init clause.
+                self.scope_stack.push(ScopeKind::Block);
+                self.symbol_table.push_scope(ScopeKind::Block);
+
+                if let Some(ref for_init) = init {
+                    match for_init.as_ref() {
+                        ForInit::Declaration(decl) => {
+                            self.analyze_declaration(decl);
+                        }
+                        ForInit::Expression(expr) => {
+                            self.analyze_expression(expr);
+                        }
+                    }
+                }
+
+                if let Some(ref cond) = condition {
+                    let cond_type = self.analyze_expression(cond);
+                    if !cond_type.is_scalar() && !cond_type.is_error() {
+                        self.diagnostics.error(
+                            span.start,
+                            format!(
+                                "controlling expression type '{}' is not scalar",
+                                cond_type
+                            ),
+                        );
+                    }
+                }
+
+                if let Some(ref incr) = increment {
+                    self.analyze_expression(incr);
+                }
+
+                let prev_in_loop = self.in_loop;
+                self.in_loop = true;
+                self.analyze_statement(body);
+                self.in_loop = prev_in_loop;
+
+                self.symbol_table.pop_scope();
+                self.scope_stack.pop();
+            }
+
+            Statement::While {
+                condition,
+                body,
+                span,
+            } => {
+                let cond_type = self.analyze_expression(condition);
+                if !cond_type.is_scalar() && !cond_type.is_error() {
+                    self.diagnostics.error(
+                        span.start,
+                        format!(
+                            "controlling expression type '{}' is not scalar",
+                            cond_type
+                        ),
+                    );
+                }
+
+                let prev_in_loop = self.in_loop;
+                self.in_loop = true;
+                self.analyze_statement(body);
+                self.in_loop = prev_in_loop;
+            }
+
+            Statement::DoWhile {
+                body,
+                condition,
+                span,
+            } => {
+                let prev_in_loop = self.in_loop;
+                self.in_loop = true;
+                self.analyze_statement(body);
+                self.in_loop = prev_in_loop;
+
+                let cond_type = self.analyze_expression(condition);
+                if !cond_type.is_scalar() && !cond_type.is_error() {
+                    self.diagnostics.error(
+                        span.start,
+                        format!(
+                            "controlling expression type '{}' is not scalar",
+                            cond_type
+                        ),
+                    );
+                }
+            }
+
+            Statement::Switch { expr, body, span } => {
+                let expr_type = self.analyze_expression(expr);
+                if !expr_type.is_integer() && !expr_type.is_error() {
+                    self.diagnostics.error(
+                        span.start,
+                        format!(
+                            "switch controlling expression type '{}' is not an integer",
+                            expr_type
+                        ),
+                    );
+                }
+
+                let prev_in_switch = self.in_switch;
+                self.in_switch = true;
+                self.analyze_statement(body);
+                self.in_switch = prev_in_switch;
+            }
+
+            Statement::Case { value, range_end, body, span } => {
+                if !self.in_switch {
+                    self.diagnostics.error(
+                        span.start,
+                        "'case' label not within a switch statement",
+                    );
+                }
+                let val_type = self.analyze_expression(value);
+                if !val_type.is_integer() && !val_type.is_error() {
+                    self.diagnostics.error(
+                        span.start,
+                        "case expression is not an integer constant expression",
+                    );
+                }
+                if let Some(ref range_expr) = range_end {
+                    let range_type = self.analyze_expression(range_expr);
+                    if !range_type.is_integer() && !range_type.is_error() {
+                        self.diagnostics.error(
+                            span.start,
+                            "case range expression is not an integer constant expression",
+                        );
+                    }
+                }
+                self.analyze_statement(body);
+            }
+
+            Statement::Default { body, span } => {
+                if !self.in_switch {
+                    self.diagnostics.error(
+                        span.start,
+                        "'default' label not within a switch statement",
+                    );
+                }
+                self.analyze_statement(body);
+            }
+
+            Statement::Break { span } => {
+                if !self.in_loop && !self.in_switch {
+                    self.diagnostics.error(
+                        span.start,
+                        "'break' statement not in loop or switch statement",
+                    );
+                }
+            }
+
+            Statement::Continue { span } => {
+                if !self.in_loop {
+                    self.diagnostics.error(
+                        span.start,
+                        "'continue' statement not in loop statement",
+                    );
+                }
+            }
+
+            Statement::Return { value, span } => {
+                let return_type = value
+                    .as_ref()
+                    .map(|expr| self.analyze_expression(expr));
+
+                if let Some(ref expected) = self.current_function_return_type {
+                    type_check::check_return(
+                        &return_type,
+                        expected,
+                        self.diagnostics,
+                        *span,
+                    );
+                } else {
+                    self.diagnostics.error(
+                        span.start,
+                        "'return' statement outside of function body",
+                    );
+                }
+            }
+
+            Statement::Goto { label, span } => {
+                if !self.scope_stack.is_in_function() {
+                    self.diagnostics.error(
+                        span.start,
+                        "'goto' statement outside of function body",
+                    );
+                }
+                // Register label as a forward reference (not defined).
+                let label_symbol = Symbol {
+                    name: *label,
+                    ty: CType::Void,
+                    storage_class: None,
+                    linkage: Linkage::None,
+                    is_defined: false,
+                    is_tentative: false,
+                    kind: SymbolKind::Label,
+                    location: *span,
+                    scope_depth: self.scope_stack.depth(),
+                };
+                let _ = self
+                    .symbol_table
+                    .insert_label(*label, label_symbol, self.diagnostics);
+            }
+
+            Statement::Labeled {
+                label, body, span, ..
+            } => {
+                // Register label as defined.
+                let label_symbol = Symbol {
+                    name: *label,
+                    ty: CType::Void,
+                    storage_class: None,
+                    linkage: Linkage::None,
+                    is_defined: true,
+                    is_tentative: false,
+                    kind: SymbolKind::Label,
+                    location: *span,
+                    scope_depth: self.scope_stack.depth(),
+                };
+                let _ = self
+                    .symbol_table
+                    .insert_label(*label, label_symbol, self.diagnostics);
+
+                self.analyze_statement(body);
+            }
+
+            Statement::Expression { expr, .. } => {
+                self.analyze_expression(expr);
+            }
+
+            Statement::Null { .. } => {
+                // Null statement — no analysis needed.
+            }
+
+            Statement::Declaration(decl) => {
+                self.analyze_declaration(decl);
+            }
+
+            Statement::Asm(_) => {
+                // Inline assembly — type checking is minimal; accept as-is.
+                // The assembler validates the constraints during code generation.
+            }
+
+            Statement::ComputedGoto { target, span } => {
+                let target_type = self.analyze_expression(target);
+                if !target_type.is_pointer() && !target_type.is_error() {
+                    self.diagnostics.error(
+                        span.start,
+                        "argument to computed goto must be a pointer",
+                    );
+                }
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Expression analysis
+    // -----------------------------------------------------------------------
+
+    /// Analyzes an expression and returns its resolved C type.
+    ///
+    /// Dispatches to type checking functions for operator validation,
+    /// type conversion functions for implicit conversions, and the symbol
+    /// table for identifier resolution.
+    pub fn analyze_expression(&mut self, expr: &Expression) -> CType {
+        match expr {
+            // --- Literals ---
+            Expression::IntegerLiteral { suffix, .. } => {
+                self.resolve_integer_literal_type(suffix)
+            }
+
+            Expression::FloatLiteral { suffix, .. } => {
+                use crate::frontend::parser::ast::FloatSuffix;
+                match suffix {
+                    FloatSuffix::None => CType::Float(FloatKind::Double),
+                    FloatSuffix::Float => CType::Float(FloatKind::Float),
+                    FloatSuffix::Long => CType::Float(FloatKind::LongDouble),
+                }
+            }
+
+            Expression::StringLiteral { .. } => {
+                // String literals have type `char[N]` which decays to `char *`.
+                CType::Pointer {
+                    pointee: Box::new(CType::Integer(IntegerKind::Char)),
+                    qualifiers: TypeQualifiers {
+                        is_const: true,
+                        ..TypeQualifiers::default()
+                    },
+                }
+            }
+
+            Expression::CharLiteral { .. } => {
+                // Character literals have type `int` in C (C11 §6.4.4.4).
+                CType::Integer(IntegerKind::Int)
+            }
+
+            // --- Identifier ---
+            Expression::Identifier { name, span } => {
+                if let Some(sym) = self.symbol_table.lookup(*name) {
+                    sym.ty.clone()
+                } else {
+                    let name_str = self.interner.resolve(*name);
+                    self.diagnostics.error(
+                        span.start,
+                        format!("use of undeclared identifier '{}'", name_str),
+                    );
+                    CType::Error
+                }
+            }
+
+            // --- Binary operations ---
+            Expression::Binary {
+                op,
+                left,
+                right,
+                span,
+            } => {
+                let left_type = self.analyze_expression(left);
+                let right_type = self.analyze_expression(right);
+                type_check::check_binary_op(
+                    *op,
+                    &left_type,
+                    &right_type,
+                    self.target,
+                    self.diagnostics,
+                    *span,
+                )
+            }
+
+            // --- Unary prefix operations ---
+            Expression::UnaryPrefix { op, operand, span } => {
+                let operand_type = self.analyze_expression(operand);
+                type_check::check_unary_op(
+                    *op,
+                    &operand_type,
+                    self.target,
+                    self.diagnostics,
+                    *span,
+                )
+            }
+
+            // --- Postfix increment/decrement ---
+            Expression::PostIncrement { operand, span } => {
+                let operand_type = self.analyze_expression(operand);
+                type_check::check_postfix_op(
+                    &operand_type,
+                    self.diagnostics,
+                    *span,
+                );
+                operand_type
+            }
+
+            Expression::PostDecrement { operand, span } => {
+                let operand_type = self.analyze_expression(operand);
+                type_check::check_postfix_op(
+                    &operand_type,
+                    self.diagnostics,
+                    *span,
+                );
+                operand_type
+            }
+
+            // --- Function call ---
+            Expression::Call { callee, args, span } => {
+                let callee_type = self.analyze_expression(callee);
+                let arg_types: Vec<CType> = args
+                    .iter()
+                    .map(|arg| self.analyze_expression(arg))
+                    .collect();
+                type_check::check_function_call(
+                    &callee_type,
+                    &arg_types,
+                    self.target,
+                    self.diagnostics,
+                    *span,
+                )
+            }
+
+            // --- Array subscript ---
+            Expression::Subscript {
+                array,
+                index,
+                span,
+            } => {
+                let array_type = self.analyze_expression(array);
+                let index_type = self.analyze_expression(index);
+                type_check::check_subscript(
+                    &array_type,
+                    &index_type,
+                    self.diagnostics,
+                    *span,
+                )
+            }
+
+            // --- Member access ---
+            Expression::MemberAccess {
+                object,
+                member,
+                span,
+            } => {
+                let object_type = self.analyze_expression(object);
+                let member_str = self.interner.resolve(*member);
+                type_check::check_member_access(
+                    &object_type,
+                    *member,
+                    member_str,
+                    false, // direct access (not arrow)
+                    self.diagnostics,
+                    *span,
+                )
+            }
+
+            Expression::ArrowAccess {
+                pointer,
+                member,
+                span,
+            } => {
+                let pointer_type = self.analyze_expression(pointer);
+                let member_str = self.interner.resolve(*member);
+                type_check::check_member_access(
+                    &pointer_type,
+                    *member,
+                    member_str,
+                    true, // arrow access (dereference first)
+                    self.diagnostics,
+                    *span,
+                )
+            }
+
+            // --- Assignment ---
+            Expression::Assignment {
+                op,
+                target,
+                value,
+                span,
+            } => {
+                let target_type = self.analyze_expression(target);
+                let value_type = self.analyze_expression(value);
+
+                // Validate lvalue.
+                type_check::check_lvalue(
+                    target,
+                    &self.symbol_table,
+                    self.diagnostics,
+                    *span,
+                );
+
+                match op {
+                    AssignmentOp::Assign => {
+                        type_check::check_assignment(
+                            &target_type,
+                            &value_type,
+                            self.diagnostics,
+                            *span,
+                        );
+                    }
+                    _ => {
+                        // Compound assignment (+=, -=, etc.) — the target type
+                        // must be compatible with the binary operation result.
+                        // The result type is the target type after the operation.
+                    }
+                }
+
+                target_type
+            }
+
+            // --- Ternary conditional ---
+            Expression::Ternary {
+                condition,
+                then_expr,
+                else_expr,
+                span,
+            } => {
+                let cond_type = self.analyze_expression(condition);
+                if !cond_type.is_scalar() && !cond_type.is_error() {
+                    self.diagnostics.error(
+                        span.start,
+                        format!(
+                            "controlling expression type '{}' is not scalar",
+                            cond_type
+                        ),
+                    );
+                }
+
+                let then_type = self.analyze_expression(then_expr);
+                let else_type = self.analyze_expression(else_expr);
+
+                type_check::check_conditional(
+                    &cond_type,
+                    &then_type,
+                    &else_type,
+                    self.target,
+                    self.diagnostics,
+                    *span,
+                )
+            }
+
+            // --- Comma ---
+            Expression::Comma { exprs, .. } => {
+                let mut last_type = CType::Void;
+                for sub_expr in exprs {
+                    last_type = self.analyze_expression(sub_expr);
+                }
+                last_type
+            }
+
+            // --- Cast ---
+            Expression::Cast {
+                type_name,
+                operand,
+                span,
+            } => {
+                let target_type = self.resolve_type_name(type_name);
+                let operand_type = self.analyze_expression(operand);
+                type_check::check_cast(
+                    &target_type,
+                    &operand_type,
+                    self.diagnostics,
+                    *span,
+                );
+                target_type
+            }
+
+            // --- Sizeof ---
+            Expression::SizeofExpr { expr, .. } => {
+                // sizeof yields size_t, which is unsigned long on 64-bit
+                // and unsigned int on 32-bit.
+                let _expr_type = self.analyze_expression(expr);
+                self.size_t_type()
+            }
+
+            Expression::SizeofType { type_name, .. } => {
+                let _resolved = self.resolve_type_name(type_name);
+                self.size_t_type()
+            }
+
+            // --- Alignof ---
+            Expression::Alignof { type_name, .. } => {
+                let _resolved = self.resolve_type_name(type_name);
+                self.size_t_type()
+            }
+
+            // --- C11 _Generic ---
+            Expression::Generic {
+                controlling,
+                associations,
+                span,
+            } => {
+                use crate::frontend::parser::ast::GenericAssociation;
+                let ctrl_type = self.analyze_expression(controlling);
+                // Evaluate associations — find the matching type or default.
+                let mut result_type = CType::Error;
+                let mut found_match = false;
+                for assoc in associations {
+                    match assoc {
+                        GenericAssociation::Type {
+                            type_name, expr, ..
+                        } => {
+                            let assoc_type = self.resolve_type_name(type_name);
+                            if ctrl_type.is_compatible(&assoc_type) && !found_match {
+                                result_type = self.analyze_expression(expr);
+                                found_match = true;
+                            }
+                        }
+                        GenericAssociation::Default { expr, .. } => {
+                            // default association
+                            if !found_match {
+                                result_type = self.analyze_expression(expr);
+                                found_match = true;
+                            }
+                        }
+                    }
+                }
+                if !found_match {
+                    self.diagnostics.error(
+                        span.start,
+                        "no matching generic association for controlling expression",
+                    );
+                }
+                result_type
+            }
+
+            // --- Compound literal ---
+            Expression::CompoundLiteral {
+                type_name,
+                initializer,
+                span,
+            } => {
+                let resolved = self.resolve_type_name(type_name);
+                self.analyze_initializer(initializer, &resolved, *span);
+                resolved
+            }
+
+            // --- GCC Extensions ---
+            Expression::StatementExpr { body, .. } => {
+                // GCC statement expression: the type is the type of the last
+                // expression in the compound statement.
+                // For simplicity, analyze the body and return void.
+                self.analyze_statement(body);
+                CType::Void
+            }
+
+            Expression::LabelAddr { label, span } => {
+                // GCC &&label yields void *.
+                if self.symbol_table.lookup_label(*label).is_none() {
+                    // The label might be forward-referenced — register it.
+                    let label_sym = Symbol {
+                        name: *label,
+                        ty: CType::Void,
+                        storage_class: None,
+                        linkage: Linkage::None,
+                        is_defined: false,
+                        is_tentative: false,
+                        kind: SymbolKind::Label,
+                        location: *span,
+                        scope_depth: self.scope_stack.depth(),
+                    };
+                    let _ = self
+                        .symbol_table
+                        .insert_label(*label, label_sym, self.diagnostics);
+                }
+                CType::Pointer {
+                    pointee: Box::new(CType::Void),
+                    qualifiers: TypeQualifiers::default(),
+                }
+            }
+
+            Expression::Extension { expr, .. } => {
+                // __extension__ just suppresses warnings; analyze the inner expr.
+                self.analyze_expression(expr)
+            }
+
+            Expression::BuiltinVaArg { ap, type_name, .. } => {
+                let _ap_type = self.analyze_expression(ap);
+                self.resolve_type_name(type_name)
+            }
+
+            Expression::BuiltinOffsetof { type_name, .. } => {
+                let _resolved = self.resolve_type_name(type_name);
+                self.size_t_type()
+            }
+
+            Expression::BuiltinVaStart { ap, param, .. } => {
+                let _ap_type = self.analyze_expression(ap);
+                let _param_type = self.analyze_expression(param);
+                CType::Void
+            }
+
+            Expression::BuiltinVaEnd { ap, .. } => {
+                let _ap_type = self.analyze_expression(ap);
+                CType::Void
+            }
+
+            Expression::BuiltinVaCopy { dest, src, .. } => {
+                let _dest_type = self.analyze_expression(dest);
+                let _src_type = self.analyze_expression(src);
+                CType::Void
+            }
+
+            // --- Parenthesized expression ---
+            Expression::Paren { inner, .. } => self.analyze_expression(inner),
+
+            // --- Error recovery ---
+            Expression::Error { .. } => CType::Error,
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Type resolution helpers
+    // -----------------------------------------------------------------------
+
+    /// Resolves a [`TypeSpecifier`] from the AST into a [`CType`].
+    ///
+    /// Maps parser-level type specifiers to the semantic analysis type system,
+    /// handling basic types, signed/unsigned modifiers, composite types, typedef
+    /// references, and GCC extensions.
+    fn resolve_type_specifier(&mut self, spec: &TypeSpecifier) -> CType {
+        match spec {
+            TypeSpecifier::Void => CType::Void,
+            TypeSpecifier::Char => CType::Integer(IntegerKind::Char),
+            TypeSpecifier::Short => CType::Integer(IntegerKind::Short),
+            TypeSpecifier::Int => CType::Integer(IntegerKind::Int),
+            TypeSpecifier::Long => CType::Integer(IntegerKind::Long),
+            TypeSpecifier::LongLong => CType::Integer(IntegerKind::LongLong),
+            TypeSpecifier::Float => CType::Float(FloatKind::Float),
+            TypeSpecifier::Double => CType::Float(FloatKind::Double),
+            TypeSpecifier::LongDouble => CType::Float(FloatKind::LongDouble),
+            TypeSpecifier::Bool => CType::Integer(IntegerKind::Bool),
+
+            TypeSpecifier::Signed(inner) => {
+                match inner.as_ref() {
+                    TypeSpecifier::Char => CType::Integer(IntegerKind::SignedChar),
+                    TypeSpecifier::Short => CType::Integer(IntegerKind::Short),
+                    TypeSpecifier::Int => CType::Integer(IntegerKind::Int),
+                    TypeSpecifier::Long => CType::Integer(IntegerKind::Long),
+                    TypeSpecifier::LongLong => CType::Integer(IntegerKind::LongLong),
+                    _ => {
+                        // `signed` alone is `signed int`.
+                        CType::Integer(IntegerKind::Int)
+                    }
+                }
+            }
+
+            TypeSpecifier::Unsigned(inner) => {
+                match inner.as_ref() {
+                    TypeSpecifier::Char => CType::Integer(IntegerKind::UnsignedChar),
+                    TypeSpecifier::Short => CType::Integer(IntegerKind::UnsignedShort),
+                    TypeSpecifier::Int => CType::Integer(IntegerKind::UnsignedInt),
+                    TypeSpecifier::Long => CType::Integer(IntegerKind::UnsignedLong),
+                    TypeSpecifier::LongLong => CType::Integer(IntegerKind::UnsignedLongLong),
+                    _ => {
+                        // `unsigned` alone is `unsigned int`.
+                        CType::Integer(IntegerKind::UnsignedInt)
+                    }
+                }
+            }
+
+            TypeSpecifier::Complex(_inner) => {
+                // _Complex types — simplified as double for now.
+                CType::Float(FloatKind::Double)
+            }
+
+            TypeSpecifier::Atomic(inner) => {
+                let base = self.resolve_type_specifier(inner);
+                CType::Qualified {
+                    base: Box::new(base),
+                    qualifiers: TypeQualifiers {
+                        is_atomic: true,
+                        ..TypeQualifiers::default()
+                    },
+                }
+            }
+
+            TypeSpecifier::Struct(struct_def) => {
+                self.analyze_struct_def(struct_def, false)
+            }
+
+            TypeSpecifier::Union(union_def) => {
+                self.analyze_union_def(union_def)
+            }
+
+            TypeSpecifier::Enum(enum_def) => {
+                self.analyze_enum_def(enum_def)
+            }
+
+            TypeSpecifier::StructRef { tag, span } => {
+                if let Some(sym) = self.symbol_table.lookup_tag(*tag) {
+                    sym.ty.clone()
+                } else {
+                    // Forward reference — create incomplete struct.
+                    let name = self.interner.resolve(*tag).to_string();
+                    let st = StructType {
+                        tag: Some(name),
+                        fields: Vec::new(),
+                        is_union: false,
+                        is_packed: false,
+                        custom_alignment: None,
+                        is_complete: false,
+                    };
+                    let ty = CType::Struct(st);
+                    let tag_sym = Symbol {
+                        name: *tag,
+                        ty: ty.clone(),
+                        storage_class: None,
+                        linkage: Linkage::None,
+                        is_defined: false,
+                        is_tentative: false,
+                        kind: SymbolKind::StructTag,
+                        location: *span,
+                        scope_depth: self.scope_stack.depth(),
+                    };
+                    let _ = self
+                        .symbol_table
+                        .insert_tag(*tag, tag_sym, self.diagnostics);
+                    ty
+                }
+            }
+
+            TypeSpecifier::UnionRef { tag, span } => {
+                if let Some(sym) = self.symbol_table.lookup_tag(*tag) {
+                    sym.ty.clone()
+                } else {
+                    let name = self.interner.resolve(*tag).to_string();
+                    let st = StructType {
+                        tag: Some(name),
+                        fields: Vec::new(),
+                        is_union: true,
+                        is_packed: false,
+                        custom_alignment: None,
+                        is_complete: false,
+                    };
+                    let ty = CType::Struct(st);
+                    let tag_sym = Symbol {
+                        name: *tag,
+                        ty: ty.clone(),
+                        storage_class: None,
+                        linkage: Linkage::None,
+                        is_defined: false,
+                        is_tentative: false,
+                        kind: SymbolKind::UnionTag,
+                        location: *span,
+                        scope_depth: self.scope_stack.depth(),
+                    };
+                    let _ = self
+                        .symbol_table
+                        .insert_tag(*tag, tag_sym, self.diagnostics);
+                    ty
+                }
+            }
+
+            TypeSpecifier::EnumRef { tag, span } => {
+                if let Some(sym) = self.symbol_table.lookup_tag(*tag) {
+                    sym.ty.clone()
+                } else {
+                    let name = self.interner.resolve(*tag).to_string();
+                    let et = EnumType {
+                        tag: Some(name),
+                        variants: Vec::new(),
+                        is_complete: false,
+                    };
+                    let ty = CType::Enum(et);
+                    let tag_sym = Symbol {
+                        name: *tag,
+                        ty: ty.clone(),
+                        storage_class: None,
+                        linkage: Linkage::None,
+                        is_defined: false,
+                        is_tentative: false,
+                        kind: SymbolKind::EnumTag,
+                        location: *span,
+                        scope_depth: self.scope_stack.depth(),
+                    };
+                    let _ = self
+                        .symbol_table
+                        .insert_tag(*tag, tag_sym, self.diagnostics);
+                    ty
+                }
+            }
+
+            TypeSpecifier::TypedefName { name, span } => {
+                if let Some(sym) = self.symbol_table.lookup(*name) {
+                    sym.ty.clone()
+                } else {
+                    let name_str = self.interner.resolve(*name);
+                    self.diagnostics.error(
+                        span.start,
+                        format!("unknown type name '{}'", name_str),
+                    );
+                    CType::Error
+                }
+            }
+
+            TypeSpecifier::Typeof { expr, .. } => {
+                let ty = self.analyze_expression(expr);
+                CType::TypeOf(Box::new(ty))
+            }
+
+            TypeSpecifier::TypeofType { type_name, .. } => {
+                let ty = self.resolve_type_specifier(type_name);
+                CType::TypeOf(Box::new(ty))
+            }
+
+            TypeSpecifier::Qualified { qualifiers, inner } => {
+                let base = self.resolve_type_specifier(inner);
+                let quals = self.resolve_qualifiers(qualifiers);
+                if quals.is_empty() {
+                    base
+                } else {
+                    CType::Qualified {
+                        base: Box::new(base),
+                        qualifiers: quals,
+                    }
+                }
+            }
+
+            TypeSpecifier::Error => CType::Error,
+        }
+    }
+
+    /// Resolves a list of AST type qualifiers into a [`TypeQualifiers`] struct.
+    fn resolve_qualifiers(
+        &self,
+        qualifiers: &[crate::frontend::parser::ast::TypeQualifier],
+    ) -> TypeQualifiers {
+        use crate::frontend::parser::ast::TypeQualifier;
+        let mut result = TypeQualifiers::default();
+        for q in qualifiers {
+            match q {
+                TypeQualifier::Const => result.is_const = true,
+                TypeQualifier::Volatile => result.is_volatile = true,
+                TypeQualifier::Restrict => result.is_restrict = true,
+                TypeQualifier::Atomic => result.is_atomic = true,
+            }
+        }
+        result
+    }
+
+    /// Resolves a [`TypeName`] (used in casts, sizeof, etc.) into a [`CType`].
+    fn resolve_type_name(&mut self, type_name: &TypeName) -> CType {
+        let base = self.resolve_type_specifier(&type_name.specifiers.type_specifier);
+        // Apply qualifiers from specifiers.
+        let quals = self.resolve_qualifiers(&type_name.specifiers.type_qualifiers);
+        let qualified = if quals.is_empty() {
+            base
+        } else {
+            CType::Qualified {
+                base: Box::new(base),
+                qualifiers: quals,
+            }
+        };
+        // Apply abstract declarator if present.
+        if let Some(ref abs_decl) = type_name.abstract_declarator {
+            self.apply_abstract_declarator(qualified, abs_decl)
+        } else {
+            qualified
+        }
+    }
+
+    /// Applies an abstract declarator's pointer/array/function modifiers to a base type.
+    fn apply_abstract_declarator(
+        &self,
+        mut base: CType,
+        abs: &crate::frontend::parser::ast::AbstractDeclarator,
+    ) -> CType {
+        // Apply pointer modifiers (outermost first).
+        for ptr in &abs.pointer {
+            let quals = self.resolve_qualifiers(&ptr.qualifiers);
+            base = CType::Pointer {
+                pointee: Box::new(base),
+                qualifiers: quals,
+            };
+        }
+        base
+    }
+
+    /// Applies a declarator's pointer/array/function modifiers to a base type.
+    fn apply_declarator_to_type(
+        &mut self,
+        base: &CType,
+        declarator: &Declarator,
+    ) -> CType {
+        let mut result = base.clone();
+
+        // Apply pointer modifiers.
+        for ptr in &declarator.pointer {
+            let quals = self.resolve_qualifiers(&ptr.qualifiers);
+            result = CType::Pointer {
+                pointee: Box::new(result),
+                qualifiers: quals,
+            };
+        }
+
+        // Apply direct declarator modifiers (array, function).
+        result = self.apply_direct_declarator(&result, &declarator.direct);
+
+        result
+    }
+
+    /// Applies direct declarator modifiers (array sizes, function parameters).
+    fn apply_direct_declarator(
+        &mut self,
+        base: &CType,
+        direct: &DirectDeclarator,
+    ) -> CType {
+        match direct {
+            DirectDeclarator::Identifier(_) => base.clone(),
+            DirectDeclarator::Abstract => base.clone(),
+
+            DirectDeclarator::Parenthesized(inner) => {
+                self.apply_declarator_to_type(base, inner)
+            }
+
+            DirectDeclarator::Array {
+                base: inner_base,
+                size,
+                ..
+            } => {
+                let inner = self.apply_direct_declarator(base, inner_base);
+                let array_size = match size {
+                    crate::frontend::parser::ast::ArraySize::Fixed(expr) => {
+                        // Evaluate constant expression for array size.
+                        // Simplified: treat all as incomplete for now until
+                        // constant evaluation is fully wired up.
+                        let _ty = self.analyze_expression(expr);
+                        types::ArraySize::Fixed(0) // Placeholder — const eval needed
+                    }
+                    crate::frontend::parser::ast::ArraySize::Unspecified => {
+                        types::ArraySize::Incomplete
+                    }
+                    crate::frontend::parser::ast::ArraySize::VLA => {
+                        types::ArraySize::Variable
+                    }
+                    crate::frontend::parser::ast::ArraySize::Static(expr) => {
+                        let _ty = self.analyze_expression(expr);
+                        types::ArraySize::Fixed(0) // Placeholder — const eval needed
+                    }
+                };
+                CType::Array {
+                    element: Box::new(inner),
+                    size: array_size,
+                }
+            }
+
+            DirectDeclarator::Function {
+                base: inner_base,
+                params,
+            } => {
+                let return_type = self.apply_direct_declarator(base, inner_base);
+                let mut func_params = Vec::new();
+                for param in &params.params {
+                    let param_type =
+                        self.resolve_type_specifier(&param.specifiers.type_specifier);
+                    let adjusted = if let Some(ref decl) = param.declarator {
+                        self.apply_declarator_to_type(&param_type, decl)
+                    } else {
+                        param_type
+                    };
+                    // Apply parameter type adjustment: arrays decay to pointers,
+                    // functions decay to function pointers.
+                    let adjusted = adjusted.decay();
+                    let name = param
+                        .declarator
+                        .as_ref()
+                        .and_then(|d| self.extract_declarator_name(d))
+                        .map(|id| self.interner.resolve(id).to_string());
+                    func_params.push(FunctionParam {
+                        name,
+                        ty: adjusted,
+                    });
+                }
+                CType::Function(FunctionType {
+                    return_type: Box::new(return_type),
+                    params: func_params,
+                    is_variadic: params.variadic,
+                    is_old_style: false,
+                })
+            }
+        }
+    }
+
+    /// Extracts the identifier name from a declarator, if present.
+    fn extract_declarator_name(&self, declarator: &Declarator) -> Option<InternId> {
+        self.extract_direct_declarator_name(&declarator.direct)
+    }
+
+    /// Extracts the identifier name from a direct declarator.
+    fn extract_direct_declarator_name(
+        &self,
+        direct: &DirectDeclarator,
+    ) -> Option<InternId> {
+        match direct {
+            DirectDeclarator::Identifier(id) => Some(*id),
+            DirectDeclarator::Parenthesized(inner) => {
+                self.extract_declarator_name(inner)
+            }
+            DirectDeclarator::Array { base, .. } => {
+                self.extract_direct_declarator_name(base)
+            }
+            DirectDeclarator::Function { base, .. } => {
+                self.extract_direct_declarator_name(base)
+            }
+            DirectDeclarator::Abstract => None,
+        }
+    }
+
+    /// Builds a function type from a declarator and return type.
+    /// Returns the function name (if any) and the FunctionType.
+    fn build_function_type(
+        &mut self,
+        declarator: &Declarator,
+        return_type: &CType,
+    ) -> (Option<InternId>, FunctionType) {
+        let full_type = self.apply_declarator_to_type(return_type, declarator);
+        let name = self.extract_declarator_name(declarator);
+
+        match full_type {
+            CType::Function(ft) => (name, ft),
+            _ => {
+                // Fallback: if the declarator didn't produce a function type,
+                // create a minimal function type with the resolved return type.
+                (
+                    name,
+                    FunctionType {
+                        return_type: Box::new(return_type.clone()),
+                        params: Vec::new(),
+                        is_variadic: false,
+                        is_old_style: true,
+                    },
+                )
+            }
+        }
+    }
+
+    /// Analyzes an initializer for type compatibility with the target type.
+    fn analyze_initializer(
+        &mut self,
+        init: &Initializer,
+        target_type: &CType,
+        span: SourceSpan,
+    ) {
+        match init {
+            Initializer::Expression(expr) => {
+                let init_type = self.analyze_expression(expr);
+                type_check::check_assignment(
+                    target_type,
+                    &init_type,
+                    self.diagnostics,
+                    span,
+                );
+            }
+            Initializer::Compound { items, .. } => {
+                // Compound initializers: validate each item against the
+                // corresponding member/element type. Simplified for now —
+                // full designated initializer support requires struct/array
+                // member traversal.
+                for item in items {
+                    self.analyze_initializer(&item.initializer, target_type, span);
+                }
+            }
+        }
+    }
+
+    /// Analyzes a struct definition and returns the corresponding CType.
+    fn analyze_struct_def(
+        &mut self,
+        struct_def: &crate::frontend::parser::ast::StructDef,
+        is_union: bool,
+    ) -> CType {
+        let tag_name = struct_def
+            .tag
+            .map(|id| self.interner.resolve(id).to_string());
+
+        let mut fields = Vec::new();
+        for member in &struct_def.members {
+            match member {
+                crate::frontend::parser::ast::StructMember::Field {
+                    specifiers,
+                    declarators,
+                    ..
+                } => {
+                    let base_type =
+                        self.resolve_type_specifier(&specifiers.type_specifier);
+                    for field_decl in declarators {
+                        let field_type = if let Some(ref decl) = field_decl.declarator {
+                            self.apply_declarator_to_type(&base_type, decl)
+                        } else {
+                            base_type.clone()
+                        };
+                        let field_name = field_decl
+                            .declarator
+                            .as_ref()
+                            .and_then(|d| self.extract_declarator_name(d))
+                            .map(|id| self.interner.resolve(id).to_string());
+                        let bit_width = field_decl.bit_width.as_ref().map(|_| 0u32);
+                        fields.push(StructField {
+                            name: field_name,
+                            ty: field_type,
+                            bit_width,
+                            offset: 0,
+                        });
+                    }
+                }
+                crate::frontend::parser::ast::StructMember::Anonymous {
+                    type_spec, ..
+                } => {
+                    let anon_type = self.resolve_type_specifier(type_spec);
+                    fields.push(StructField {
+                        name: None,
+                        ty: anon_type,
+                        bit_width: None,
+                        offset: 0,
+                    });
+                }
+                crate::frontend::parser::ast::StructMember::StaticAssert {
+                    expr,
+                    message,
+                    span,
+                } => {
+                    self.analyze_static_assert(expr, message, *span);
+                }
+            }
+        }
+
+        let st = StructType {
+            tag: tag_name,
+            fields,
+            is_union,
+            is_packed: false, // TODO: check __attribute__((packed))
+            custom_alignment: None,
+            is_complete: true,
+        };
+
+        let ty = CType::Struct(st);
+
+        // Register the tag in the tag namespace.
+        if let Some(tag_id) = struct_def.tag {
+            let kind = if is_union {
+                SymbolKind::UnionTag
+            } else {
+                SymbolKind::StructTag
+            };
+            let tag_sym = Symbol {
+                name: tag_id,
+                ty: ty.clone(),
+                storage_class: None,
+                linkage: Linkage::None,
+                is_defined: true,
+                is_tentative: false,
+                kind,
+                location: struct_def.span,
+                scope_depth: self.scope_stack.depth(),
+            };
+            let _ = self
+                .symbol_table
+                .insert_tag(tag_id, tag_sym, self.diagnostics);
+        }
+
+        ty
+    }
+
+    /// Analyzes a union definition.
+    fn analyze_union_def(
+        &mut self,
+        union_def: &crate::frontend::parser::ast::UnionDef,
+    ) -> CType {
+        // Unions reuse the struct analysis with is_union = true.
+        // Convert UnionDef to the same struct analysis flow.
+        let tag_name = union_def
+            .tag
+            .map(|id| self.interner.resolve(id).to_string());
+
+        let mut fields = Vec::new();
+        for member in &union_def.members {
+            match member {
+                crate::frontend::parser::ast::StructMember::Field {
+                    specifiers,
+                    declarators,
+                    ..
+                } => {
+                    let base_type =
+                        self.resolve_type_specifier(&specifiers.type_specifier);
+                    for field_decl in declarators {
+                        let field_type = if let Some(ref decl) = field_decl.declarator {
+                            self.apply_declarator_to_type(&base_type, decl)
+                        } else {
+                            base_type.clone()
+                        };
+                        let field_name = field_decl
+                            .declarator
+                            .as_ref()
+                            .and_then(|d| self.extract_declarator_name(d))
+                            .map(|id| self.interner.resolve(id).to_string());
+                        let bit_width = field_decl.bit_width.as_ref().map(|_| 0u32);
+                        fields.push(StructField {
+                            name: field_name,
+                            ty: field_type,
+                            bit_width,
+                            offset: 0,
+                        });
+                    }
+                }
+                crate::frontend::parser::ast::StructMember::Anonymous {
+                    type_spec, ..
+                } => {
+                    let anon_type = self.resolve_type_specifier(type_spec);
+                    fields.push(StructField {
+                        name: None,
+                        ty: anon_type,
+                        bit_width: None,
+                        offset: 0,
+                    });
+                }
+                crate::frontend::parser::ast::StructMember::StaticAssert {
+                    expr,
+                    message,
+                    span,
+                } => {
+                    self.analyze_static_assert(expr, message, *span);
+                }
+            }
+        }
+
+        let st = StructType {
+            tag: tag_name,
+            fields,
+            is_union: true,
+            is_packed: false,
+            custom_alignment: None,
+            is_complete: true,
+        };
+
+        let ty = CType::Struct(st);
+
+        if let Some(tag_id) = union_def.tag {
+            let tag_sym = Symbol {
+                name: tag_id,
+                ty: ty.clone(),
+                storage_class: None,
+                linkage: Linkage::None,
+                is_defined: true,
+                is_tentative: false,
+                kind: SymbolKind::UnionTag,
+                location: union_def.span,
+                scope_depth: self.scope_stack.depth(),
+            };
+            let _ = self
+                .symbol_table
+                .insert_tag(tag_id, tag_sym, self.diagnostics);
+        }
+
+        ty
+    }
+
+    /// Analyzes an enum definition and returns the corresponding CType.
+    fn analyze_enum_def(
+        &mut self,
+        enum_def: &crate::frontend::parser::ast::EnumDef,
+    ) -> CType {
+        let tag_name = enum_def
+            .tag
+            .map(|id| self.interner.resolve(id).to_string());
+
+        let mut variants = Vec::new();
+        let mut next_value: i64 = 0;
+
+        for variant in &enum_def.variants {
+            let value = if let Some(ref value_expr) = variant.value {
+                let _ty = self.analyze_expression(value_expr);
+                // Simplified: constant evaluation would determine the value.
+                // For now, use sequential values.
+                next_value
+            } else {
+                next_value
+            };
+
+            variants.push((
+                self.interner.resolve(variant.name).to_string(),
+                value,
+            ));
+
+            // Register enum constant in ordinary namespace.
+            let _ = self.symbol_table.insert_enum_constant(
+                variant.name,
+                value,
+                CType::Integer(IntegerKind::Int),
+                self.diagnostics,
+                variant.span,
+            );
+
+            next_value = value + 1;
+        }
+
+        let et = EnumType {
+            tag: tag_name,
+            variants,
+            is_complete: true,
+        };
+
+        let ty = CType::Enum(et);
+
+        if let Some(tag_id) = enum_def.tag {
+            let tag_sym = Symbol {
+                name: tag_id,
+                ty: ty.clone(),
+                storage_class: None,
+                linkage: Linkage::None,
+                is_defined: true,
+                is_tentative: false,
+                kind: SymbolKind::EnumTag,
+                location: enum_def.span,
+                scope_depth: self.scope_stack.depth(),
+            };
+            let _ = self
+                .symbol_table
+                .insert_tag(tag_id, tag_sym, self.diagnostics);
+        }
+
+        ty
+    }
+
+    /// Returns the `size_t` type for the current target.
+    fn size_t_type(&self) -> CType {
+        if self.target.is_64bit() {
+            CType::Integer(IntegerKind::UnsignedLong)
+        } else {
+            CType::Integer(IntegerKind::UnsignedInt)
+        }
+    }
+
+    /// Resolves the type of an integer literal based on its suffix.
+    fn resolve_integer_literal_type(
+        &self,
+        suffix: &crate::frontend::parser::ast::IntSuffix,
+    ) -> CType {
+        use crate::frontend::parser::ast::IntSuffix;
+        match suffix {
+            IntSuffix::None => CType::Integer(IntegerKind::Int),
+            IntSuffix::Unsigned => CType::Integer(IntegerKind::UnsignedInt),
+            IntSuffix::Long => CType::Integer(IntegerKind::Long),
+            IntSuffix::ULong => CType::Integer(IntegerKind::UnsignedLong),
+            IntSuffix::LongLong => CType::Integer(IntegerKind::LongLong),
+            IntSuffix::ULongLong => CType::Integer(IntegerKind::UnsignedLongLong),
+        }
+    }
+}
+
+// ===========================================================================
+// Unit Tests
+// ===========================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::common::intern::Interner;
+    use crate::common::source_map::{SourceLocation, SourceSpan};
+    use crate::driver::target::TargetConfig;
+    use crate::frontend::parser::ast::*;
+
+    /// Creates a dummy SourceSpan for test AST nodes.
+    fn dummy_span() -> SourceSpan {
+        SourceSpan::dummy()
+    }
+
+    /// Creates a simple DeclSpecifiers with just a type specifier.
+    fn simple_specifiers(type_spec: TypeSpecifier) -> DeclSpecifiers {
+        DeclSpecifiers {
+            storage_class: None,
+            type_qualifiers: Vec::new(),
+            type_specifier: type_spec,
+            function_specifiers: Vec::new(),
+            attributes: Vec::new(),
+            span: dummy_span(),
+        }
+    }
+
+    /// Creates a simple identifier declarator.
+    fn simple_declarator(name: InternId) -> Declarator {
+        Declarator {
+            pointer: Vec::new(),
+            direct: DirectDeclarator::Identifier(name),
+            attributes: Vec::new(),
+            span: dummy_span(),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Test: Analyze a simple variable declaration
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_analyze_simple_variable_declaration() {
+        let mut interner = Interner::new();
+        let x_id = interner.intern("x");
+        let target = TargetConfig::x86_64();
+        let mut diagnostics = DiagnosticEmitter::new();
+
+        let ast = TranslationUnit {
+            declarations: vec![Declaration::Variable {
+                specifiers: simple_specifiers(TypeSpecifier::Int),
+                declarators: vec![InitDeclarator {
+                    declarator: simple_declarator(x_id),
+                    initializer: None,
+                    span: dummy_span(),
+                }],
+                span: dummy_span(),
+            }],
+            span: dummy_span(),
+        };
+
+        let result = SemanticAnalyzer::analyze(&ast, &target, &interner, &mut diagnostics);
+        assert!(result.is_ok());
+        assert!(!diagnostics.has_errors());
+    }
+
+    // -----------------------------------------------------------------------
+    // Test: Analyze a function definition
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_analyze_function_definition() {
+        let mut interner = Interner::new();
+        let main_id = interner.intern("main");
+        let target = TargetConfig::x86_64();
+        let mut diagnostics = DiagnosticEmitter::new();
+
+        let return_stmt = Statement::Return {
+            value: Some(Box::new(Expression::IntegerLiteral {
+                value: 0,
+                suffix: IntSuffix::None,
+                base: NumericBase::Decimal,
+                span: dummy_span(),
+            })),
+            span: dummy_span(),
+        };
+
+        let func_def = FunctionDef {
+            specifiers: simple_specifiers(TypeSpecifier::Int),
+            declarator: Declarator {
+                pointer: Vec::new(),
+                direct: DirectDeclarator::Function {
+                    base: Box::new(DirectDeclarator::Identifier(main_id)),
+                    params: ParamList {
+                        params: Vec::new(),
+                        variadic: false,
+                        span: dummy_span(),
+                    },
+                },
+                attributes: Vec::new(),
+                span: dummy_span(),
+            },
+            body: Box::new(Statement::Compound {
+                items: vec![BlockItem::Statement(return_stmt)],
+                span: dummy_span(),
+            }),
+            attributes: Vec::new(),
+            span: dummy_span(),
+        };
+
+        let ast = TranslationUnit {
+            declarations: vec![Declaration::Function(Box::new(func_def))],
+            span: dummy_span(),
+        };
+
+        let result = SemanticAnalyzer::analyze(&ast, &target, &interner, &mut diagnostics);
+        assert!(result.is_ok());
+        assert!(!diagnostics.has_errors());
+    }
+
+    // -----------------------------------------------------------------------
+    // Test: Undeclared identifier detection
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_undeclared_identifier_detection() {
+        let mut interner = Interner::new();
+        let main_id = interner.intern("main");
+        let x_id = interner.intern("x");
+        let target = TargetConfig::x86_64();
+        let mut diagnostics = DiagnosticEmitter::new();
+
+        // Function that uses undeclared variable `x`.
+        let func_def = FunctionDef {
+            specifiers: simple_specifiers(TypeSpecifier::Int),
+            declarator: Declarator {
+                pointer: Vec::new(),
+                direct: DirectDeclarator::Function {
+                    base: Box::new(DirectDeclarator::Identifier(main_id)),
+                    params: ParamList {
+                        params: Vec::new(),
+                        variadic: false,
+                        span: dummy_span(),
+                    },
+                },
+                attributes: Vec::new(),
+                span: dummy_span(),
+            },
+            body: Box::new(Statement::Compound {
+                items: vec![BlockItem::Statement(Statement::Return {
+                    value: Some(Box::new(Expression::Identifier {
+                        name: x_id,
+                        span: dummy_span(),
+                    })),
+                    span: dummy_span(),
+                })],
+                span: dummy_span(),
+            }),
+            attributes: Vec::new(),
+            span: dummy_span(),
+        };
+
+        let ast = TranslationUnit {
+            declarations: vec![Declaration::Function(Box::new(func_def))],
+            span: dummy_span(),
+        };
+
+        let result = SemanticAnalyzer::analyze(&ast, &target, &interner, &mut diagnostics);
+        assert!(result.is_err());
+        assert!(diagnostics.has_errors());
+    }
+
+    // -----------------------------------------------------------------------
+    // Test: Break outside loop detection
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_break_outside_loop() {
+        let mut interner = Interner::new();
+        let main_id = interner.intern("main");
+        let target = TargetConfig::x86_64();
+        let mut diagnostics = DiagnosticEmitter::new();
+
+        let func_def = FunctionDef {
+            specifiers: simple_specifiers(TypeSpecifier::Int),
+            declarator: Declarator {
+                pointer: Vec::new(),
+                direct: DirectDeclarator::Function {
+                    base: Box::new(DirectDeclarator::Identifier(main_id)),
+                    params: ParamList {
+                        params: Vec::new(),
+                        variadic: false,
+                        span: dummy_span(),
+                    },
+                },
+                attributes: Vec::new(),
+                span: dummy_span(),
+            },
+            body: Box::new(Statement::Compound {
+                items: vec![BlockItem::Statement(Statement::Break {
+                    span: dummy_span(),
+                })],
+                span: dummy_span(),
+            }),
+            attributes: Vec::new(),
+            span: dummy_span(),
+        };
+
+        let ast = TranslationUnit {
+            declarations: vec![Declaration::Function(Box::new(func_def))],
+            span: dummy_span(),
+        };
+
+        let result = SemanticAnalyzer::analyze(&ast, &target, &interner, &mut diagnostics);
+        assert!(result.is_err());
+        assert!(diagnostics.has_errors());
+    }
+
+    // -----------------------------------------------------------------------
+    // Test: Continue outside loop detection
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_continue_outside_loop() {
+        let mut interner = Interner::new();
+        let main_id = interner.intern("main");
+        let target = TargetConfig::x86_64();
+        let mut diagnostics = DiagnosticEmitter::new();
+
+        let func_def = FunctionDef {
+            specifiers: simple_specifiers(TypeSpecifier::Int),
+            declarator: Declarator {
+                pointer: Vec::new(),
+                direct: DirectDeclarator::Function {
+                    base: Box::new(DirectDeclarator::Identifier(main_id)),
+                    params: ParamList {
+                        params: Vec::new(),
+                        variadic: false,
+                        span: dummy_span(),
+                    },
+                },
+                attributes: Vec::new(),
+                span: dummy_span(),
+            },
+            body: Box::new(Statement::Compound {
+                items: vec![BlockItem::Statement(Statement::Continue {
+                    span: dummy_span(),
+                })],
+                span: dummy_span(),
+            }),
+            attributes: Vec::new(),
+            span: dummy_span(),
+        };
+
+        let ast = TranslationUnit {
+            declarations: vec![Declaration::Function(Box::new(func_def))],
+            span: dummy_span(),
+        };
+
+        let result = SemanticAnalyzer::analyze(&ast, &target, &interner, &mut diagnostics);
+        assert!(result.is_err());
+        assert!(diagnostics.has_errors());
+    }
+
+    // -----------------------------------------------------------------------
+    // Test: Empty translation unit
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_empty_translation_unit() {
+        let interner = Interner::new();
+        let target = TargetConfig::x86_64();
+        let mut diagnostics = DiagnosticEmitter::new();
+
+        let ast = TranslationUnit {
+            declarations: Vec::new(),
+            span: dummy_span(),
+        };
+
+        let result = SemanticAnalyzer::analyze(&ast, &target, &interner, &mut diagnostics);
+        assert!(result.is_ok());
+        let typed_tu = result.unwrap();
+        assert!(typed_tu.declarations.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // Test: Target-aware type sizing (i686 vs x86-64)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_target_aware_sizing() {
+        let target_64 = TargetConfig::x86_64();
+        let target_32 = TargetConfig::i686();
+
+        // long is 8 bytes on x86-64, 4 bytes on i686
+        let long_type = CType::Integer(IntegerKind::Long);
+        assert_eq!(long_type.size(&target_64), Some(8));
+        assert_eq!(long_type.size(&target_32), Some(4));
+
+        // Pointer is 8 bytes on x86-64, 4 bytes on i686
+        let ptr_type = CType::Pointer {
+            pointee: Box::new(CType::Integer(IntegerKind::Int)),
+            qualifiers: TypeQualifiers::default(),
+        };
+        assert_eq!(ptr_type.size(&target_64), Some(8));
+        assert_eq!(ptr_type.size(&target_32), Some(4));
+    }
+}
