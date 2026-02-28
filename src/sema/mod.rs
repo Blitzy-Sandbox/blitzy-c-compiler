@@ -3,4 +3,5 @@
 // The full SemanticAnalyzer implementation will be added by its assigned agent.
 
 pub mod scope;
+pub mod storage;
 pub mod types;
