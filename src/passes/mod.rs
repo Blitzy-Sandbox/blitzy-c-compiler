@@ -18,6 +18,7 @@ pub mod constant_fold;
 pub mod cse;
 pub mod dce;
 pub mod mem2reg;
+pub mod pipeline;
 pub mod simplify;
 
 /// Trait for optimization passes that operate on individual functions.
@@ -41,4 +42,5 @@ pub use constant_fold::ConstantFoldPass;
 pub use cse::CsePass;
 pub use dce::DcePass;
 pub use mem2reg::Mem2RegPass;
+pub use pipeline::{OptLevel, PassStats, Pipeline};
 pub use simplify::SimplifyPass;
