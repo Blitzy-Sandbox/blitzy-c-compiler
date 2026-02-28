@@ -9,6 +9,7 @@ mod driver;
 mod frontend;
 mod ir;
 mod linker;
+mod passes;
 mod sema;
 
 fn main() {
