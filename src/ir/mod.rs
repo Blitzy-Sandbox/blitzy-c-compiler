@@ -32,6 +32,7 @@ pub mod types;
 pub mod instructions;
 pub mod cfg;
 pub mod ssa;
+pub mod builder;
 
 // Re-export key types for convenient access by downstream modules.
 pub use types::{IrType, StructLayout};
@@ -40,3 +41,4 @@ pub use instructions::{
     CastOp, Callee, LocatedInstruction, BlockId,
 };
 pub use ssa::{construct_ssa, destruct_ssa};
+pub use builder::{IrBuilder, Module, Function, GlobalVariable};
