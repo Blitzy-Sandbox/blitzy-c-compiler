@@ -763,7 +763,7 @@ impl CType {
 
     /// Resolves through `Typedef` and `TypeOf` wrappers to the canonical type.
     /// Does NOT strip `Qualified` -- use [`unqualified`](CType::unqualified) for that.
-    fn canonical(&self) -> &CType {
+    pub(crate) fn canonical(&self) -> &CType {
         match self {
             CType::Typedef { underlying, .. } => underlying.canonical(),
             CType::TypeOf(inner) => inner.canonical(),
