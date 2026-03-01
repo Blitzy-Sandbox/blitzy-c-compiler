@@ -8,6 +8,7 @@
 //! Entry point: `parse_args()` → `resolve_target()` → `pipeline::run()`
 
 pub mod cli;
+pub mod pipeline;
 pub mod target;
 
 // Re-export key types from cli for convenient access by main.rs and other consumers.
