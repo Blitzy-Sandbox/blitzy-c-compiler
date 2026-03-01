@@ -21,3 +21,6 @@ pub use target::{
     detect_host, parse_target, resolve_target, AbiVariant, Architecture, ElfClass, Endianness,
     TargetConfig,
 };
+
+// Re-export key types from pipeline for convenient access by main.rs and other consumers.
+pub use pipeline::{run, OutputMode};
