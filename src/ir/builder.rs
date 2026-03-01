@@ -45,7 +45,7 @@
 use std::collections::HashMap;
 
 use crate::common::diagnostics::DiagnosticEmitter;
-use crate::common::intern::InternId;
+use crate::common::intern::{InternId, Interner};
 use crate::common::source_map::SourceSpan;
 use crate::driver::target::TargetConfig;
 use crate::ir::cfg::{BasicBlock, Terminator};
@@ -237,7 +237,7 @@ impl FunctionBuilder {
 /// ```ignore
 /// let mut diagnostics = DiagnosticEmitter::new();
 /// let target = TargetConfig::x86_64();
-/// let mut builder = IrBuilder::new(&target, &mut diagnostics, "main.c");
+/// let mut builder = IrBuilder::new(&target, &mut diagnostics, "main.c", &interner);
 /// let module = builder.build(&typed_tu);
 /// ```
 pub struct IrBuilder<'a> {
@@ -249,6 +249,8 @@ pub struct IrBuilder<'a> {
     target: &'a TargetConfig,
     /// Diagnostic emitter for errors during IR construction.
     diagnostics: &'a mut DiagnosticEmitter,
+    /// String interner for resolving InternId → &str (identifiers, labels, etc.).
+    interner: &'a Interner,
     /// Counter for generating unique value IDs.
     next_value_id: u32,
     /// Counter for generating unique block IDs.
@@ -276,12 +278,14 @@ impl<'a> IrBuilder<'a> {
         target: &'a TargetConfig,
         diagnostics: &'a mut DiagnosticEmitter,
         module_name: &str,
+        interner: &'a Interner,
     ) -> Self {
         IrBuilder {
             module: Module::new(module_name.to_string()),
             current_function: None,
             target,
             diagnostics,
+            interner,
             next_value_id: 0,
             next_block_id: 0,
             symbol_values: HashMap::new(),
@@ -483,9 +487,29 @@ impl<'a> IrBuilder<'a> {
         let is_static = specifiers.storage_class == Some(StorageClass::Static);
 
         for init_decl in declarators {
-            // Extract name from the declarator
-            let name = Self::extract_declarator_name(&init_decl.declarator);
+            // Extract name from the declarator using the interner
+            let name = Self::extract_declarator_name(&init_decl.declarator, self.interner);
             if name.is_empty() {
+                continue;
+            }
+
+            // Check if this declaration is actually a function declaration
+            // (e.g., `int foo(void);` or `extern int bar(int);`).
+            // Function declarations at file scope have implicit extern linkage
+            // even without an explicit `extern` keyword.
+            if Self::is_function_declarator(&init_decl.declarator) {
+                // Create an extern function stub (no body).
+                let func = Function {
+                    name: name.clone(),
+                    return_type: self.map_type(
+                        &resolved_type.as_ref().cloned().unwrap_or(CType::Integer(IntegerKind::Int))
+                    ),
+                    params: Vec::new(),
+                    blocks: Vec::new(),
+                    entry_block: BlockId(0),
+                    is_definition: false,
+                };
+                self.module.functions.push(func);
                 continue;
             }
 
@@ -498,6 +522,9 @@ impl<'a> IrBuilder<'a> {
                 self.lower_constant_initializer(init, &ir_type)
             });
 
+            // For file-scope variable declarations without explicit `extern`,
+            // check if implicit extern applies (declaration without initializer
+            // at file scope is a tentative definition in C, not extern).
             self.module.globals.push(GlobalVariable {
                 name,
                 ty: ir_type,
@@ -565,7 +592,7 @@ impl<'a> IrBuilder<'a> {
         // Determine function type from resolved_type or by analyzing the AST
         let (return_type, param_types) = self.resolve_function_signature(func_def, resolved_type);
 
-        let func_name = Self::extract_declarator_name(&func_def.declarator);
+        let func_name = Self::extract_declarator_name(&func_def.declarator, self.interner);
         if func_name.is_empty() {
             return;
         }
@@ -1222,7 +1249,7 @@ impl<'a> IrBuilder<'a> {
                 ..
             } => {
                 for init_decl in declarators {
-                    let var_name = Self::extract_declarator_name(&init_decl.declarator);
+                    let var_name = Self::extract_declarator_name(&init_decl.declarator, self.interner);
                     if var_name.is_empty() {
                         continue;
                     }
@@ -2241,10 +2268,9 @@ impl<'a> IrBuilder<'a> {
 
         let callee_ir = match callee {
             Expression::Identifier { name, .. } => {
-                // Direct call — use the function name
-                // We need the actual string name; use a placeholder since we don't have
-                // the interner here. The actual name would be resolved via the interner.
-                Callee::Direct(format!("__func_{}", name.as_u32()))
+                // Direct call — resolve the InternId to the actual function name
+                let func_name = self.interner.resolve(*name).to_string();
+                Callee::Direct(func_name)
             }
             _ => {
                 // Indirect call through a function pointer
@@ -2301,47 +2327,68 @@ impl<'a> IrBuilder<'a> {
         if let Some(&block_id) = self.label_blocks.get(&label) {
             return block_id;
         }
-        let block_id = self.create_block(&format!("label.{}", label.as_u32()));
+        let label_name = self.interner.resolve(label);
+        let block_id = self.create_block(&format!("label.{}", label_name));
         self.label_blocks.insert(label, block_id);
         block_id
     }
 
+    /// Returns `true` if the declarator describes a function type
+    /// (i.e. `int foo(void)` or `int (*fp)(int)` etc.).
+    fn is_function_declarator(declarator: &crate::frontend::parser::ast::Declarator) -> bool {
+        Self::is_function_direct_declarator(&declarator.direct)
+    }
+
+    /// Helper: checks if a DirectDeclarator has a function form.
+    fn is_function_direct_declarator(dd: &crate::frontend::parser::ast::DirectDeclarator) -> bool {
+        match dd {
+            crate::frontend::parser::ast::DirectDeclarator::Function { .. } => true,
+            crate::frontend::parser::ast::DirectDeclarator::Parenthesized(inner) => {
+                Self::is_function_declarator(inner)
+            }
+            _ => false,
+        }
+    }
+
     /// Extracts the identifier name from a declarator, returning an empty string
-    /// if no name is found (abstract declarators).
-    fn extract_declarator_name(declarator: &crate::frontend::parser::ast::Declarator) -> String {
+    /// if no name is found (abstract declarators). Uses the interner to resolve
+    /// InternId values to actual string names.
+    fn extract_declarator_name(declarator: &crate::frontend::parser::ast::Declarator, interner: &Interner) -> String {
         match &declarator.direct {
             crate::frontend::parser::ast::DirectDeclarator::Identifier(id) => {
-                format!("__id_{}", id.as_u32())
+                interner.resolve(*id).to_string()
             }
             crate::frontend::parser::ast::DirectDeclarator::Parenthesized(inner) => {
-                Self::extract_declarator_name(inner)
+                Self::extract_declarator_name(inner, interner)
             }
             crate::frontend::parser::ast::DirectDeclarator::Array { base, .. } => {
-                Self::extract_direct_declarator_name(base)
+                Self::extract_direct_declarator_name(base, interner)
             }
             crate::frontend::parser::ast::DirectDeclarator::Function { base, .. } => {
-                Self::extract_direct_declarator_name(base)
+                Self::extract_direct_declarator_name(base, interner)
             }
             crate::frontend::parser::ast::DirectDeclarator::Abstract => String::new(),
         }
     }
 
-    /// Helper to extract name from a DirectDeclarator.
+    /// Helper to extract name from a DirectDeclarator. Uses the interner to resolve
+    /// InternId values to actual string names.
     fn extract_direct_declarator_name(
         dd: &crate::frontend::parser::ast::DirectDeclarator,
+        interner: &Interner,
     ) -> String {
         match dd {
             crate::frontend::parser::ast::DirectDeclarator::Identifier(id) => {
-                format!("__id_{}", id.as_u32())
+                interner.resolve(*id).to_string()
             }
             crate::frontend::parser::ast::DirectDeclarator::Parenthesized(inner) => {
-                Self::extract_declarator_name(inner)
+                Self::extract_declarator_name(inner, interner)
             }
             crate::frontend::parser::ast::DirectDeclarator::Array { base, .. } => {
-                Self::extract_direct_declarator_name(base)
+                Self::extract_direct_declarator_name(base, interner)
             }
             crate::frontend::parser::ast::DirectDeclarator::Function { base, .. } => {
-                Self::extract_direct_declarator_name(base)
+                Self::extract_direct_declarator_name(base, interner)
             }
             crate::frontend::parser::ast::DirectDeclarator::Abstract => String::new(),
         }
@@ -2376,7 +2423,8 @@ mod tests {
     /// Creates an IrBuilder for testing.
     fn make_builder(diagnostics: &mut DiagnosticEmitter) -> IrBuilder<'_> {
         let target = Box::leak(Box::new(TargetConfig::x86_64()));
-        IrBuilder::new(target, diagnostics, "test_module")
+        let interner = Box::leak(Box::new(Interner::new()));
+        IrBuilder::new(target, diagnostics, "test_module", interner)
     }
 
     // -----------------------------------------------------------------------

@@ -619,24 +619,71 @@ impl X86_64Encoder {
             }
             opcodes::MOV_RI => {
                 let dst = Self::expect_reg(&ops[0], "MOV_RI dst")?;
-                let imm = Self::expect_imm(&ops[1], "MOV_RI imm")?;
-                if fits_in_i32(imm) {
-                    let rex = Self::compute_rex_single(true, dst);
-                    self.emit_rex(&rex); self.emit_byte(0xC7);
-                    self.emit_modrm_rr(0, reg_encoding(dst)); self.emit_i32_le(imm as i32);
-                } else {
-                    let rex = Self::compute_rex_single(true, dst);
-                    self.emit_rex(&rex);
-                    self.emit_byte(0xB8 + reg_encoding(dst));
-                    self.emit_u64_le(imm as u64);
+                match &ops[1] {
+                    MachineOperand::Immediate(imm) => {
+                        let imm = *imm;
+                        if imm >= 0 && imm <= 0x7FFFFFFF {
+                            // Non-negative value fits in 32 bits: use mov r32, imm32
+                            // which zero-extends to 64-bit (canonical, shorter encoding).
+                            let rex = Self::compute_rex_single(false, dst);
+                            self.emit_rex(&rex);
+                            self.emit_byte(0xB8 + reg_encoding(dst));
+                            self.emit_i32_le(imm as i32);
+                        } else if fits_in_i32(imm) {
+                            // Negative 32-bit: use mov r64, sign-extended-imm32 (REX.W + C7 /0)
+                            let rex = Self::compute_rex_single(true, dst);
+                            self.emit_rex(&rex); self.emit_byte(0xC7);
+                            self.emit_modrm_rr(0, reg_encoding(dst)); self.emit_i32_le(imm as i32);
+                        } else {
+                            // Full 64-bit immediate: movabs r64, imm64
+                            let rex = Self::compute_rex_single(true, dst);
+                            self.emit_rex(&rex);
+                            self.emit_byte(0xB8 + reg_encoding(dst));
+                            self.emit_u64_le(imm as u64);
+                        }
+                    }
+                    MachineOperand::Symbol(sym) => {
+                        // movabs reg, imm64 with R_X86_64_64 absolute relocation
+                        let rex = Self::compute_rex_single(true, dst);
+                        self.emit_rex(&rex);
+                        self.emit_byte(0xB8 + reg_encoding(dst));
+                        self.emit_relocation(sym, RelocationType::X86_64_64, 0);
+                        self.emit_u64_le(0); // placeholder for linker
+                    }
+                    _ => {
+                        return Err(CodeGenError::EncodingError(
+                            "MOV_RI: second operand must be immediate or symbol".to_string()
+                        ));
+                    }
                 }
             }
             opcodes::MOV_RM => {
                 let dst = Self::expect_reg(&ops[0], "MOV_RM dst")?;
-                let (base, offset) = Self::expect_mem(&ops[1], "MOV_RM src")?;
-                let rex = Self::compute_rex_gpr_mem(true, dst, base);
-                self.emit_rex(&rex); self.emit_byte(0x8B);
-                self.emit_modrm_mem(reg_encoding(dst), base, offset);
+                match &ops[1] {
+                    MachineOperand::Memory { base, offset } => {
+                        let rex = Self::compute_rex_gpr_mem(true, dst, *base);
+                        self.emit_rex(&rex); self.emit_byte(0x8B);
+                        self.emit_modrm_mem(reg_encoding(dst), *base, *offset);
+                    }
+                    MachineOperand::Symbol(sym) => {
+                        // RIP-relative MOV: mov reg, [rip + disp32] with GOTPCREL relocation
+                        let rex = RexPrefix { w: true, r: needs_rex_extension(dst), x: false, b: false };
+                        self.emit_rex(&rex);
+                        self.emit_byte(0x8B);
+                        // ModRM: mod=00, reg=dst, rm=5 (RIP-relative)
+                        self.emit_byte(modrm(0x00, reg_encoding(dst), 0x05));
+                        let reloc_type = if sym.contains("@GOTPCREL") {
+                            RelocationType::X86_64_GOTPCREL
+                        } else {
+                            RelocationType::X86_64_PC32
+                        };
+                        self.emit_relocation(sym, reloc_type, -4);
+                        self.emit_i32_le(0); // placeholder for linker
+                    }
+                    _ => return Err(CodeGenError::EncodingError(
+                        "MOV_RM: second operand must be memory or symbol".to_string()
+                    )),
+                }
             }
             opcodes::MOV_MR => {
                 let (base, offset) = Self::expect_mem(&ops[0], "MOV_MR dst")?;
@@ -682,10 +729,27 @@ impl X86_64Encoder {
             }
             opcodes::LEA => {
                 let dst = Self::expect_reg(&ops[0], "LEA dst")?;
-                let (base, offset) = Self::expect_mem(&ops[1], "LEA src")?;
-                let rex = Self::compute_rex_gpr_mem(true, dst, base);
-                self.emit_rex(&rex); self.emit_byte(0x8D);
-                self.emit_modrm_mem(reg_encoding(dst), base, offset);
+                match &ops[1] {
+                    MachineOperand::Memory { base, offset } => {
+                        let rex = Self::compute_rex_gpr_mem(true, dst, *base);
+                        self.emit_rex(&rex); self.emit_byte(0x8D);
+                        self.emit_modrm_mem(reg_encoding(dst), *base, *offset);
+                    }
+                    MachineOperand::Symbol(sym) => {
+                        // RIP-relative LEA: lea reg, [rip + disp32]
+                        // Encoding: REX.W 8D /r with ModRM mod=00 rm=101 (RIP-relative)
+                        let rex = RexPrefix { w: true, r: needs_rex_extension(dst), x: false, b: false };
+                        self.emit_rex(&rex);
+                        self.emit_byte(0x8D);
+                        // ModRM: mod=00, reg=dst, rm=5 (RIP-relative)
+                        self.emit_byte(modrm(0x00, reg_encoding(dst), 0x05));
+                        self.emit_relocation(sym, RelocationType::X86_64_PC32, -4);
+                        self.emit_i32_le(0); // placeholder for linker
+                    }
+                    _ => return Err(CodeGenError::EncodingError(
+                        "LEA src must be memory or symbol".to_string()
+                    )),
+                }
             }
 
             // --- Comparisons and Conditions ---
@@ -853,7 +917,18 @@ impl X86_64Encoder {
             opcodes::CQO => { self.emit_byte(0x48); self.emit_byte(0x99); }
 
             // --- Special ---
-            opcodes::NOP     => { self.emit_byte(0x90); }
+            opcodes::NOP     => {
+                // NOP with a Label operand is a pseudo-instruction that defines
+                // the label (basic block entry point) without emitting any bytes.
+                // Plain NOP (no operands) emits 0x90.
+                if !ops.is_empty() {
+                    if let MachineOperand::Label(id) = &ops[0] {
+                        self.define_label(*id);
+                        return Ok(());
+                    }
+                }
+                self.emit_byte(0x90);
+            }
             opcodes::ENDBR64 => { self.emit_bytes(&[0xF3, 0x0F, 0x1E, 0xFA]); }
             opcodes::PAUSE   => { self.emit_bytes(&[0xF3, 0x90]); }
             opcodes::LFENCE  => { self.emit_bytes(&[0x0F, 0xAE, 0xE8]); }
@@ -1072,9 +1147,10 @@ mod tests {
 
     #[test]
     fn test_encode_mov_ri_i32() {
-        // mov rax, 0x12345678 => REX.W + C7 C0 + 4-byte imm
+        // mov eax, 0x12345678 => B8 + 4-byte imm (32-bit, zero-extends to rax)
+        // Uses optimized encoding: non-negative imm32 avoids REX.W prefix
         let bytes = encode_single(opcodes::MOV_RI, vec![reg(0), imm(0x12345678)]);
-        assert_eq!(bytes, vec![0x48, 0xC7, 0xC0, 0x78, 0x56, 0x34, 0x12]);
+        assert_eq!(bytes, vec![0xB8, 0x78, 0x56, 0x34, 0x12]);
     }
 
     #[test]

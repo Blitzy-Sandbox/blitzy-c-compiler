@@ -715,8 +715,12 @@ fn link_relocatable(
         });
     }
 
-    // Add strtab and symtab sections.
+    // Add strtab and symtab sections. The symtab's sh_link must point to
+    // the strtab section index so that readelf/objdump can resolve symbol names.
     let symtab_entsize = if is_64bit { 24u64 } else { 16u64 };
+    // The strtab section index in the ELF file is: 1 (null section)
+    // + number of merged content sections + 0 (this is the next section).
+    let strtab_section_idx = 1 + merged.len(); // +1 for the implicit null section
     writer.add_section(elf::OutputSection {
         name: String::from(".strtab"),
         data: strtab_data,
@@ -730,6 +734,8 @@ fn link_relocatable(
             sh_info: 0,
         },
     });
+    // sh_link = strtab section index; sh_info = first non-local symbol index
+    let first_global = 1 + resolver.local_symbol_count();
     writer.add_section(elf::OutputSection {
         name: String::from(".symtab"),
         data: symtab_data,
@@ -739,8 +745,8 @@ fn link_relocatable(
             sh_addr: 0,
             sh_addralign: if is_64bit { 8 } else { 4 },
             sh_entsize: symtab_entsize,
-            sh_link: 0,
-            sh_info: 0,
+            sh_link: strtab_section_idx as u32,
+            sh_info: first_global as u32,
         },
     });
 

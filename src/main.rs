@@ -68,13 +68,19 @@ fn run() -> i32 {
     // -----------------------------------------------------------------------
     // Phase 2: Target Resolution
     // -----------------------------------------------------------------------
-    let target = match resolve_target(cli.target.as_deref()) {
+    let mut target = match resolve_target(cli.target.as_deref()) {
         Ok(t) => t,
         Err(msg) => {
             eprintln!("bcc: error: {}", msg);
             return 1;
         }
     };
+
+    // Propagate codegen-relevant CLI flags into the TargetConfig so that
+    // code generation backends can access them without needing CliArgs.
+    target.retpoline = cli.retpoline;
+    target.cf_protection = cli.cf_protection;
+    target.pic = cli.pic;
 
     // -----------------------------------------------------------------------
     // Phase 3: Determine output path
@@ -270,7 +276,7 @@ fn compile_translation_unit(
     // -------------------------------------------------------------------
     // Preprocessing
     // -------------------------------------------------------------------
-    let preprocess_options = build_preprocess_options(cli, file_path);
+    let preprocess_options = build_preprocess_options(cli, file_path, target);
     let mut preprocessor = Preprocessor::new(preprocess_options, &mut source_map, &mut diagnostics);
 
     let preprocessed = preprocessor.process(source, file_path, &mut source_map, &mut diagnostics);
@@ -340,7 +346,7 @@ fn compile_translation_unit(
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| "module".to_string());
 
-    let mut ir_builder = IrBuilder::new(target, &mut diagnostics, &module_name);
+    let mut ir_builder = IrBuilder::new(target, &mut diagnostics, &module_name, &interner);
     let mut ir_module = ir_builder.build(&typed_ast);
 
     if diagnostics.has_errors() {
@@ -421,7 +427,7 @@ fn compile_translation_unit(
 // ===========================================================================
 
 /// Builds `PreprocessorOptions` from CLI arguments.
-fn build_preprocess_options(cli: &CliArgs, _file_path: &Path) -> PreprocessorOptions {
+fn build_preprocess_options(cli: &CliArgs, _file_path: &Path, target: &TargetConfig) -> PreprocessorOptions {
     let defines: Vec<(String, Option<String>)> = cli
         .defines
         .iter()
@@ -432,12 +438,33 @@ fn build_preprocess_options(cli: &CliArgs, _file_path: &Path) -> PreprocessorOpt
     // relative to the compiler binary, or use the compile-time embedded path.
     let bundled_header_path = find_bundled_headers();
 
+    // Build system include directories based on target architecture.
+    // These provide access to system headers (stdio.h, stdlib.h, etc.)
+    // needed for compiling real-world C programs.
+    let mut system_include_dirs: Vec<PathBuf> = Vec::new();
+    system_include_dirs.push(PathBuf::from("/usr/include"));
+
+    // Add architecture-specific include directories based on target.
+    let arch_str = &target.triple;
+    if arch_str.starts_with("x86_64") || arch_str.starts_with("x86-64") {
+        system_include_dirs.push(PathBuf::from("/usr/include/x86_64-linux-gnu"));
+    } else if arch_str.starts_with("i686") || arch_str.starts_with("i386") {
+        system_include_dirs.push(PathBuf::from("/usr/include/i386-linux-gnu"));
+        system_include_dirs.push(PathBuf::from("/usr/include/x86_64-linux-gnu")); // fallback
+    } else if arch_str.starts_with("aarch64") {
+        system_include_dirs.push(PathBuf::from("/usr/aarch64-linux-gnu/include"));
+        system_include_dirs.push(PathBuf::from("/usr/include/aarch64-linux-gnu"));
+    } else if arch_str.starts_with("riscv64") {
+        system_include_dirs.push(PathBuf::from("/usr/riscv64-linux-gnu/include"));
+        system_include_dirs.push(PathBuf::from("/usr/include/riscv64-linux-gnu"));
+    }
+
     PreprocessorOptions {
         include_dirs: cli.include_paths.iter().map(PathBuf::from).collect(),
         defines,
         undefines: cli.undefines.clone(),
         bundled_header_path,
-        system_include_dirs: Vec::new(),
+        system_include_dirs,
     }
 }
 

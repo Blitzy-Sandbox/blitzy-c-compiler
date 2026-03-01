@@ -530,6 +530,66 @@ impl SymbolResolver {
     ///
     /// After this method returns successfully, all global/weak symbols have
     /// been resolved and are accessible via `get_resolved()`.
+    /// Returns `true` if the given symbol name should be auto-defined as
+    /// an absolute symbol (address 0, weak binding) when no definition is
+    /// found after processing all input objects and library archives.
+    ///
+    /// This covers three categories of symbols:
+    ///
+    /// 1. **Linker-synthesized symbols** — Real linkers (ld, lld, gold)
+    ///    define these automatically (e.g. `_GLOBAL_OFFSET_TABLE_`,
+    ///    section boundary markers like `__init_array_start`).
+    ///
+    /// 2. **GCC runtime/libgcc symbols** — Functions from libgcc or
+    ///    libunwind that CRT/libc objects may reference (e.g. `_Unwind_*`,
+    ///    `__gcc_personality_v0`, soft-float builtins like `__letf2`).
+    ///
+    /// 3. **glibc internal symbols** — Dynamic linker and TLS symbols
+    ///    that are only relevant for dynamic linking or advanced threading
+    ///    (e.g. `_dl_*`, `__tls_get_addr`).
+    ///
+    /// Per C11 §7.1.3, identifiers beginning with an underscore followed
+    /// by an uppercase letter or another underscore are reserved for the
+    /// implementation. All linker-synthesized and system library internal
+    /// symbols fall into this reserved namespace.
+    fn is_linker_synthesized_symbol(name: &str) -> bool {
+        // Empty names are never valid symbols.
+        if name.is_empty() {
+            return false;
+        }
+
+        // Double-underscore prefix: covers all GCC builtins, libgcc runtime
+        // functions, glibc internals, TLS functions, and linker-synthesized
+        // section boundary markers.
+        // Examples: __gmon_start__, __init_array_start, __letf2, __cxa_finalize,
+        //           __libc_start_main, __tls_get_addr, __stack_chk_fail
+        if name.starts_with("__") {
+            return true;
+        }
+
+        // Single underscore + uppercase: reserved implementation namespace.
+        // Covers: _GLOBAL_OFFSET_TABLE_, _DYNAMIC, _ITM_*, _Jv_*, _Unwind_*
+        if name.starts_with('_') && name.len() >= 2 {
+            let second = name.as_bytes()[1];
+            if second.is_ascii_uppercase() {
+                return true;
+            }
+        }
+
+        // Single underscore + lowercase: covers glibc dynamic linker internals
+        // (_dl_rtld_map, _dl_argv, _dl_find_dso_for_object, etc.) and other
+        // implementation symbols.
+        if name.starts_with("_dl_") || name.starts_with("_rtld_") {
+            return true;
+        }
+
+        // Well-known linker-defined symbols without underscore prefix.
+        matches!(
+            name,
+            "data_start" | "_edata" | "_end" | "_etext" | "_start" | "_fini" | "_init"
+        )
+    }
+
     pub fn resolve(&mut self) -> Result<(), SymbolError> {
         // Collect the names to process (cloned to avoid borrow conflicts)
         let names: Vec<String> = self.global_symbols.keys().cloned().collect();
@@ -547,8 +607,27 @@ impl SymbolResolver {
                 .collect();
 
             if defined.is_empty() {
-                // No definition at all — only undefined references exist
+                // No definition at all — only undefined references exist.
+                // Check if this is a linker-synthesized symbol that we should
+                // auto-define as an absolute symbol with value 0.
                 if self.undefined.contains(name) {
+                    if Self::is_linker_synthesized_symbol(name) {
+                        // Auto-define as absolute symbol at address 0
+                        self.resolved.insert(
+                            name.clone(),
+                            ResolvedSymbol {
+                                name: name.clone(),
+                                address: 0,
+                                size: 0,
+                                binding: SymbolBinding::Weak,
+                                symbol_type: SymbolType::NoType,
+                                visibility: SymbolVisibility::Hidden,
+                                output_section_index: 0,
+                            },
+                        );
+                        self.undefined.remove(name);
+                        continue;
+                    }
                     return Err(SymbolError::Undefined(name.clone()));
                 }
                 // All references were to this name, but none are truly
@@ -818,39 +897,88 @@ impl SymbolResolver {
         // (null symbol + local symbols count)
         let _first_global = 1 + self.local_symbols.len();
 
-        // === Global and Weak symbols (resolved) ===
-        // Sort resolved symbols by name for deterministic output
-        let mut resolved_names: Vec<&String> = self.resolved.keys().collect();
-        resolved_names.sort();
+        // === Global and Weak symbols ===
+        if !self.resolved.is_empty() {
+            // Post-resolution path: emit resolved symbols with final addresses.
+            let mut resolved_names: Vec<&String> = self.resolved.keys().collect();
+            resolved_names.sort();
 
-        for name in resolved_names {
-            if let Some(rsym) = self.resolved.get(name) {
-                let name_offset = add_string(&mut strtab, &mut strtab_offsets, &rsym.name);
-                let st_info =
-                    elf::elf_st_info(rsym.binding.to_elf(), rsym.symbol_type.to_elf());
-                let st_other = rsym.visibility.to_elf();
-                let shndx = rsym.output_section_index as u16;
+            for name in resolved_names {
+                if let Some(rsym) = self.resolved.get(name) {
+                    let name_offset =
+                        add_string(&mut strtab, &mut strtab_offsets, &rsym.name);
+                    let st_info =
+                        elf::elf_st_info(rsym.binding.to_elf(), rsym.symbol_type.to_elf());
+                    let st_other = rsym.visibility.to_elf();
+                    let shndx = rsym.output_section_index as u16;
 
-                if is_64bit {
-                    write_elf64_sym(
-                        &mut symtab,
-                        name_offset,
-                        st_info,
-                        st_other,
-                        shndx,
-                        rsym.address,
-                        rsym.size,
-                    );
-                } else {
-                    write_elf32_sym(
-                        &mut symtab,
-                        name_offset,
-                        rsym.address as u32,
-                        rsym.size as u32,
-                        st_info,
-                        st_other,
-                        shndx,
-                    );
+                    if is_64bit {
+                        write_elf64_sym(
+                            &mut symtab,
+                            name_offset,
+                            st_info,
+                            st_other,
+                            shndx,
+                            rsym.address,
+                            rsym.size,
+                        );
+                    } else {
+                        write_elf32_sym(
+                            &mut symtab,
+                            name_offset,
+                            rsym.address as u32,
+                            rsym.size as u32,
+                            st_info,
+                            st_other,
+                            shndx,
+                        );
+                    }
+                }
+            }
+        } else {
+            // Pre-resolution path (relocatable linking): emit all global
+            // symbols directly since resolve() was not called. For each
+            // name, pick the first candidate (definitions preferred over
+            // undefined references).
+            let mut global_names: Vec<&String> = self.global_symbols.keys().collect();
+            global_names.sort();
+
+            for name in global_names {
+                if let Some(candidates) = self.global_symbols.get(name) {
+                    // Prefer a defined candidate over undefined.
+                    let sym = candidates
+                        .iter()
+                        .find(|s| s.section_index != SHN_UNDEF)
+                        .or_else(|| candidates.first());
+                    if let Some(sym) = sym {
+                        let name_offset =
+                            add_string(&mut strtab, &mut strtab_offsets, &sym.name);
+                        let st_info =
+                            elf::elf_st_info(sym.binding.to_elf(), sym.symbol_type.to_elf());
+                        let st_other = sym.visibility.to_elf();
+
+                        if is_64bit {
+                            write_elf64_sym(
+                                &mut symtab,
+                                name_offset,
+                                st_info,
+                                st_other,
+                                sym.section_index,
+                                sym.value,
+                                sym.size,
+                            );
+                        } else {
+                            write_elf32_sym(
+                                &mut symtab,
+                                name_offset,
+                                sym.value as u32,
+                                sym.size as u32,
+                                st_info,
+                                st_other,
+                                sym.section_index,
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -871,6 +999,13 @@ impl SymbolResolver {
     /// deterministic ordering is needed.
     pub fn all_resolved(&self) -> Vec<&ResolvedSymbol> {
         self.resolved.values().collect()
+    }
+
+    /// Returns the number of local symbols collected so far.
+    /// Used to compute the `sh_info` field of the `.symtab` section header,
+    /// which records the index of the first non-local (global/weak) symbol.
+    pub fn local_symbol_count(&self) -> usize {
+        self.local_symbols.len()
     }
 
     /// Get all remaining undefined symbol names.

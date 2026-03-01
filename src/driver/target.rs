@@ -233,6 +233,18 @@ pub struct TargetConfig {
 
     /// Default search paths for system libraries (libc, libm, etc.).
     pub lib_search_paths: Vec<String>,
+
+    /// Whether retpoline generation is enabled (`-mretpoline`).
+    /// Defaults to `false`; set by the pipeline from CLI arguments.
+    pub retpoline: bool,
+
+    /// Whether Intel CET control-flow protection is enabled (`-fcf-protection`).
+    /// Defaults to `false`; set by the pipeline from CLI arguments.
+    pub cf_protection: bool,
+
+    /// Whether position-independent code generation is enabled (`-fPIC`).
+    /// Defaults to `false`; set by the pipeline from CLI arguments.
+    pub pic: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -270,6 +282,9 @@ impl TargetConfig {
                 "/usr/lib64".to_string(),
                 "/usr/lib".to_string(),
             ],
+            retpoline: false,
+            cf_protection: false,
+            pic: false,
         }
     }
 
@@ -305,6 +320,9 @@ impl TargetConfig {
                 "/usr/lib32".to_string(),
                 "/usr/lib".to_string(),
             ],
+            retpoline: false,
+            cf_protection: false,
+            pic: false,
         }
     }
 
@@ -338,6 +356,9 @@ impl TargetConfig {
                 "/usr/aarch64-linux-gnu/lib".to_string(),
                 "/usr/lib".to_string(),
             ],
+            retpoline: false,
+            cf_protection: false,
+            pic: false,
         }
     }
 
@@ -371,6 +392,9 @@ impl TargetConfig {
                 "/usr/riscv64-linux-gnu/lib".to_string(),
                 "/usr/lib".to_string(),
             ],
+            retpoline: false,
+            cf_protection: false,
+            pic: false,
         }
     }
 }
@@ -476,6 +500,36 @@ impl TargetConfig {
     #[inline]
     pub fn is_32bit(&self) -> bool {
         self.pointer_size == 4
+    }
+
+    /// Returns `true` if retpoline generation is enabled (`-mretpoline`).
+    ///
+    /// Retpoline replaces indirect branch instructions with speculative-safe
+    /// thunk sequences to mitigate Spectre variant 2 attacks. Currently
+    /// supported only on the x86-64 backend.
+    #[inline]
+    pub fn retpoline_enabled(&self) -> bool {
+        self.retpoline
+    }
+
+    /// Returns `true` if Intel CET control-flow protection is enabled
+    /// (`-fcf-protection`).
+    ///
+    /// When enabled, the x86-64 backend inserts `endbr64` instructions at
+    /// all indirect branch targets for forward-edge CFI compatibility.
+    #[inline]
+    pub fn cf_protection_enabled(&self) -> bool {
+        self.cf_protection
+    }
+
+    /// Returns `true` if position-independent code generation is enabled
+    /// (`-fPIC`).
+    ///
+    /// When enabled, the code generator emits position-independent sequences
+    /// using GOT-relative addressing and PLT stubs for all four architectures.
+    #[inline]
+    pub fn pic_enabled(&self) -> bool {
+        self.pic
     }
 }
 

@@ -169,7 +169,12 @@ impl CompilationContext {
     ///
     /// Initializes all shared infrastructure (source map, diagnostics,
     /// interner, arena) to their empty/default states.
-    pub fn new(cli_args: CliArgs, target: TargetConfig) -> Self {
+    pub fn new(cli_args: CliArgs, mut target: TargetConfig) -> Self {
+        // Propagate codegen-relevant CLI flags into TargetConfig so that
+        // the backend (which only receives TargetConfig) can access them.
+        target.retpoline = cli_args.retpoline;
+        target.cf_protection = cli_args.cf_protection;
+        target.pic = cli_args.pic;
         CompilationContext {
             cli_args,
             target,
@@ -260,7 +265,7 @@ pub fn run(cli_args: CliArgs, target: TargetConfig) -> Result<(), ()> {
         ctx.diagnostics.sync_source_map(&ctx.source_map);
 
         // === Step 2: Preprocessing (Phase F-001) ===
-        let pp_options = build_preprocessor_options(&ctx.cli_args, &bundled_header_path);
+        let pp_options = build_preprocessor_options(&ctx.cli_args, &bundled_header_path, &ctx.target);
         let mut preprocessor = Preprocessor::new(
             pp_options,
             &mut ctx.source_map,
@@ -344,6 +349,7 @@ pub fn run(cli_args: CliArgs, target: TargetConfig) -> Result<(), ()> {
                 &ctx.target,
                 &mut ctx.diagnostics,
                 module_name,
+                &ctx.interner,
             );
             builder.build(&typed_ast)
         };
@@ -426,6 +432,7 @@ pub fn run(cli_args: CliArgs, target: TargetConfig) -> Result<(), ()> {
 fn build_preprocessor_options(
     cli_args: &CliArgs,
     bundled_header_path: &Option<PathBuf>,
+    target: &crate::driver::target::TargetConfig,
 ) -> PreprocessorOptions {
     let mut options = PreprocessorOptions::new();
 
@@ -446,6 +453,22 @@ fn build_preprocessor_options(
 
     // Bundled freestanding header path.
     options.bundled_header_path = bundled_header_path.clone();
+
+    // System include directories based on target architecture.
+    options.system_include_dirs.push(PathBuf::from("/usr/include"));
+    let arch_str = &target.triple;
+    if arch_str.starts_with("x86_64") || arch_str.starts_with("x86-64") {
+        options.system_include_dirs.push(PathBuf::from("/usr/include/x86_64-linux-gnu"));
+    } else if arch_str.starts_with("i686") || arch_str.starts_with("i386") {
+        options.system_include_dirs.push(PathBuf::from("/usr/include/i386-linux-gnu"));
+        options.system_include_dirs.push(PathBuf::from("/usr/include/x86_64-linux-gnu"));
+    } else if arch_str.starts_with("aarch64") {
+        options.system_include_dirs.push(PathBuf::from("/usr/aarch64-linux-gnu/include"));
+        options.system_include_dirs.push(PathBuf::from("/usr/include/aarch64-linux-gnu"));
+    } else if arch_str.starts_with("riscv64") {
+        options.system_include_dirs.push(PathBuf::from("/usr/riscv64-linux-gnu/include"));
+        options.system_include_dirs.push(PathBuf::from("/usr/include/riscv64-linux-gnu"));
+    }
 
     options
 }
@@ -920,7 +943,8 @@ mod tests {
         let mut args = CliArgs::default();
         args.include_paths = vec!["/usr/include".to_string(), "./include".to_string()];
         let bundled = Some(PathBuf::from("/bundled"));
-        let opts = build_preprocessor_options(&args, &bundled);
+        let target = crate::driver::target::TargetConfig::x86_64();
+        let opts = build_preprocessor_options(&args, &bundled, &target);
         assert_eq!(opts.include_dirs.len(), 2);
         assert_eq!(opts.include_dirs[0], PathBuf::from("/usr/include"));
         assert_eq!(opts.include_dirs[1], PathBuf::from("./include"));
@@ -940,7 +964,8 @@ mod tests {
                 value: None,
             },
         ];
-        let opts = build_preprocessor_options(&args, &None);
+        let target = crate::driver::target::TargetConfig::x86_64();
+        let opts = build_preprocessor_options(&args, &None, &target);
         assert_eq!(opts.defines.len(), 2);
         assert_eq!(opts.defines[0].0, "DEBUG");
         assert_eq!(opts.defines[0].1, Some("1".to_string()));
@@ -952,7 +977,8 @@ mod tests {
     fn test_build_preprocessor_options_undefines() {
         let mut args = CliArgs::default();
         args.undefines = vec!["FOO".to_string(), "BAR".to_string()];
-        let opts = build_preprocessor_options(&args, &None);
+        let target = crate::driver::target::TargetConfig::x86_64();
+        let opts = build_preprocessor_options(&args, &None, &target);
         assert_eq!(opts.undefines.len(), 2);
         assert_eq!(opts.undefines[0], "FOO");
         assert_eq!(opts.undefines[1], "BAR");
