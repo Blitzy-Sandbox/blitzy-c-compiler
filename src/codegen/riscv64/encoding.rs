@@ -292,11 +292,23 @@ impl Riscv64Encoder {
     }
 
     fn opcode_from_u32(val: u32) -> Riscv64Opcode {
+        // Bounds check: verify val is within the valid discriminant range
+        // before transmuting. Riscv64Opcode is #[repr(u32)] with contiguous
+        // variants numbered 0..=(LA as u32). Any out-of-range value would
+        // cause undefined behavior in the transmute.
+        const MAX_DISCRIMINANT: u32 = Riscv64Opcode::LA as u32;
+        assert!(
+            val <= MAX_DISCRIMINANT,
+            "invalid Riscv64Opcode discriminant: 0x{:X} (valid range: 0..=0x{:X})",
+            val,
+            MAX_DISCRIMINANT,
+        );
         // SAFETY: Riscv64Opcode is #[repr(u32)] with contiguous variants
-        // numbered 0..N. All values originate from Riscv64Opcode::as_u32()
-        // in isel.rs so the discriminant is always valid. A safe match on
-        // 130+ literals is functionally identical but impractical. Scope:
-        // single transmute of a u32 known to be a valid discriminant.
+        // numbered 0..N. The assert! above guarantees `val` is within the
+        // valid discriminant range, so the transmute cannot produce an
+        // invalid enum value. A safe match on 130+ literals is functionally
+        // identical but impractical. Scope: single transmute of a u32 that
+        // has been validated to be a legal discriminant.
         unsafe { std::mem::transmute(val) }
     }
 

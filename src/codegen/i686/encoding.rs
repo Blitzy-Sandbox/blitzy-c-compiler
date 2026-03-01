@@ -209,10 +209,18 @@ pub enum I686Opcode {
     /// Call through PLT (PIC). Operand: `[Symbol(name)]`.
     /// Encodes `call symbol@PLT` with R_386_PLT32 relocation.
     CallPlt,
+    /// Add with carry (ADC r/m32, r32). Used for the high-half of 64-bit
+    /// register-pair addition where the carry from the low-half `ADD` must
+    /// propagate. Operands: `[dst, src]`.
+    Adc,
+    /// Subtract with borrow (SBB r/m32, r32). Used for the high-half of
+    /// 64-bit register-pair subtraction where the borrow from the low-half
+    /// `SUB` must propagate. Operands: `[dst, src]`.
+    Sbb,
 }
 
 /// Total number of defined opcodes, for range checking in `from_u32`.
-const I686_OPCODE_COUNT: u32 = I686Opcode::CallPlt as u32 + 1;
+const I686_OPCODE_COUNT: u32 = I686Opcode::Sbb as u32 + 1;
 
 impl I686Opcode {
     /// Convert a raw `u32` from `MachineInstr.opcode` to the typed enum.
@@ -444,6 +452,8 @@ fn alu_params(op: I686Opcode) -> (u8, u8, u8) {
     match op {
         I686Opcode::Add => (0x00, 0, 0x05),
         I686Opcode::Or  => (0x08, 1, 0x0D),
+        I686Opcode::Adc => (0x10, 2, 0x15),
+        I686Opcode::Sbb => (0x18, 3, 0x1D),
         I686Opcode::And => (0x20, 4, 0x25),
         I686Opcode::Sub => (0x28, 5, 0x2D),
         I686Opcode::Xor => (0x30, 6, 0x35),
@@ -1287,7 +1297,8 @@ fn encode_single_instruction(
     match op {
         // ----- ALU -----
         I686Opcode::Add | I686Opcode::Sub | I686Opcode::And |
-        I686Opcode::Or  | I686Opcode::Xor | I686Opcode::Cmp => {
+        I686Opcode::Or  | I686Opcode::Xor | I686Opcode::Cmp |
+        I686Opcode::Adc | I686Opcode::Sbb => {
             encode_alu(&mut output.code, op, operands)?;
         }
 

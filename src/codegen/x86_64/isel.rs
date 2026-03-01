@@ -251,6 +251,10 @@ pub mod opcodes {
     pub const PAUSE: u32 = 0x0A02;
     /// `lfence` — used in retpoline sequences
     pub const LFENCE: u32 = 0x0A03;
+    /// `ud2` — undefined instruction trap (0x0F 0x0B). Used for unreachable
+    /// code paths to trigger a guaranteed CPU exception rather than silently
+    /// falling through.
+    pub const UD2: u32 = 0x0A04;
 }
 
 // ---------------------------------------------------------------------------
@@ -386,6 +390,9 @@ impl AddressMode {
 pub struct X86_64InstructionSelector {
     /// Maps each IR Value to the machine operand holding its result.
     value_map: HashMap<Value, MachineOperand>,
+    /// Maps each IR Value to its IR type, used for correct call-site argument
+    /// classification (float/double → XMM registers per System V AMD64 ABI).
+    type_map: HashMap<Value, IrType>,
     /// Counter for virtual register allocation (pre-regalloc).
     next_vreg: u32,
     /// Accumulated machine instructions for the current function.
@@ -407,6 +414,7 @@ impl X86_64InstructionSelector {
     pub fn new(pic_enabled: bool) -> Self {
         X86_64InstructionSelector {
             value_map: HashMap::new(),
+            type_map: HashMap::new(),
             next_vreg: 32, // start above physical register range
             instructions: Vec::new(),
             pic_enabled,
@@ -467,6 +475,7 @@ impl X86_64InstructionSelector {
     ) -> Result<Vec<MachineInstr>, CodeGenError> {
         // Reset state for each function.
         self.value_map.clear();
+        self.type_map.clear();
         self.instructions.clear();
         self.next_vreg = 32;
         self.stack_offset = 0;
@@ -521,9 +530,10 @@ impl X86_64InstructionSelector {
             .collect();
         let layout = compute_argument_locations(&param_types);
 
-        for (i, (_name, _ty)) in function.params.iter().enumerate() {
+        for (i, (_name, ty)) in function.params.iter().enumerate() {
             // Assign an IR Value(i) — the builder numbers params sequentially.
             let val = Value(i as u32);
+            self.type_map.insert(val, ty.clone());
             if let Some(loc) = layout.locations.get(i) {
                 if let Some(reg) = loc.register {
                     self.set_operand(val, MachineOperand::Register(reg));
@@ -558,6 +568,15 @@ impl X86_64InstructionSelector {
         &mut self,
         inst: &Instruction,
     ) -> Result<(), CodeGenError> {
+        // Record the result type for every instruction that produces a typed
+        // result. This enables correct argument classification in select_call
+        // (float/double → XMM registers per System V AMD64 ABI).
+        if let Some(result_ty) = inst.result_type() {
+            if let Some(result_val) = inst.result() {
+                self.type_map.insert(result_val, result_ty.clone());
+            }
+        }
+
         match inst {
             // ---- Arithmetic ----
             Instruction::Add { result, lhs, rhs, ty } => {
@@ -795,8 +814,9 @@ impl X86_64InstructionSelector {
                 self.emit_instr(opcodes::JMP, vec![MachineOperand::Label(default.0)]);
             }
             Terminator::Unreachable => {
-                // Emit a trap-like sequence; unreachable code should never execute.
-                self.emit_instr(opcodes::NOP, vec![]);
+                // Emit UD2 trap instruction — unreachable code should trigger a
+                // CPU exception rather than silently executing the next instruction.
+                self.emit_instr(opcodes::UD2, vec![]);
             }
         }
         Ok(())
@@ -1074,9 +1094,10 @@ impl X86_64InstructionSelector {
         }
 
         // SETCC sets the low byte of the destination.
+        // Operand order: [Immediate(cc), Register(dst)] — matches encoding.rs expectation.
         self.emit_instr(
             opcodes::SETCC,
-            vec![dst.clone(), MachineOperand::Immediate(cc as i64)],
+            vec![MachineOperand::Immediate(cc as i64), dst.clone()],
         );
 
         // Zero-extend from byte to full register width.
@@ -1090,6 +1111,11 @@ impl X86_64InstructionSelector {
     // ===================================================================
 
     /// Select a floating-point comparison → UCOMISS/UCOMISD + SETCC.
+    ///
+    /// For ordered comparisons, NaN inputs must produce `false`. Since
+    /// x86 UCOMISD/UCOMISS sets PF=1 for unordered (NaN) results, ordered
+    /// comparisons need an additional parity flag check. Specifically for
+    /// `OrderedEqual`, we emit SETNP + SETE + AND to correctly reject NaN.
     fn select_fcmp(
         &mut self,
         result: Value,
@@ -1111,15 +1137,32 @@ impl X86_64InstructionSelector {
 
         let cc = float_compare_op_to_cond_code(op);
 
-        // For ordered comparisons (except Unordered itself), we need to
-        // ensure we handle NaN correctly. UCOMISD sets PF=1 for unordered.
-        // For ordered-equal: check NP AND E.
-        // For simplicity in the initial isel, we emit SETCC with the
-        // primary condition code. The encoder handles parity-flag checks.
-        self.emit_instr(
-            opcodes::SETCC,
-            vec![dst.clone(), MachineOperand::Immediate(cc as i64)],
-        );
+        // For OrderedEqual: x86 UCOMISD sets ZF=1 for both equal AND
+        // unordered (NaN). We must AND the result with a parity check
+        // (SETNP) to exclude NaN. Sequence: SETNP tmp; SETE dst; AND dst, tmp.
+        if matches!(op, FloatCompareOp::OrderedEqual) {
+            let tmp = self.alloc_vreg();
+            let tmp_op = MachineOperand::Register(tmp);
+            // SETNP tmp — set if ordered (not NaN)
+            self.emit_instr(
+                opcodes::SETCC,
+                vec![MachineOperand::Immediate(CondCode::NP as i64), tmp_op.clone()],
+            );
+            // SETE dst — set if equal
+            self.emit_instr(
+                opcodes::SETCC,
+                vec![MachineOperand::Immediate(CondCode::E as i64), dst.clone()],
+            );
+            // AND dst, tmp — true only if ordered AND equal
+            self.emit_instr(opcodes::AND_RR, vec![dst.clone(), tmp_op]);
+        } else {
+            // For other float comparisons, the primary condition code is sufficient.
+            // Operand order: [Immediate(cc), Register(dst)] — matches encoding.rs.
+            self.emit_instr(
+                opcodes::SETCC,
+                vec![MachineOperand::Immediate(cc as i64), dst.clone()],
+            );
+        }
 
         // Zero-extend to full register width.
         self.emit_instr(opcodes::MOVZX, vec![dst.clone(), dst]);
@@ -1516,10 +1559,12 @@ impl X86_64InstructionSelector {
         args: &[Value],
         return_ty: &IrType,
     ) -> Result<(), CodeGenError> {
-        // Classify arguments and compute register/stack assignment.
+        // Classify arguments using actual IR types so float/double arguments
+        // are correctly assigned to XMM registers (xmm0-xmm7) per System V
+        // AMD64 ABI, rather than being misclassified as integer types.
         let arg_types: Vec<IrType> = args
             .iter()
-            .map(|_v| IrType::I64) // Simplified: treat all as I64/pointer for now
+            .map(|v| self.type_map.get(v).cloned().unwrap_or(IrType::I64))
             .collect();
         let layout = compute_argument_locations(&arg_types);
 
@@ -1776,14 +1821,16 @@ impl X86_64InstructionSelector {
             self.emit_instr(opcodes::NOP, vec![MachineOperand::Label(end_label)]);
         } else {
             // Integer path: use CMOVCC.
+            // Operand order: [Immediate(cc), Register(dst), Register(src)]
+            // — matches encoding.rs expectation.
             self.emit_instr(opcodes::MOV_RR, vec![dst.clone(), false_op]);
             self.emit_instr(opcodes::TEST_RR, vec![cond_op.clone(), cond_op]);
             self.emit_instr(
                 opcodes::CMOVCC,
                 vec![
+                    MachineOperand::Immediate(CondCode::NE as i64),
                     dst,
                     true_op,
-                    MachineOperand::Immediate(CondCode::NE as i64),
                 ],
             );
         }

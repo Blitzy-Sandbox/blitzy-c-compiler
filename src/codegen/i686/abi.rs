@@ -53,41 +53,41 @@ use crate::codegen::{MachineInstr, MachineOperand};
 use crate::driver::target::TargetConfig;
 use crate::ir::{Function, Instruction, IrType, Value};
 
+use super::encoding::I686Opcode;
+
 // ---------------------------------------------------------------------------
 // i686 Machine Instruction Opcodes (prologue / epilogue / call setup)
 // ---------------------------------------------------------------------------
-// These constants define opcode values for the i686 backend's machine
-// instructions. They MUST match the values defined in `super::isel` when
-// that module is fully implemented. They are duplicated here to avoid a
-// circular dependency on the `isel` submodule, which is not in this file's
-// `depends_on_files`.
+// These constants are derived from the `I686Opcode` enum in encoding.rs
+// to ensure consistent opcode numbering between the ABI module and the
+// encoder. The RISC-V backend uses an identical pattern (`Riscv64Opcode::ADDI.as_u32()`).
 
 /// `push reg` — opcode used in function prologue to save callee-saved registers
 /// and in call setup to push arguments onto the stack.
-const OP_PUSH: u32 = 0x0600;
+const OP_PUSH: u32 = I686Opcode::Push as u32;
 
 /// `pop reg` — opcode used in function epilogue to restore callee-saved registers.
-const OP_POP: u32 = 0x0601;
+const OP_POP: u32 = I686Opcode::Pop as u32;
 
 /// `mov reg, reg` — register-to-register move. Used for `mov ebp, esp` in
 /// prologue and `mov esp, ebp` in epilogue.
-const OP_MOV_RR: u32 = 0x0300;
+const OP_MOV_RR: u32 = I686Opcode::Mov as u32;
 
 /// `sub reg, imm` — subtract immediate from register. Used for `sub esp, N`
 /// to allocate stack space in prologue and for alignment padding before calls.
-const OP_SUB_RI: u32 = 0x0111;
+const OP_SUB_RI: u32 = I686Opcode::Sub as u32;
 
 /// `add reg, imm` — add immediate to register. Used for `add esp, N` to
 /// deallocate stack space in epilogue and for caller cleanup after calls.
-const OP_ADD_RI: u32 = 0x0101;
+const OP_ADD_RI: u32 = I686Opcode::Add as u32;
 
 /// `ret` — function return instruction. Pops return address from stack and
 /// transfers control to the caller.
-const OP_RET: u32 = 0x0520;
+const OP_RET: u32 = I686Opcode::Ret as u32;
 
 /// `mov [mem], reg` — store register to memory. Used for pushing 64-bit
 /// arguments that cannot use a single `push` instruction.
-const OP_MOV_MR: u32 = 0x0302;
+const OP_MOV_MR: u32 = I686Opcode::Mov as u32;
 
 // =====================================================================
 // Section 1: Physical Register Constants

@@ -121,7 +121,10 @@ pub enum Aarch64Opcode {
 
 impl Aarch64Opcode {
     /// Encode this opcode as a `u32` for storage in `MachineInstr.opcode`.
-    pub fn as_u32(self) -> u32 {
+    ///
+    /// Declared `const` so that the value can be used in `const` initializers
+    /// (e.g., ABI module opcode constants) as well as at runtime.
+    pub const fn as_u32(self) -> u32 {
         match self {
             // Integer arithmetic — 0x1000
             Aarch64Opcode::ADD   => 0x1000,

@@ -594,15 +594,17 @@ impl SecurityHardening {
                 ],
             ));
 
-            // test [rsp], rsp — probe the page
+            // Probe the page: load from [rsp+0] to trigger a page fault if
+            // the page is not yet mapped. We use MOV_RM (load) to read [rsp]
+            // into RAX as a zero-cost probe; the value is discarded.
             instrs.push(MachineInstr::with_operands(
-                opcodes::TEST_RR,
+                opcodes::MOV_RM,
                 vec![
+                    MachineOperand::Register(RAX),
                     MachineOperand::Memory {
                         base: RSP,
                         offset: 0,
                     },
-                    MachineOperand::Register(RSP),
                 ],
             ));
         }
@@ -632,7 +634,7 @@ impl SecurityHardening {
     /// sub rax, total            ; compute target rsp
     /// loop:
     ///   sub rsp, 4096           ; allocate one page
-    ///   test [rsp], rsp         ; probe
+    ///   mov rcx, [rsp]          ; probe (load from stack page; RCX is scratch)
     ///   cmp rsp, rax            ; compare to target
     ///   ja loop                 ; loop while rsp > target
     /// mov rsp, rax              ; set final rsp
@@ -674,23 +676,28 @@ impl SecurityHardening {
             ],
         ));
 
-        // test [rsp], rsp — probe the page.
+        // Probe the page: load from [rsp+0] into a scratch register (RCX).
+        // Uses MOV_RM (register ← memory) which correctly expects
+        // [Register(dst), Memory(base, offset)] operands.
+        // RCX is used instead of RAX because RAX holds the loop's target
+        // RSP value and must not be clobbered. RCX is caller-saved so it
+        // is safe to use as a throwaway probe destination in the prologue.
         instrs.push(MachineInstr::with_operands(
-            opcodes::TEST_RR,
+            opcodes::MOV_RM,
             vec![
+                MachineOperand::Register(RCX),
                 MachineOperand::Memory {
                     base: RSP,
                     offset: 0,
                 },
-                MachineOperand::Register(RSP),
             ],
         ));
 
-        // cmp rsp, <target> — compare current RSP against target in RAX.
-        // Uses CMP_RI opcode with register operands; the encoder resolves
-        // the correct encoding (CMP r/m64, r64) based on operand types.
+        // cmp rsp, rax — compare current RSP against target in RAX.
+        // Uses CMP_RR (register-register comparison) which correctly
+        // expects [Register, Register] operands.
         instrs.push(MachineInstr::with_operands(
-            opcodes::CMP_RI,
+            opcodes::CMP_RR,
             vec![
                 MachineOperand::Register(RSP),
                 MachineOperand::Register(RAX),
@@ -1293,16 +1300,16 @@ mod tests {
         let config = SecurityConfig::default();
         let hardening = SecurityHardening::new(config);
 
-        // 8192 = 2 pages → 2 × (SUB + TEST) = 4 instructions.
+        // 8192 = 2 pages → 2 × (SUB + MOV_RM probe) = 4 instructions.
         let instrs = hardening.generate_stack_probe_instrs(8192);
         assert_eq!(instrs.len(), 4);
 
-        // First pair: SUB_RI, TEST_RR
+        // First pair: SUB_RI, MOV_RM (load from [rsp] into RAX to probe page)
         assert_eq!(instrs[0].opcode, opcodes::SUB_RI);
-        assert_eq!(instrs[1].opcode, opcodes::TEST_RR);
+        assert_eq!(instrs[1].opcode, opcodes::MOV_RM);
         // Second pair.
         assert_eq!(instrs[2].opcode, opcodes::SUB_RI);
-        assert_eq!(instrs[3].opcode, opcodes::TEST_RR);
+        assert_eq!(instrs[3].opcode, opcodes::MOV_RM);
     }
 
     #[test]
@@ -1313,15 +1320,15 @@ mod tests {
         // 65536 = 16 pages → loop probe.
         let instrs = hardening.generate_stack_probe_instrs(65536);
 
-        // Loop probe: MOV_RR, SUB_RI, SUB_RI, TEST_RR, CMP_RI, JCC, MOV_RR
+        // Loop probe: MOV_RR, SUB_RI, SUB_RI, MOV_RM(probe), CMP_RR, JCC, MOV_RR
         assert_eq!(instrs.len(), 7);
-        assert_eq!(instrs[0].opcode, opcodes::MOV_RR);
-        assert_eq!(instrs[1].opcode, opcodes::SUB_RI);
-        assert_eq!(instrs[2].opcode, opcodes::SUB_RI);
-        assert_eq!(instrs[3].opcode, opcodes::TEST_RR);
-        assert_eq!(instrs[4].opcode, opcodes::CMP_RI);
-        assert_eq!(instrs[5].opcode, opcodes::JCC);
-        assert_eq!(instrs[6].opcode, opcodes::MOV_RR);
+        assert_eq!(instrs[0].opcode, opcodes::MOV_RR);  // mov rax, rsp
+        assert_eq!(instrs[1].opcode, opcodes::SUB_RI);   // sub rax, total
+        assert_eq!(instrs[2].opcode, opcodes::SUB_RI);   // sub rsp, 4096
+        assert_eq!(instrs[3].opcode, opcodes::MOV_RM);   // mov rcx, [rsp] (probe)
+        assert_eq!(instrs[4].opcode, opcodes::CMP_RR);   // cmp rsp, rax
+        assert_eq!(instrs[5].opcode, opcodes::JCC);      // ja loop
+        assert_eq!(instrs[6].opcode, opcodes::MOV_RR);   // mov rsp, rax
 
         // Verify JCC condition code is CondCode::A
         match &instrs[5].operands[0] {

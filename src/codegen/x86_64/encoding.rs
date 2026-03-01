@@ -857,6 +857,7 @@ impl X86_64Encoder {
             opcodes::ENDBR64 => { self.emit_bytes(&[0xF3, 0x0F, 0x1E, 0xFA]); }
             opcodes::PAUSE   => { self.emit_bytes(&[0xF3, 0x90]); }
             opcodes::LFENCE  => { self.emit_bytes(&[0x0F, 0xAE, 0xE8]); }
+            opcodes::UD2     => { self.emit_bytes(&[0x0F, 0x0B]); }
 
             // --- Label pseudo-instruction ---
             _ => {

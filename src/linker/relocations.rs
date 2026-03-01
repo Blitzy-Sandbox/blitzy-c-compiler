@@ -784,9 +784,16 @@ fn apply_riscv64_relocation(
 
         R_RISCV_PCREL_LO12_I => {
             // Lower 12 bits complementing a PCREL_HI20, I-type format.
-            // In our simplified model, the symbol S and addend A describe
-            // the same target as the paired HI20 relocation.
-            let offset = (s as i64).wrapping_add(a).wrapping_sub(p as i64) as i32;
+            //
+            // Per RISC-V psABI, the LO12 relocation must extract the lower
+            // 12 bits from the **same** offset used by the paired PCREL_HI20.
+            // Our code generator always emits AUIPC+ADDI/LW as adjacent
+            // 4-byte instructions, so the AUIPC (HI20 site) is at P - 4.
+            // Using P_auipc = P - 4 ensures the HI20 and LO12 computations
+            // split the identical offset, avoiding page-boundary discrepancies
+            // that would occur if the LO12 used its own address as P.
+            let p_auipc = p.wrapping_sub(4);
+            let offset = (s as i64).wrapping_add(a).wrapping_sub(p_auipc as i64) as i32;
             let lo = offset & 0xFFF;
             patch_riscv_i_immediate(
                 section_data,
@@ -798,7 +805,9 @@ fn apply_riscv64_relocation(
 
         R_RISCV_PCREL_LO12_S => {
             // Lower 12 bits complementing a PCREL_HI20, S-type format.
-            let offset = (s as i64).wrapping_add(a).wrapping_sub(p as i64) as i32;
+            // Same P_auipc adjustment as PCREL_LO12_I — see comment above.
+            let p_auipc = p.wrapping_sub(4);
+            let offset = (s as i64).wrapping_add(a).wrapping_sub(p_auipc as i64) as i32;
             let lo = offset & 0xFFF;
             patch_riscv_s_immediate(
                 section_data,

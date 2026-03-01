@@ -149,6 +149,9 @@ struct ISel<'a> {
     value_map: HashMap<Value, MachineOperand>,
     /// For 64-bit values, maps the SSA value to its high-half operand.
     value_hi_map: HashMap<Value, MachineOperand>,
+    /// Maps IR SSA values to their IR types, used for correct call-site
+    /// argument classification (e.g., 64-bit arguments requiring two stack slots).
+    type_map: HashMap<Value, IrType>,
     /// Maps basic block IDs to machine-level label IDs.
     block_label_map: HashMap<BlockId, u32>,
     /// Next available label ID.
@@ -166,6 +169,7 @@ impl<'a> ISel<'a> {
             output: Vec::with_capacity(function.blocks.len() * 16),
             value_map: HashMap::with_capacity(64),
             value_hi_map: HashMap::new(),
+            type_map: HashMap::with_capacity(64),
             block_label_map: HashMap::with_capacity(function.blocks.len()),
             next_label: 0,
             next_vreg: VREG_BASE,
@@ -280,6 +284,7 @@ impl<'a> ISel<'a> {
                 // Parameters are typically the first N values in the function.
                 let param_val = Value(i as u32);
                 self.bind_value(param_val, operand.clone());
+                self.type_map.insert(param_val, param_ty.clone());
 
                 // For 64-bit params, the high half is at +4.
                 if matches!(param_ty, IrType::I64) {
@@ -359,6 +364,15 @@ impl<'a> ISel<'a> {
 
     /// Select machine instructions for a single IR instruction.
     fn select_instruction(&mut self, instr: &Instruction) -> Result<(), CodeGenError> {
+        // Record the result type for every instruction that produces a typed
+        // result. This enables correct argument classification in select_call
+        // (e.g., 64-bit/double arguments requiring two stack slots on i686).
+        if let Some(result_ty) = instr.result_type() {
+            if let Some(result_val) = instr.result() {
+                self.type_map.insert(result_val, result_ty.clone());
+            }
+        }
+
         match instr {
             // === Arithmetic ===
             Instruction::Add { result, lhs, rhs, ty } => {
@@ -534,10 +548,11 @@ impl<'a> ISel<'a> {
             MachineOperand::Register(dst_lo), rhs_lo,
         ]);
 
-        // Determine the high-half opcode (adc for add, sbb for sub, same for bitwise).
+        // Determine the high-half opcode: ADC for add (carry propagation),
+        // SBB for sub (borrow propagation), same op for bitwise (no carry needed).
         let hi_opcode = match opcode_32 {
-            I686Opcode::Add => I686Opcode::Add, // ADC is handled via carry flag; we use Add and annotate
-            I686Opcode::Sub => I686Opcode::Sub, // SBB via borrow flag
+            I686Opcode::Add => I686Opcode::Adc, // ADC propagates carry from low-half ADD
+            I686Opcode::Sub => I686Opcode::Sbb, // SBB propagates borrow from low-half SUB
             _ => opcode_32, // And, Or, Xor: same for both halves
         };
 
@@ -1314,8 +1329,12 @@ impl<'a> ISel<'a> {
         // Classify return type.
         let ret_info = abi::classify_return(return_ty, self.target);
 
-        // Collect argument types for call setup (used for size computation).
-        let arg_types: Vec<IrType> = args.iter().map(|_| IrType::I32).collect();
+        // Collect argument types for call setup. Use the type_map to recover
+        // the actual IR type of each argument so that 64-bit (long long, double)
+        // values are correctly allocated two stack slots on i686 cdecl.
+        let arg_types: Vec<IrType> = args.iter().map(|v| {
+            self.type_map.get(v).cloned().unwrap_or(IrType::I32)
+        }).collect();
         let call_setup = abi::setup_call_arguments(args, &arg_types, self.target);
 
         // We emit our own push sequence using our value_map rather than
@@ -2215,9 +2234,12 @@ mod tests {
         ];
         let func = make_function("test_add64", vec![], instrs, Terminator::Return { value: Some(Value(12)) });
         let result = select_instructions(&func, &target).unwrap();
-        // 64-bit add should produce two Add instructions (low + high).
+        // 64-bit add should produce one Add (low half) and one Adc (high half
+        // with carry propagation).
         let add_count = count_opcode(&result, I686Opcode::Add);
-        assert!(add_count >= 2, "64-bit add should produce at least 2 Add instructions, got {}", add_count);
+        let adc_count = count_opcode(&result, I686Opcode::Adc);
+        assert!(add_count >= 1, "64-bit add should produce at least 1 Add instruction (low half), got {}", add_count);
+        assert!(adc_count >= 1, "64-bit add should produce at least 1 Adc instruction (high half with carry), got {}", adc_count);
     }
 
     // -------------------------------------------------------------------

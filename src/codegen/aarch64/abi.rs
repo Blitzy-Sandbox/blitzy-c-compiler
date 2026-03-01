@@ -44,6 +44,8 @@ use crate::codegen::{MachineInstr, MachineOperand};
 use crate::driver::target::TargetConfig;
 use crate::ir::{Callee, Function, IrType, Value};
 
+use super::isel::Aarch64Opcode;
+
 // ---------------------------------------------------------------------------
 // RegClass Usage — ABI-level register class determination
 // ---------------------------------------------------------------------------
@@ -72,69 +74,73 @@ pub fn abi_reg_class(ty: &IrType) -> RegClass {
 
 /// `STP Xt1, Xt2, [Xn, #imm]!` — Store pair with pre-indexed write-back.
 /// Used in prologue for allocating frame and saving FP+LR simultaneously.
-const OP_STP_PRE: u32 = 0xA900;
+/// Uses the same opcode as STP with signed offset; the encoder determines
+/// addressing mode from the operand format (writeback flag in Memory operand).
+const OP_STP_PRE: u32 = Aarch64Opcode::STP.as_u32();
 
 /// `STP Xt1, Xt2, [Xn, #imm]` — Store pair with signed offset.
 /// Used for saving callee-saved register pairs at known offsets.
-const OP_STP_OFFSET: u32 = 0xA901;
+const OP_STP_OFFSET: u32 = Aarch64Opcode::STP.as_u32();
 
 /// `LDP Xt1, Xt2, [Xn], #imm` — Load pair with post-indexed write-back.
 /// Used in epilogue for restoring FP+LR and deallocating frame.
-const OP_LDP_POST: u32 = 0xA902;
+/// Uses the same opcode as LDP with signed offset; the encoder determines
+/// addressing mode from the operand format (writeback flag in Memory operand).
+const OP_LDP_POST: u32 = Aarch64Opcode::LDP.as_u32();
 
 /// `LDP Xt1, Xt2, [Xn, #imm]` — Load pair with signed offset.
 /// Used for restoring callee-saved register pairs at known offsets.
-const OP_LDP_OFFSET: u32 = 0xA903;
+const OP_LDP_OFFSET: u32 = Aarch64Opcode::LDP.as_u32();
 
 /// `STR Xt, [Xn, #imm]` — Store register (single, unsigned offset).
 /// Used for saving an unpaired callee-saved register.
-const OP_STR_IMM: u32 = 0xA910;
+const OP_STR_IMM: u32 = Aarch64Opcode::STR.as_u32();
 
 /// `LDR Xt, [Xn, #imm]` — Load register (single, unsigned offset).
 /// Used for restoring an unpaired callee-saved register.
-const OP_LDR_IMM: u32 = 0xA911;
+const OP_LDR_IMM: u32 = Aarch64Opcode::LDR.as_u32();
 
 /// `MOV Xd, Xn` (alias for ORR Xd, XZR, Xn) — Register-to-register move.
-const OP_MOV_RR: u32 = 0xA920;
+const OP_MOV_RR: u32 = Aarch64Opcode::MOV.as_u32();
 
 /// `FMOV Dd, Dn` — FP register-to-register move.
-const OP_FMOV_RR: u32 = 0xA921;
+const OP_FMOV_RR: u32 = Aarch64Opcode::FMOV.as_u32();
 
 /// `SUB Xd, Xn, #imm` — Subtract immediate from register.
-const OP_SUB_RI: u32 = 0xA930;
+const OP_SUB_RI: u32 = Aarch64Opcode::SUB.as_u32();
 
 /// `ADD Xd, Xn, #imm` — Add immediate to register.
-const OP_ADD_RI: u32 = 0xA931;
+const OP_ADD_RI: u32 = Aarch64Opcode::ADD.as_u32();
 
 /// `SUB Xd, Xn, Xm` — Subtract register from register.
-const OP_SUB_RR: u32 = 0xA932;
+const OP_SUB_RR: u32 = Aarch64Opcode::SUB.as_u32();
 
 /// `MOVZ Xd, #imm16, LSL #shift` — Move wide with zero.
-const OP_MOVZ: u32 = 0xA940;
+const OP_MOVZ: u32 = Aarch64Opcode::MOVZ.as_u32();
 
 /// `MOVK Xd, #imm16, LSL #shift` — Move wide with keep.
-const OP_MOVK: u32 = 0xA941;
+const OP_MOVK: u32 = Aarch64Opcode::MOVK.as_u32();
 
 /// `BL <symbol>` — Branch with link (direct call).
-const OP_BL: u32 = 0xA950;
+const OP_BL: u32 = Aarch64Opcode::BL.as_u32();
 
 /// `BLR Xn` — Branch with link to register (indirect call).
-const OP_BLR: u32 = 0xA951;
+const OP_BLR: u32 = Aarch64Opcode::BLR.as_u32();
 
 /// `RET` — Return from subroutine (Branch to LR / x30).
-const OP_RET: u32 = 0xA960;
+const OP_RET: u32 = Aarch64Opcode::RET.as_u32();
 
 /// `STP (FP pair) Dt1, Dt2, [Xn, #imm]` — Store FP register pair.
-const OP_STP_FP_OFFSET: u32 = 0xA970;
+const OP_STP_FP_OFFSET: u32 = Aarch64Opcode::STP_D.as_u32();
 
 /// `LDP (FP pair) Dt1, Dt2, [Xn, #imm]` — Load FP register pair.
-const OP_LDP_FP_OFFSET: u32 = 0xA971;
+const OP_LDP_FP_OFFSET: u32 = Aarch64Opcode::LDP_D.as_u32();
 
 /// `STR (FP single) Dt, [Xn, #imm]` — Store single FP register.
-const OP_STR_FP_IMM: u32 = 0xA972;
+const OP_STR_FP_IMM: u32 = Aarch64Opcode::STR_D.as_u32();
 
 /// `LDR (FP single) Dt, [Xn, #imm]` — Load single FP register.
-const OP_LDR_FP_IMM: u32 = 0xA973;
+const OP_LDR_FP_IMM: u32 = Aarch64Opcode::LDR_D.as_u32();
 
 // ---------------------------------------------------------------------------
 // AArch64 Physical Register Constants
