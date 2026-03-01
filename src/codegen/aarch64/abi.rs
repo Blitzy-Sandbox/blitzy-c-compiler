@@ -1395,6 +1395,7 @@ pub fn generate_call_sequence(
     // if the source is in an FP register, classify as float; otherwise integer.
     let mut ngrn: usize = 0; // Next GPR number
     let mut nsrn: usize = 0; // Next SIMD/FP register number
+    let mut stack_offset: usize = 0; // Next stack argument byte offset from SP
 
     // Move arguments to their designated argument registers.
     for &arg_val in args {
@@ -1415,18 +1416,17 @@ pub fn generate_call_sequence(
                         ));
                     }
                 } else {
-                    // Stack argument: STR to outgoing arg area.
-                    // The exact offset is computed relative to SP.
-                    let offset = ((nsrn + ngrn - 16) * 8) as i64;
+                    // Stack argument: STR to outgoing arg area at current stack offset.
                     instrs.push(MachineInstr::with_operands(
                         OP_STR_FP_IMM,
                         vec![
                             MachineOperand::Register(src),
                             MachineOperand::Register(SP),
-                            MachineOperand::Immediate(offset.max(0)),
+                            MachineOperand::Immediate(stack_offset as i64),
                         ],
                     ));
                     nsrn += 1;
+                    stack_offset += 8; // Each stack slot is at least 8 bytes per AAPCS64
                 }
             } else {
                 // Integer/pointer argument → x-register
@@ -1443,17 +1443,17 @@ pub fn generate_call_sequence(
                         ));
                     }
                 } else {
-                    // Stack argument.
-                    let stack_slot = (ngrn + nsrn - 16) as i64;
+                    // Stack argument: STR to outgoing arg area at current stack offset.
                     instrs.push(MachineInstr::with_operands(
                         OP_STR_IMM,
                         vec![
                             MachineOperand::Register(src),
                             MachineOperand::Register(SP),
-                            MachineOperand::Immediate((stack_slot * 8).max(0)),
+                            MachineOperand::Immediate(stack_offset as i64),
                         ],
                     ));
                     ngrn += 1;
+                    stack_offset += 8; // Each stack slot is at least 8 bytes per AAPCS64
                 }
             }
         }
