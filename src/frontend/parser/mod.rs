@@ -260,6 +260,8 @@ impl<'a> Parser<'a> {
                 continue;
             }
 
+            let pos_before = self.pos;
+
             // Attempt to parse a top-level declaration (variable, function,
             // typedef, struct/union/enum, or _Static_assert).
             let decl = declarations::parse_external_declaration(self);
@@ -271,6 +273,13 @@ impl<'a> Parser<'a> {
                 self.synchronize_to_declaration();
                 self.in_panic_mode = false;
                 self.recovered_count += 1;
+            }
+
+            // Guard against infinite loops: if no forward progress was made
+            // after a full declaration parse attempt plus synchronization,
+            // force-advance past the problematic token.
+            if self.pos == pos_before && !self.is_at_end() {
+                self.advance();
             }
         }
 
@@ -770,6 +779,13 @@ impl<'a> Parser<'a> {
     #[inline]
     pub(crate) fn has_errors(&self) -> bool {
         self.error_count > 0
+    }
+
+    /// Returns the current token position index. Used by the compound statement
+    /// and translation unit parsers to detect infinite-loop conditions where
+    /// error recovery fails to make forward progress.
+    pub(crate) fn position(&self) -> usize {
+        self.pos
     }
 
     /// Returns the current token's identifier InternId, if it is an

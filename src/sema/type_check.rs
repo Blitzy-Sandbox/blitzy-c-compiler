@@ -175,12 +175,12 @@ pub(crate) fn check_assignment(
     let t = target_type.unqualified();
     let v = value_type.unqualified();
     if t.is_pointer() && v.is_integer() && !v.is_null_pointer_constant() {
-        diagnostics.warning(
+        diagnostics.error(
             span.start,
             "assignment makes pointer from integer without a cast",
         );
     } else if t.is_integer() && v.is_pointer() {
-        diagnostics.warning(
+        diagnostics.error(
             span.start,
             "assignment makes integer from pointer without a cast",
         );

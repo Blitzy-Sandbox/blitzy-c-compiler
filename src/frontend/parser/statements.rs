@@ -214,9 +214,21 @@ pub(super) fn parse_compound_statement(parser: &mut Parser<'_>) -> Statement {
 
     // Parse block items until `}` or EOF.
     while !parser.check(TokenKind::RightBrace) && !parser.is_at_end() {
+        let pos_before = parser.position();
+
         // Try to parse a block item (declaration or statement).
         let item = parse_block_item(parser);
         items.push(item);
+
+        // Guard against infinite loops: if the parser made no forward
+        // progress (the position didn't change after a full block-item
+        // parse attempt), force-advance past the problematic token. This
+        // handles cases where error recovery returns to an unrecognised
+        // token without consuming it (e.g., `_Alignas` before the
+        // alignment-specifier is fully implemented).
+        if parser.position() == pos_before && !parser.is_at_end() {
+            parser.advance();
+        }
 
         // If the parser entered panic mode during the block item parse,
         // synchronise to the next statement boundary.
