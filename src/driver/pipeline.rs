@@ -644,11 +644,13 @@ fn link_objects(
         .map(|p| PathBuf::from(p))
         .collect();
 
+    let libraries = ctx.cli_args.libraries.clone();
+
     let linker_config = LinkerConfig {
         output_mode: output_mode.to_linker_output_mode(),
         output_path: output_path.clone(),
         library_paths,
-        libraries: ctx.cli_args.libraries.clone(),
+        libraries,
         force_static: ctx.cli_args.static_link,
         target: ctx.target.clone(),
         entry_point: String::from("_start"),

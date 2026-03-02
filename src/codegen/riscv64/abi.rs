@@ -854,12 +854,19 @@ pub fn compute_frame_layout(
 }
 
 /// Scan a function's blocks for call instructions to determine if RA needs saving.
+///
+/// Inspects all IR instructions in the function body for `Call` operations.
+/// Only returns `true` if the function actually performs calls, enabling
+/// leaf functions to avoid the overhead of saving/restoring the RA register.
 fn function_has_calls(function: &Function) -> bool {
-    // If the function has more than one block, it likely has calls
-    // or complex control flow. Conservative: if we have any blocks
-    // with instructions, assume calls are present.
-    // A more precise check would inspect IR instructions for Call ops.
-    function.blocks.len() > 1 || !function.blocks.is_empty()
+    for block in &function.blocks {
+        for inst in &block.instructions {
+            if matches!(inst, crate::ir::Instruction::Call { .. }) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Estimate local variable space needed by the function.

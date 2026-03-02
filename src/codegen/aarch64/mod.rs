@@ -636,6 +636,7 @@ impl CodeGen for Aarch64CodeGen {
                     binding: SymbolBinding::Global,
                     symbol_type: SymbolType::NoType,
                     visibility: SymbolVisibility::Default,
+                    is_definition: false,
                 });
                 continue;
             }
@@ -648,18 +649,18 @@ impl CodeGen for Aarch64CodeGen {
             let func_offset = text_data.len() as u64;
 
             // Emit the function symbol.
+            // All defined functions are global by default (C non-static functions
+            // have external linkage). The `is_static` flag on IR Function would
+            // need to be propagated from sema for proper local binding.
             symbols.push(Symbol {
                 name: function.name.clone(),
                 section_index: text_section_index,
                 offset: func_offset,
                 size: func_code.len() as u64,
-                binding: if function.name == "main" || !function.name.starts_with("__") {
-                    SymbolBinding::Global
-                } else {
-                    SymbolBinding::Local
-                },
+                binding: SymbolBinding::Global,
                 symbol_type: SymbolType::Function,
                 visibility: SymbolVisibility::Default,
+                is_definition: true,
             });
 
             // Adjust relocation offsets to account for the function's position
@@ -712,6 +713,7 @@ impl CodeGen for Aarch64CodeGen {
                     binding: SymbolBinding::Global,
                     symbol_type: SymbolType::NoType,
                     visibility: SymbolVisibility::Default,
+                    is_definition: false,
                 });
                 continue;
             }
@@ -735,6 +737,7 @@ impl CodeGen for Aarch64CodeGen {
                     },
                     symbol_type: SymbolType::Object,
                     visibility: SymbolVisibility::Default,
+                    is_definition: true,
                 });
                 bss_size = aligned_offset + var_size;
             } else if self.is_readonly_global(global) {
@@ -771,6 +774,7 @@ impl CodeGen for Aarch64CodeGen {
                     },
                     symbol_type: SymbolType::Object,
                     visibility: SymbolVisibility::Default,
+                    is_definition: true,
                 });
             } else {
                 // .data — initialized read-write data.
@@ -806,6 +810,7 @@ impl CodeGen for Aarch64CodeGen {
                     },
                     symbol_type: SymbolType::Object,
                     visibility: SymbolVisibility::Default,
+                    is_definition: true,
                 });
             }
         }

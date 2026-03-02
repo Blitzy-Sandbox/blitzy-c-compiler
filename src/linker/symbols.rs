@@ -196,9 +196,10 @@ pub struct Symbol {
     pub symbol_type: SymbolType,
     /// Symbol visibility (Default, Hidden, Protected).
     pub visibility: SymbolVisibility,
-    /// Section index this symbol is defined in. `SHN_UNDEF` (0) for undefined
-    /// references, `SHN_ABS` for absolute symbols, `SHN_COMMON` for common
-    /// symbols.
+    /// Section index this symbol is defined in. For symbols originating from
+    /// ELF objects this is the ELF section header index. For symbols converted
+    /// from codegen `ObjectCode`, this is the 0-based `ObjectCode.sections`
+    /// array index. `SHN_ABS` for absolute symbols, `SHN_COMMON` for common.
     pub section_index: u16,
     /// Symbol value — address or offset within the section.
     pub value: u64,
@@ -206,12 +207,20 @@ pub struct Symbol {
     pub size: u64,
     /// Index of the input object file this symbol came from.
     pub source_object: usize,
+    /// Whether this symbol is a definition (`true`) or an undefined reference
+    /// (`false`). This is the authoritative flag for definedness — it is
+    /// independent of `section_index`, which avoids ambiguity when a defined
+    /// symbol's section happens to be at index 0.
+    pub is_definition: bool,
 }
 
 impl Symbol {
     /// Convert a `ParsedSymbol` from the ELF parser into our `Symbol`
     /// representation.
     pub fn from_parsed(parsed: &elf::ParsedSymbol, object_index: usize) -> Self {
+        // For ELF-parsed symbols, a non-SHN_UNDEF section_index indicates
+        // that the symbol is defined in some section (or is absolute/common).
+        let is_def = parsed.section_index != SHN_UNDEF;
         Symbol {
             name: parsed.name.clone(),
             binding: SymbolBinding::from_elf(parsed.binding),
@@ -221,12 +230,17 @@ impl Symbol {
             value: parsed.value,
             size: parsed.size,
             source_object: object_index,
+            is_definition: is_def,
         }
     }
 
     /// Returns `true` if this symbol is defined (not an undefined reference).
+    ///
+    /// Uses the `is_definition` flag rather than checking `section_index`
+    /// against `SHN_UNDEF`, because codegen-produced symbols may have a
+    /// valid section at index 0 that does not correspond to SHN_UNDEF.
     pub fn is_defined(&self) -> bool {
-        self.section_index != SHN_UNDEF
+        self.is_definition
     }
 }
 
@@ -256,6 +270,12 @@ pub struct ResolvedSymbol {
     /// Index of the output section this symbol resides in (index into the
     /// merged section list, or 0 for undefined/absolute).
     pub output_section_index: usize,
+    /// Whether this symbol has a definition (i.e., is placed in a section).
+    /// Used to distinguish "output_section_index == 0 means merged section 0"
+    /// from "output_section_index == 0 means SHN_UNDEF (undefined)".
+    /// When converting to ELF shndx, defined symbols use
+    /// `output_section_index + 1` (accounting for the NULL section header).
+    pub is_definition: bool,
 }
 
 // ===========================================================================
@@ -382,7 +402,7 @@ impl SymbolResolver {
         for sym in symbols {
             // Skip null/empty symbols (index 0 in ELF symbol table)
             if sym.name.is_empty() && sym.symbol_type == SymbolType::NoType
-                && sym.section_index == SHN_UNDEF
+                && !sym.is_defined()
             {
                 continue;
             }
@@ -392,7 +412,7 @@ impl SymbolResolver {
                     self.local_symbols.push(sym.clone());
                 }
                 SymbolBinding::Global | SymbolBinding::Weak => {
-                    if sym.section_index == SHN_UNDEF {
+                    if !sym.is_defined() {
                         // This is an undefined reference — record it
                         // But only if it hasn't already been defined
                         if !self.has_definition(&sym.name) {
@@ -411,11 +431,10 @@ impl SymbolResolver {
         }
     }
 
-    /// Check if any candidate in global_symbols defines the given name
-    /// (has a non-SHN_UNDEF section_index).
+    /// Check if any candidate in global_symbols defines the given name.
     fn has_definition(&self, name: &str) -> bool {
         if let Some(candidates) = self.global_symbols.get(name) {
-            candidates.iter().any(|s| s.section_index != SHN_UNDEF)
+            candidates.iter().any(|s| s.is_defined())
         } else {
             false
         }
@@ -600,10 +619,10 @@ impl SymbolResolver {
                 None => continue,
             };
 
-            // Find all definitions (non-undefined section index)
+            // Find all definitions (symbols that are defined, not references)
             let defined: Vec<&Symbol> = candidates
                 .iter()
-                .filter(|s| s.section_index != SHN_UNDEF)
+                .filter(|s| s.is_defined())
                 .collect();
 
             if defined.is_empty() {
@@ -623,6 +642,7 @@ impl SymbolResolver {
                                 symbol_type: SymbolType::NoType,
                                 visibility: SymbolVisibility::Hidden,
                                 output_section_index: 0,
+                                is_definition: false,
                             },
                         );
                         self.undefined.remove(name);
@@ -676,6 +696,7 @@ impl SymbolResolver {
                     symbol_type: winner.symbol_type,
                     visibility: winner.visibility,
                     output_section_index,
+                    is_definition: true,
                 },
             );
 
@@ -701,17 +722,27 @@ impl SymbolResolver {
     /// to find where the symbol's original section was placed in the merged
     /// output, then computes:
     ///
-    ///   `final_address = section_base_address + input_mapping_output_offset + symbol_value`
+    ///   `final_address = merged_section_base + input_mapping_output_offset + symbol_value`
+    ///
+    /// The `merged_index_map` parameter is essential for correctness: input
+    /// objects' section indices (0-based into their ObjectCode.sections array)
+    /// often differ from the merged section indices (determined by the linker's
+    /// section ordering and CRT object contributions). Without this mapping,
+    /// symbols would be assigned addresses from the wrong merged section.
     ///
     /// # Arguments
     /// * `section_addresses` — Base virtual address for each merged output
-    ///   section (indexed by output section index).
+    ///   section (indexed by merged section index).
     /// * `section_mappings` — Input-to-output section mapping entries from
     ///   the section merger.
+    /// * `merged_index_map` — Mapping from `(object_index, original_section_index)`
+    ///   to the merged section index. This translates input-object-relative
+    ///   section indices to merged output section indices.
     pub fn assign_addresses(
         &mut self,
         section_addresses: &[u64],
         section_mappings: &[sections::InputSectionMapping],
+        merged_index_map: &HashMap<(usize, usize), usize>,
     ) {
         // Build a lookup from (object_index, original_section_index) to
         // the mapping's output_offset for efficient address translation.
@@ -732,7 +763,7 @@ impl SymbolResolver {
                     // Find the defined symbol that won resolution
                     let defined: Vec<&Symbol> = candidates
                         .iter()
-                        .filter(|s| s.section_index != SHN_UNDEF)
+                        .filter(|s| s.is_defined())
                         .collect();
 
                     if defined.is_empty() {
@@ -769,28 +800,25 @@ impl SymbolResolver {
             }
 
             let section_idx = winner.section_index as usize;
+            let key = (winner.source_object, section_idx);
+
+            // Translate the input-object-relative section index to the
+            // merged output section index using the merged_index_map.
+            // This is critical because CRT objects prepend sections that
+            // shift merged indices relative to codegen section indices.
+            if let Some(&merged_sec_idx) = merged_index_map.get(&key) {
+                resolved.output_section_index = merged_sec_idx;
+            }
 
             // Look up the input section mapping for this symbol's object
-            // and original section index
-            if let Some(mapping) = mapping_lookup.get(&(winner.source_object, section_idx)) {
-                // Find which merged output section this mapping belongs to.
-                // The section_addresses array is indexed by the merged section
-                // index. We need to find which merged section contains this
-                // mapping. For now, we search section_mappings to find the
-                // output section index.
-
-                // The output_section_index in the resolved symbol was set to
-                // the original section index during resolve(). We need to
-                // translate it to the merged section index. For simplicity,
-                // we use the section_addresses indexed by the original index
-                // if available, or fall back to computing from the mapping.
-
-                // The mapping's output_offset tells us where within the merged
-                // section this input section starts. The symbol's value is its
-                // offset within the input section.
-                //
-                // If section_addresses has an entry for our output_section_index,
-                // use it as the base.
+            // and original section index to determine the output_offset
+            // within the merged section.
+            if let Some(mapping) = mapping_lookup.get(&key) {
+                // The mapping's output_offset tells us where within the
+                // merged section this input section starts. The symbol's
+                // value is its offset within the input section. Together
+                // with the merged section's base address, we get the
+                // final virtual address.
                 if resolved.output_section_index < section_addresses.len() {
                     resolved.address = section_addresses[resolved.output_section_index]
                         + mapping.output_offset
@@ -800,10 +828,11 @@ impl SymbolResolver {
                     resolved.address = mapping.output_offset + winner.value;
                 }
             } else {
-                // No mapping found — use the section_addresses directly if available
-                if section_idx < section_addresses.len() {
-                    resolved.address = section_addresses[section_idx] + winner.value;
-                    resolved.output_section_index = section_idx;
+                // No mapping found — use the section_addresses directly
+                // with the (possibly translated) output_section_index.
+                if resolved.output_section_index < section_addresses.len() {
+                    resolved.address =
+                        section_addresses[resolved.output_section_index] + winner.value;
                 } else {
                     // Last resort: use the raw symbol value
                     resolved.address = winner.value;
@@ -910,7 +939,15 @@ impl SymbolResolver {
                     let st_info =
                         elf::elf_st_info(rsym.binding.to_elf(), rsym.symbol_type.to_elf());
                     let st_other = rsym.visibility.to_elf();
-                    let shndx = rsym.output_section_index as u16;
+                    // ELF section header table starts with a NULL entry at
+                    // index 0, so merged section index N corresponds to ELF
+                    // section header index N+1. Undefined symbols (not
+                    // definitions) use SHN_UNDEF (0).
+                    let shndx = if rsym.is_definition {
+                        (rsym.output_section_index + 1) as u16
+                    } else {
+                        0u16 // SHN_UNDEF
+                    };
 
                     if is_64bit {
                         write_elf64_sym(
@@ -948,7 +985,7 @@ impl SymbolResolver {
                     // Prefer a defined candidate over undefined.
                     let sym = candidates
                         .iter()
-                        .find(|s| s.section_index != SHN_UNDEF)
+                        .find(|s| s.is_defined())
                         .or_else(|| candidates.first());
                     if let Some(sym) = sym {
                         let name_offset =
@@ -1105,6 +1142,7 @@ mod tests {
             value,
             size: 0,
             source_object: obj,
+            is_definition: true,
         }
     }
 
@@ -1119,6 +1157,7 @@ mod tests {
             value: 0,
             size: 0,
             source_object: obj,
+            is_definition: false,
         }
     }
 
@@ -1133,6 +1172,7 @@ mod tests {
             value,
             size: 0,
             source_object: obj,
+            is_definition: true,
         }
     }
 
@@ -1147,6 +1187,7 @@ mod tests {
             value,
             size: 4,
             source_object: obj,
+            is_definition: true,
         }
     }
 
@@ -1456,6 +1497,7 @@ mod tests {
             value: 42,
             size: 0,
             source_object: 0,
+            is_definition: true,
         };
         assert!(abs_sym.is_defined());
     }
@@ -1600,7 +1642,11 @@ mod tests {
             size: 0x100,
         }];
 
-        resolver.assign_addresses(&section_addresses, &mappings);
+        // Merged index map: (object 0, original section 1) → merged section 1
+        let mut merged_index_map = std::collections::HashMap::new();
+        merged_index_map.insert((0usize, 1usize), 1usize);
+
+        resolver.assign_addresses(&section_addresses, &mappings, &merged_index_map);
 
         let resolved = resolver.get_resolved("func").unwrap();
         // address = section_base(0x400000) + output_offset(0) + value(0x10) = 0x400010

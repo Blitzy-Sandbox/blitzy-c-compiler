@@ -1461,6 +1461,7 @@ mod tests {
             symbol_type: SymbolType::Function,
             visibility: SymbolVisibility::Default,
             output_section_index: 1,
+            is_definition: true,
         }];
 
         let target = TargetConfig::x86_64();
@@ -1502,6 +1503,7 @@ mod tests {
             symbol_type: SymbolType::Object,
             visibility: SymbolVisibility::Default,
             output_section_index: 2,
+            is_definition: true,
         }];
 
         let target = TargetConfig::i686();

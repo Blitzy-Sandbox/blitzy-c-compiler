@@ -541,6 +541,15 @@ fn codegen_section_to_input(
 }
 
 /// Convert a codegen `Symbol` to a linker `symbols::Symbol`.
+///
+/// The codegen `Symbol.section_index` is a 0-based index into
+/// `ObjectCode.sections`. This maps directly to the `original_index` used
+/// when building `InputSection` entries, so the linker's section mapping
+/// lookup `(source_object, section_index)` will find the correct section.
+///
+/// The `is_definition` flag is propagated directly — it is the authoritative
+/// source for distinguishing defined symbols from undefined references,
+/// independent of section_index value.
 fn codegen_symbol_to_linker(
     sym: &CodegenSymbol,
     object_index: usize,
@@ -571,6 +580,7 @@ fn codegen_symbol_to_linker(
         value: sym.offset,
         size: sym.size,
         source_object: object_index,
+        is_definition: sym.is_definition,
     }
 }
 
@@ -759,11 +769,197 @@ fn link_relocatable(
 }
 
 // ============================================================================
+// Built-in startup stub
+// ============================================================================
+
+/// Generate a minimal `_start` function and a `_start` symbol for the target
+/// architecture.  This replaces system CRT objects (`crt1.o`, `crti.o`,
+/// `crtn.o`) with a compact stub that calls `main` and exits via syscall,
+/// enabling standalone executables that need no libc.
+///
+/// Returns `(text_bytes, relocations, symbols)`.
+fn generate_builtin_start(
+    arch: crate::driver::target::Architecture,
+) -> (
+    Vec<u8>,
+    Vec<codegen::Relocation>,
+    Vec<codegen::Symbol>,
+) {
+    use crate::driver::target::Architecture;
+
+    match arch {
+        Architecture::X86_64 => {
+            // x86_64 _start stub:
+            //   xor  ebp, ebp          ; 31 ed
+            //   mov  rdi, [rsp]        ; 48 8b 3c 24        (argc)
+            //   lea  rsi, [rsp+8]      ; 48 8d 74 24 08     (argv)
+            //   and  rsp, -16          ; 48 83 e4 f0         (align)
+            //   call main              ; e8 XX XX XX XX      (rel32 reloc)
+            //   mov  edi, eax          ; 89 c7               (exit code)
+            //   mov  eax, 60           ; b8 3c 00 00 00      (sys_exit)
+            //   syscall                ; 0f 05
+            //   hlt                    ; f4
+            let code: Vec<u8> = vec![
+                0x31, 0xED,                         // xor ebp, ebp
+                0x48, 0x8B, 0x3C, 0x24,             // mov rdi, [rsp]
+                0x48, 0x8D, 0x74, 0x24, 0x08,       // lea rsi, [rsp+8]
+                0x48, 0x83, 0xE4, 0xF0,             // and rsp, -16
+                0xE8, 0x00, 0x00, 0x00, 0x00,       // call rel32 (patched)
+                0x89, 0xC7,                         // mov edi, eax
+                0xB8, 0x3C, 0x00, 0x00, 0x00,       // mov eax, 60
+                0x0F, 0x05,                         // syscall
+                0xF4,                               // hlt
+            ];
+            let relocs = vec![codegen::Relocation {
+                offset: 16,  // offset of the rel32 in `call main`
+                symbol: String::from("main"),
+                reloc_type: codegen::RelocationType::X86_64_PLT32,
+                addend: -4,
+                section_index: 0,
+            }];
+            let syms = vec![codegen::Symbol {
+                name: String::from("_start"),
+                offset: 0,
+                size: code.len() as u64,
+                binding: codegen::SymbolBinding::Global,
+                symbol_type: codegen::SymbolType::Function,
+                section_index: 0,
+                visibility: codegen::SymbolVisibility::Default,
+                is_definition: true,
+            }];
+            (code, relocs, syms)
+        }
+        Architecture::I686 => {
+            // i686 _start stub:
+            //   xor  ebp, ebp          ; 31 ed
+            //   mov  ecx, [esp]        ; 8b 0c 24            (argc)
+            //   lea  edx, [esp+4]      ; 8d 54 24 04         (argv)
+            //   and  esp, -16          ; 83 e4 f0             (align)
+            //   push edx               ; 52                   (push argv)
+            //   push ecx               ; 51                   (push argc)
+            //   call main              ; e8 XX XX XX XX
+            //   mov  ebx, eax          ; 89 c3               (exit code)
+            //   mov  eax, 1            ; b8 01 00 00 00       (sys_exit)
+            //   int  0x80              ; cd 80
+            //   hlt                    ; f4
+            let code: Vec<u8> = vec![
+                0x31, 0xED,                         // xor ebp, ebp
+                0x8B, 0x0C, 0x24,                   // mov ecx, [esp]
+                0x8D, 0x54, 0x24, 0x04,             // lea edx, [esp+4]
+                0x83, 0xE4, 0xF0,                   // and esp, -16
+                0x52,                               // push edx
+                0x51,                               // push ecx
+                0xE8, 0x00, 0x00, 0x00, 0x00,       // call rel32
+                0x89, 0xC3,                         // mov ebx, eax
+                0xB8, 0x01, 0x00, 0x00, 0x00,       // mov eax, 1
+                0xCD, 0x80,                         // int 0x80
+                0xF4,                               // hlt
+            ];
+            let relocs = vec![codegen::Relocation {
+                offset: 15,
+                symbol: String::from("main"),
+                reloc_type: codegen::RelocationType::X86_64_PLT32,
+                addend: -4,
+                section_index: 0,
+            }];
+            let syms = vec![codegen::Symbol {
+                name: String::from("_start"),
+                offset: 0,
+                size: code.len() as u64,
+                binding: codegen::SymbolBinding::Global,
+                symbol_type: codegen::SymbolType::Function,
+                section_index: 0,
+                visibility: codegen::SymbolVisibility::Default,
+                is_definition: true,
+            }];
+            (code, relocs, syms)
+        }
+        Architecture::Aarch64 => {
+            // AArch64 _start stub:
+            //   ldr  x0, [sp]          ; argc
+            //   add  x1, sp, #8        ; argv
+            //   and  sp, sp, #-16      ; align
+            //   bl   main              ; needs relocation
+            //   mov  x8, #93           ; sys_exit
+            //   svc  #0                ; syscall
+            let code: Vec<u8> = vec![
+                0xE0, 0x03, 0x40, 0xF9, // ldr  x0, [sp]
+                0xE1, 0x23, 0x00, 0x91, // add  x1, sp, #8
+                0xFF, 0x43, 0xC0, 0x92, // and  sp, sp, #~0xf
+                0x00, 0x00, 0x00, 0x94, // bl   <main> (R_AARCH64_CALL26)
+                0xA8, 0x0B, 0x80, 0xD2, // mov  x8, #93
+                0x01, 0x00, 0x00, 0xD4, // svc  #0
+            ];
+            let relocs = vec![codegen::Relocation {
+                offset: 12,
+                symbol: String::from("main"),
+                reloc_type: codegen::RelocationType::Aarch64_CALL26,
+                addend: 0,
+                section_index: 0,
+            }];
+            let syms = vec![codegen::Symbol {
+                name: String::from("_start"),
+                offset: 0,
+                size: code.len() as u64,
+                binding: codegen::SymbolBinding::Global,
+                symbol_type: codegen::SymbolType::Function,
+                section_index: 0,
+                visibility: codegen::SymbolVisibility::Default,
+                is_definition: true,
+            }];
+            (code, relocs, syms)
+        }
+        Architecture::Riscv64 => {
+            // RISC-V 64 _start stub:
+            //   ld   a0, 0(sp)         ; argc
+            //   addi a1, sp, 8         ; argv
+            //   andi sp, sp, -16       ; align
+            //   call main              ; auipc+jalr (2 instructions)
+            //   li   a7, 93            ; sys_exit
+            //   ecall
+            let code: Vec<u8> = vec![
+                0x03, 0x35, 0x01, 0x00, // ld  a0, 0(sp)
+                0x93, 0x05, 0x81, 0x00, // addi a1, sp, 8
+                0x13, 0x71, 0x01, 0xFF, // andi sp, sp, -16
+                0x97, 0x00, 0x00, 0x00, // auipc ra, 0 (R_RISCV_CALL_PLT)
+                0xE7, 0x80, 0x00, 0x00, // jalr  ra, ra, 0
+                0x93, 0x08, 0xD0, 0x05, // li   a7, 93
+                0x73, 0x00, 0x00, 0x00, // ecall
+            ];
+            let relocs = vec![codegen::Relocation {
+                offset: 12,
+                symbol: String::from("main"),
+                reloc_type: codegen::RelocationType::Riscv_Call,
+                addend: 0,
+                section_index: 0,
+            }];
+            let syms = vec![codegen::Symbol {
+                name: String::from("_start"),
+                offset: 0,
+                size: code.len() as u64,
+                binding: codegen::SymbolBinding::Global,
+                symbol_type: codegen::SymbolType::Function,
+                section_index: 0,
+                visibility: codegen::SymbolVisibility::Default,
+                is_definition: true,
+            }];
+            (code, relocs, syms)
+        }
+    }
+}
+
+// ============================================================================
 // Static executable linking — full link with CRT and symbol resolution
 // ============================================================================
 
-/// Link a static executable: find CRT objects, resolve all symbols, apply
-/// relocations, and emit a fully linked ELF binary.
+/// Link a static executable: resolve all symbols, apply relocations, and
+/// emit a fully linked ELF binary.
+///
+/// If the user specified `-lc` (or any `-l` flags), we use system CRT
+/// objects (`crt1.o`, `crti.o`, `crtn.o`) and link the requested
+/// libraries.  Otherwise we emit a **built-in `_start` stub** that calls
+/// `main` and exits via a syscall, producing compact standalone binaries
+/// that require no libc.
 fn link_static_executable(
     input: LinkerInput,
     config: &LinkerConfig,
@@ -771,11 +967,28 @@ fn link_static_executable(
     is_64bit: bool,
     machine: u16,
 ) -> Result<Vec<u8>, LinkerError> {
-    // Step 1: Find CRT objects for this architecture.
-    let crt = find_crt_objects(config)?;
+    let use_system_crt = !config.libraries.is_empty();
+
+    // Step 1: Find CRT objects for this architecture (only when using libc).
+    let crt = if use_system_crt {
+        find_crt_objects(config)?
+    } else {
+        CrtObjects { crt1: None, crti: None, crtn: None }
+    };
 
     // Step 2: Resolve libraries specified via -l flags.
-    let libraries = resolve_libraries(config)?;
+    let libraries = if use_system_crt {
+        resolve_libraries(config)?
+    } else {
+        Vec::new()
+    };
+
+    // Step 2b: Generate built-in _start stub if not using system CRT.
+    let builtin_start = if !use_system_crt {
+        Some(generate_builtin_start(config.target.arch))
+    } else {
+        None
+    };
 
     // Step 3: Parse CRT objects into ELF objects for section/symbol extraction.
     let mut crt_elf_objects: Vec<elf::ElfObject> = Vec::new();
@@ -825,6 +1038,26 @@ fn link_static_executable(
         }
         object_count += 1;
     }
+
+    // Built-in _start stub (when not using system CRT).
+    let builtin_start_obj_idx = if let Some(ref start) = builtin_start {
+        let idx = object_count;
+        let (ref text, ref _relocs, ref _syms) = *start;
+        all_sections.push(sections::InputSection {
+            name: String::from(".text"),
+            data: text.clone(),
+            section_type: elf::SHT_PROGBITS,
+            flags: elf::SHF_ALLOC | elf::SHF_EXECINSTR,
+            alignment: 16,
+            mem_size: text.len() as u64,
+            object_index: idx,
+            original_index: 0,
+        });
+        object_count += 1;
+        Some(idx)
+    } else {
+        None
+    };
 
     // User input objects.
     let user_object_base = object_count;
@@ -878,6 +1111,16 @@ fn link_static_executable(
         crt_obj_idx += 1;
     }
 
+    // Built-in _start stub symbols (when not using system CRT).
+    if let (Some(idx), Some(ref start)) = (builtin_start_obj_idx, &builtin_start) {
+        let (ref _text, ref _relocs, ref syms_codegen) = *start;
+        let syms: Vec<symbols::Symbol> = syms_codegen
+            .iter()
+            .map(|s| codegen_symbol_to_linker(s, idx))
+            .collect();
+        resolver.add_object_symbols(idx, &syms);
+    }
+
     // User object symbols.
     for (obj_idx, obj) in input.objects.iter().enumerate() {
         let global_obj_idx = user_object_base + obj_idx;
@@ -918,6 +1161,9 @@ fn link_static_executable(
     }
 
     let extracted = resolver.process_archives(&archives)?;
+    // Save base object index for archive members (needed for relocation
+    // processing later).
+    let archive_member_base = object_count;
     // Add sections and symbols from extracted archive members.
     for member in &extracted {
         if let Ok(member_obj) = elf::ElfObject::parse(&member.data) {
@@ -966,13 +1212,43 @@ fn link_static_executable(
 
     let _layout = sections::compute_layout(&mut merged, base_address, header_size, is_64bit);
 
-    // Step 10: Assign final addresses to resolved symbols.
+    // Step 10: Build section address and mapping tables used for both
+    // symbol address assignment and relocation processing.
     let section_addresses: Vec<u64> = merged.iter().map(|s| s.virtual_address).collect();
     let section_mappings: Vec<sections::InputSectionMapping> = merged
         .iter()
         .flat_map(|s| s.input_mappings.iter().cloned())
         .collect();
-    resolver.assign_addresses(&section_addresses, &section_mappings);
+
+    // Build mapping from (object_index, original_section_index) to
+    // (merged_section_index, output_offset_within_merged).
+    //
+    // This remapping is essential because:
+    // 1. CRT objects prepend sections (e.g., .init, .fini) that shift merged
+    //    indices relative to codegen's 0-based section array indices.
+    // 2. Section merging concatenates multiple objects' identically-named
+    //    sections, so relocation offsets must be adjusted by the input
+    //    section's starting position within the merged section.
+    let mut reloc_section_map: std::collections::HashMap<(usize, usize), (usize, u64)> =
+        std::collections::HashMap::new();
+    let mut merged_index_map: std::collections::HashMap<(usize, usize), usize> =
+        std::collections::HashMap::new();
+    for (merged_idx, merged_sec) in merged.iter().enumerate() {
+        for mapping in &merged_sec.input_mappings {
+            reloc_section_map.insert(
+                (mapping.object_index, mapping.original_index),
+                (merged_idx, mapping.output_offset),
+            );
+            merged_index_map.insert(
+                (mapping.object_index, mapping.original_index),
+                merged_idx,
+            );
+        }
+    }
+
+    // Assign final addresses to resolved symbols using the merged section
+    // index mapping for correct section-to-address translation.
+    resolver.assign_addresses(&section_addresses, &section_mappings, &merged_index_map);
 
     // Step 11: Apply relocations — patch machine code with final addresses.
     let resolved_symbols = resolver.all_resolved();
@@ -981,22 +1257,116 @@ fn link_static_executable(
 
     let mut section_data: Vec<Vec<u8>> = merged.iter().map(|s| s.data.clone()).collect();
 
-    // Build relocation entries from input objects.
+    // Build relocation entries from ALL input objects (CRT + codegen + crtn),
+    // remapping section indices and adjusting offsets to account for section
+    // merging.
     let mut reloc_entries: Vec<relocations::RelocationEntry> = Vec::new();
-    for obj in &input.objects {
+
+    // Process CRT object relocations (crti.o, crt1.o).
+    // CRT objects were assigned object indices 0..crt_elf_objects.len()-1.
+    for (crt_idx, crt_obj) in crt_elf_objects.iter().enumerate() {
+        for reloc in &crt_obj.relocations {
+            // Look up the symbol by index in the CRT object's symbol table.
+            let sym_name = if (reloc.symbol_index as usize) < crt_obj.symbols.len() {
+                &crt_obj.symbols[reloc.symbol_index as usize].name
+            } else {
+                continue;
+            };
+            let sym_idx = resolved_vec
+                .iter()
+                .position(|rs| rs.name == *sym_name)
+                .unwrap_or(0) as u32;
+
+            if let Some(&(merged_idx, output_offset)) =
+                reloc_section_map.get(&(crt_idx, reloc.section_index))
+            {
+                reloc_entries.push(relocations::RelocationEntry {
+                    offset: reloc.offset + output_offset,
+                    reloc_type: reloc.reloc_type,
+                    symbol_index: sym_idx,
+                    addend: reloc.addend,
+                    section_index: merged_idx,
+                });
+            }
+        }
+    }
+
+    // Process built-in _start stub relocations (when not using system CRT).
+    if let (Some(idx), Some(ref start)) = (builtin_start_obj_idx, &builtin_start) {
+        let (ref _text, ref relocs, ref _syms) = *start;
+        for reloc in relocs {
+            let sym_idx = resolved_vec
+                .iter()
+                .position(|rs| rs.name == reloc.symbol)
+                .unwrap_or(0) as u32;
+
+            if let Some(&(merged_idx, output_offset)) =
+                reloc_section_map.get(&(idx, reloc.section_index))
+            {
+                reloc_entries.push(relocations::RelocationEntry {
+                    offset: reloc.offset as u64 + output_offset,
+                    reloc_type: reloc_type_to_elf(&reloc.reloc_type),
+                    symbol_index: sym_idx,
+                    addend: reloc.addend,
+                    section_index: merged_idx,
+                });
+            }
+        }
+    }
+
+    // Process codegen object relocations.
+    for (obj_idx, obj) in input.objects.iter().enumerate() {
+        let global_obj_idx = user_object_base + obj_idx;
         for reloc in &obj.relocations {
             let sym_idx = resolved_vec
                 .iter()
                 .position(|rs| rs.name == reloc.symbol)
                 .unwrap_or(0) as u32;
 
-            reloc_entries.push(relocations::RelocationEntry {
-                offset: reloc.offset,
-                reloc_type: reloc_type_to_elf(&reloc.reloc_type),
-                symbol_index: sym_idx,
-                addend: reloc.addend,
-                section_index: reloc.section_index,
-            });
+            // Map the codegen section index to the merged section index and
+            // adjust the offset by the input section's position within the
+            // merged output section.
+            if let Some(&(merged_idx, output_offset)) =
+                reloc_section_map.get(&(global_obj_idx, reloc.section_index))
+            {
+                reloc_entries.push(relocations::RelocationEntry {
+                    offset: reloc.offset + output_offset,
+                    reloc_type: reloc_type_to_elf(&reloc.reloc_type),
+                    symbol_index: sym_idx,
+                    addend: reloc.addend,
+                    section_index: merged_idx,
+                });
+            }
+        }
+    }
+
+    // Process crtn.o relocations (if present).
+    if let Some(ref crtn_data) = crt.crtn {
+        if let Ok(crtn_obj) = elf::ElfObject::parse(crtn_data) {
+            let crtn_idx = object_count - 1;
+            for reloc in &crtn_obj.relocations {
+                let sym_name = if (reloc.symbol_index as usize) < crtn_obj.symbols.len() {
+                    &crtn_obj.symbols[reloc.symbol_index as usize].name
+                } else {
+                    continue;
+                };
+                let sym_idx = resolved_vec
+                    .iter()
+                    .position(|rs| rs.name == *sym_name)
+                    .unwrap_or(0) as u32;
+
+                if let Some(&(merged_idx, output_offset)) =
+                    reloc_section_map.get(&(crtn_idx, reloc.section_index))
+                {
+                    reloc_entries.push(relocations::RelocationEntry {
+                        offset: reloc.offset + output_offset,
+                        reloc_type: reloc.reloc_type,
+                        symbol_index: sym_idx,
+                        addend: reloc.addend,
+                        section_index: merged_idx,
+                    });
+                }
+            }
         }
     }
 
@@ -1094,6 +1464,7 @@ fn link_shared_library(
     }
 
     let extracted = resolver.process_archives(&archives)?;
+    let archive_member_base = object_count;
     for member in &extracted {
         if let Ok(member_obj) = elf::ElfObject::parse(&member.data) {
             for (sec_idx, sec) in member_obj.sections.iter().enumerate() {
@@ -1139,13 +1510,34 @@ fn link_shared_library(
 
     let _layout = sections::compute_layout(&mut merged, base_address, header_size, is_64bit);
 
-    // Step 8: Assign symbol addresses.
+    // Step 8: Build section address and mapping tables, then assign addresses.
     let section_addresses: Vec<u64> = merged.iter().map(|s| s.virtual_address).collect();
     let section_mappings: Vec<sections::InputSectionMapping> = merged
         .iter()
         .flat_map(|s| s.input_mappings.iter().cloned())
         .collect();
-    resolver.assign_addresses(&section_addresses, &section_mappings);
+
+    // Build mapping from (object_index, original_section_index) to
+    // (merged_section_index, output_offset_within_merged) for relocation
+    // section index remapping and offset adjustment after section merging.
+    let mut reloc_section_map: std::collections::HashMap<(usize, usize), (usize, u64)> =
+        std::collections::HashMap::new();
+    let mut merged_index_map: std::collections::HashMap<(usize, usize), usize> =
+        std::collections::HashMap::new();
+    for (merged_idx, merged_sec) in merged.iter().enumerate() {
+        for mapping in &merged_sec.input_mappings {
+            reloc_section_map.insert(
+                (mapping.object_index, mapping.original_index),
+                (merged_idx, mapping.output_offset),
+            );
+            merged_index_map.insert(
+                (mapping.object_index, mapping.original_index),
+                merged_idx,
+            );
+        }
+    }
+
+    resolver.assign_addresses(&section_addresses, &section_mappings, &merged_index_map);
 
     // Step 9: Apply relocations with PIC mode enabled.
     let resolved_symbols = resolver.all_resolved();
@@ -1154,19 +1546,61 @@ fn link_shared_library(
     let mut section_data: Vec<Vec<u8>> = merged.iter().map(|s| s.data.clone()).collect();
 
     let mut reloc_entries: Vec<relocations::RelocationEntry> = Vec::new();
-    for obj in &input.objects {
+    for (obj_idx, obj) in input.objects.iter().enumerate() {
         for reloc in &obj.relocations {
             let sym_idx = resolved_vec
                 .iter()
                 .position(|rs| rs.name == reloc.symbol)
                 .unwrap_or(0) as u32;
-            reloc_entries.push(relocations::RelocationEntry {
-                offset: reloc.offset,
-                reloc_type: reloc_type_to_elf(&reloc.reloc_type),
-                symbol_index: sym_idx,
-                addend: reloc.addend,
-                section_index: reloc.section_index,
-            });
+
+            // Map the codegen section index to the merged section index and
+            // adjust the offset by the input section's position in the
+            // merged output section.
+            if let Some(&(merged_idx, output_offset)) =
+                reloc_section_map.get(&(obj_idx, reloc.section_index))
+            {
+                reloc_entries.push(relocations::RelocationEntry {
+                    offset: reloc.offset + output_offset,
+                    reloc_type: reloc_type_to_elf(&reloc.reloc_type),
+                    symbol_index: sym_idx,
+                    addend: reloc.addend,
+                    section_index: merged_idx,
+                });
+            }
+        }
+    }
+
+    // Process extracted archive member relocations (e.g. libc.a).
+    // Each extracted member was assigned an object index starting at
+    // archive_member_base.  We re-parse the member data to retrieve its
+    // relocation and symbol tables, then build relocation entries using
+    // the same section-remapping approach as for CRT objects.
+    for (member_idx, member) in extracted.iter().enumerate() {
+        if let Ok(member_obj) = elf::ElfObject::parse(&member.data) {
+            let member_global_idx = archive_member_base + member_idx;
+            for reloc in &member_obj.relocations {
+                let sym_name = if (reloc.symbol_index as usize) < member_obj.symbols.len() {
+                    &member_obj.symbols[reloc.symbol_index as usize].name
+                } else {
+                    continue;
+                };
+                let sym_idx = resolved_vec
+                    .iter()
+                    .position(|rs| rs.name == *sym_name)
+                    .unwrap_or(0) as u32;
+
+                if let Some(&(merged_idx, output_offset)) =
+                    reloc_section_map.get(&(member_global_idx, reloc.section_index))
+                {
+                    reloc_entries.push(relocations::RelocationEntry {
+                        offset: reloc.offset + output_offset,
+                        reloc_type: reloc.reloc_type,
+                        symbol_index: sym_idx,
+                        addend: reloc.addend,
+                        section_index: merged_idx,
+                    });
+                }
+            }
         }
     }
 
@@ -1261,6 +1695,10 @@ fn build_elf_output(
     });
 
     // Add symbol table section.
+    // sh_link must point to the associated string table section (.strtab).
+    // The ELF section header table is: [0]=NULL, [1..N]=merged sections,
+    // [N+1]=.strtab, [N+2]=.symtab. So .strtab index = merged.len() + 1.
+    let strtab_section_index = (merged.len() + 1) as u32;
     let symtab_entsize = if is_64bit { 24u64 } else { 16u64 };
     writer.add_section(elf::OutputSection {
         name: String::from(".symtab"),
@@ -1271,7 +1709,7 @@ fn build_elf_output(
             sh_addr: 0,
             sh_addralign: if is_64bit { 8 } else { 4 },
             sh_entsize: symtab_entsize,
-            sh_link: 0,
+            sh_link: strtab_section_index,
             sh_info: 0,
         },
     });
@@ -1905,22 +2343,24 @@ mod tests {
     fn test_codegen_symbol_to_linker_conversion() {
         let codegen_sym = codegen::Symbol {
             name: String::from("test_func"),
-            section_index: 1,
+            section_index: 0,
             offset: 0x100,
             size: 64,
             binding: codegen::SymbolBinding::Global,
             symbol_type: codegen::SymbolType::Function,
             visibility: codegen::SymbolVisibility::Default,
+            is_definition: true,
         };
         let linker_sym = codegen_symbol_to_linker(&codegen_sym, 0);
         assert_eq!(linker_sym.name, "test_func");
         assert_eq!(linker_sym.binding, symbols::SymbolBinding::Global);
         assert_eq!(linker_sym.symbol_type, symbols::SymbolType::Function);
         assert_eq!(linker_sym.visibility, symbols::SymbolVisibility::Default);
-        assert_eq!(linker_sym.section_index, 1);
+        assert_eq!(linker_sym.section_index, 0);
         assert_eq!(linker_sym.value, 0x100);
         assert_eq!(linker_sym.size, 64);
         assert_eq!(linker_sym.source_object, 0);
+        assert!(linker_sym.is_defined());
     }
 
     #[test]

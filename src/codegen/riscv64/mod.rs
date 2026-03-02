@@ -714,6 +714,7 @@ fn emit_data_section(globals: &[GlobalVariable]) -> (Section, Vec<Symbol>) {
             },
             symbol_type: SymbolType::Object,
             visibility: SymbolVisibility::Default,
+            is_definition: true,
         });
 
         data.extend_from_slice(&init_bytes);
@@ -768,6 +769,7 @@ fn emit_rodata_section(globals: &[GlobalVariable]) -> (Section, Vec<Symbol>) {
                 },
                 symbol_type: SymbolType::Object,
                 visibility: SymbolVisibility::Default,
+                is_definition: true,
             });
             data.extend_from_slice(&init_bytes);
         }
@@ -815,6 +817,7 @@ fn emit_bss_section(globals: &[GlobalVariable]) -> (Section, Vec<Symbol>) {
             },
             symbol_type: SymbolType::Object,
             visibility: SymbolVisibility::Default,
+            is_definition: true,
         });
     }
 
@@ -949,6 +952,7 @@ impl CodeGen for Riscv64CodeGen {
                     binding: SymbolBinding::Global,
                     symbol_type: SymbolType::Function,
                     visibility: SymbolVisibility::Default,
+                    is_definition: false,
                 });
                 continue;
             }
@@ -985,12 +989,13 @@ impl CodeGen for Riscv64CodeGen {
             let func_offset = text_data.len() as u64;
             symbols.push(Symbol {
                 name: function.name.clone(),
-                section_index: 0, // .text section index
+                section_index: 0, // .text section index (temporary, fixed up below)
                 offset: func_offset,
                 size: func_code.len() as u64,
                 binding: SymbolBinding::Global,
                 symbol_type: SymbolType::Function,
                 visibility: SymbolVisibility::Default,
+                is_definition: true,
             });
 
             // Step 9: Collect relocations from the encoder, adjusting offsets
@@ -1030,9 +1035,11 @@ impl CodeGen for Riscv64CodeGen {
             flags: SectionFlags::text(),
         });
 
-        // Fix up section indices for function symbols to point at .text
+        // Fix up section indices for *defined* function symbols to point at .text.
+        // Undefined (extern) function symbols must keep their section_index as-is
+        // because they are not bound to any section.
         for sym in &mut symbols {
-            if sym.symbol_type == SymbolType::Function {
+            if sym.symbol_type == SymbolType::Function && sym.is_definition {
                 sym.section_index = text_section_idx;
             }
         }

@@ -167,6 +167,7 @@ impl X86_64CodeGen {
                     binding: SymbolBinding::Global,
                     symbol_type: SymbolType::NoType,
                     visibility: SymbolVisibility::Default,
+                    is_definition: false,
                 });
                 continue;
             }
@@ -232,8 +233,8 @@ impl X86_64CodeGen {
             }
 
             // Record function symbol.
-            // ELF section index 1 = .text (index 0 is SHN_UNDEF for undefined).
-            let text_section_idx: usize = 1;
+            // Section index is 0-based into ObjectCode.sections[] (0 = .text).
+            let text_section_idx: usize = 0;
             symbols.push(Symbol {
                 name: function.name.clone(),
                 section_index: text_section_idx,
@@ -246,6 +247,7 @@ impl X86_64CodeGen {
                 },
                 symbol_type: SymbolType::Function,
                 visibility: SymbolVisibility::Default,
+                is_definition: true,
             });
 
             // Collect relocations with offsets adjusted for the function's
@@ -269,12 +271,13 @@ impl X86_64CodeGen {
                 let thunk_offset = text_section.len();
                 symbols.push(Symbol {
                     name: thunk.name.clone(),
-                    section_index: 1, // .text section
+                    section_index: 0, // .text section (0-based into ObjectCode.sections)
                     offset: thunk_offset as u64,
                     size: thunk.code.len() as u64,
                     binding: SymbolBinding::Local,
                     symbol_type: SymbolType::Function,
                     visibility: SymbolVisibility::Hidden,
+                    is_definition: true,
                 });
                 text_section.extend_from_slice(&thunk.code);
             }
@@ -292,6 +295,20 @@ impl X86_64CodeGen {
                 &mut bss_size,
                 &symbols,
             );
+            // If the initializer is a GlobalRef, emit an R_X86_64_64 relocation
+            // so the linker patches the address of the referenced global into
+            // the data section at the correct offset.
+            if let Some(crate::ir::Constant::GlobalRef(ref_name)) = &global.initializer {
+                if sym.is_definition {
+                    relocations.push(crate::codegen::Relocation {
+                        offset: sym.offset,
+                        symbol: ref_name.clone(),
+                        reloc_type: crate::codegen::RelocationType::X86_64_64,
+                        addend: 0,
+                        section_index: sym.section_index,
+                    });
+                }
+            }
             symbols.push(sym);
         }
 
@@ -300,16 +317,15 @@ impl X86_64CodeGen {
         // =================================================================
         //
         // We always emit all four sections (even if empty) so that symbol
-        // section_index values are stable:
-        //   ELF index 0 = SHN_UNDEF (null section, implicit)
-        //   ELF index 1 = .text     (ObjectCode.sections[0])
-        //   ELF index 2 = .rodata   (ObjectCode.sections[1])
-        //   ELF index 3 = .data     (ObjectCode.sections[2])
-        //   ELF index 4 = .bss      (ObjectCode.sections[3])
+        // section_index values are stable (0-based into ObjectCode.sections):
+        //   ObjectCode.sections[0] = .text
+        //   ObjectCode.sections[1] = .rodata
+        //   ObjectCode.sections[2] = .data
+        //   ObjectCode.sections[3] = .bss
         //
         let mut object = ObjectCode::new(Architecture::X86_64);
 
-        // Section 1: .text — executable code (always present).
+        // sections[0]: .text — executable code (always present).
         object.add_section(Section {
             name: ".text".to_string(),
             data: text_section,
@@ -322,7 +338,7 @@ impl X86_64CodeGen {
             },
         });
 
-        // Section 2: .rodata — read-only data.
+        // sections[1]: .rodata — read-only data.
         object.add_section(Section {
             name: ".rodata".to_string(),
             data: rodata_section,
@@ -335,7 +351,7 @@ impl X86_64CodeGen {
             },
         });
 
-        // Section 3: .data — initialized writable data.
+        // sections[2]: .data — initialized writable data.
         object.add_section(Section {
             name: ".data".to_string(),
             data: data_section,
@@ -348,7 +364,7 @@ impl X86_64CodeGen {
             },
         });
 
-        // Section 4: .bss — zero-initialized data (no file content).
+        // sections[3]: .bss — zero-initialized data (no file content).
         object.add_section(Section {
             name: ".bss".to_string(),
             data: Vec::new(),
@@ -563,6 +579,7 @@ impl X86_64CodeGen {
                 binding: SymbolBinding::Global,
                 symbol_type: SymbolType::Object,
                 visibility: SymbolVisibility::Default,
+                is_definition: false,
             };
         }
 
@@ -576,32 +593,34 @@ impl X86_64CodeGen {
         match &global.initializer {
             None => {
                 // No initializer — place in .bss (zero-initialized).
-                // BSS is ELF section index 4 (ObjectCode.sections[3]).
+                // BSS is ObjectCode.sections[3] (0-based index 3).
                 let aligned_offset = align_up(*bss_size, alignment as u64);
                 let sym = Symbol {
                     name: global.name.clone(),
-                    section_index: 4, // .bss ELF section index
+                    section_index: 3, // .bss (0-based into ObjectCode.sections)
                     offset: aligned_offset,
                     size: type_size as u64,
                     binding,
                     symbol_type: SymbolType::Object,
                     visibility: SymbolVisibility::Default,
+                    is_definition: true,
                 };
                 *bss_size = aligned_offset + type_size as u64;
                 sym
             }
             Some(init) => {
                 if is_zero_initializer(init) {
-                    // Zero initializer → .bss (ELF section index 4).
+                    // Zero initializer → .bss (0-based index 3).
                     let aligned_offset = align_up(*bss_size, alignment as u64);
                     let sym = Symbol {
                         name: global.name.clone(),
-                        section_index: 4, // .bss ELF section index
+                        section_index: 3, // .bss (0-based into ObjectCode.sections)
                         offset: aligned_offset,
                         size: type_size as u64,
                         binding,
                         symbol_type: SymbolType::Object,
                         visibility: SymbolVisibility::Default,
+                        is_definition: true,
                     };
                     *bss_size = aligned_offset + type_size as u64;
                     sym
@@ -612,7 +631,7 @@ impl X86_64CodeGen {
                     // For now, all non-zero initialized globals go to .data
                     // since we don't track const-ness at the IR level.
                     let section = data_section;
-                    let section_index: usize = 3; // .data ELF section index
+                    let section_index: usize = 2; // .data (0-based into ObjectCode.sections)
 
                     // Align within the section.
                     let padding = align_padding(section.len(), alignment);
@@ -629,6 +648,7 @@ impl X86_64CodeGen {
                         binding,
                         symbol_type: SymbolType::Object,
                         visibility: SymbolVisibility::Default,
+                        is_definition: true,
                     }
                 }
             }
@@ -924,7 +944,8 @@ mod tests {
         assert_eq!(sym.symbol_type, SymbolType::Function);
         assert_eq!(sym.binding, SymbolBinding::Global);
         assert_eq!(sym.visibility, SymbolVisibility::Default);
-        assert_eq!(sym.section_index, 1); // .text ELF section (0 = SHN_UNDEF)
+        assert_eq!(sym.section_index, 0); // .text (0-based into ObjectCode.sections)
+        assert!(sym.is_definition);
     }
 
     // =================================================================

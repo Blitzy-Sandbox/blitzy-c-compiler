@@ -58,6 +58,17 @@ pub const R_X86_64_16: u32 = 12;
 pub const R_X86_64_PC16: u32 = 13;
 /// S + A - P — PC-relative 64-bit.
 pub const R_X86_64_PC64: u32 = 24;
+/// S + A - P — GOT-relative with optimization hint (relaxable to LEA).
+/// Used by modern compilers for `mov foo@GOTPCREL(%rip), %reg`.
+/// In static linking, the linker can relax `call *foo@GOTPCRELX(%rip)` to
+/// `call foo` or `nop; call foo`.
+pub const R_X86_64_GOTPCRELX: u32 = 41;
+/// S + A - P — REX-prefixed GOT-relative with optimization hint.
+/// Same as GOTPCRELX but for instructions that require a REX prefix
+/// (e.g., `mov foo@GOTPCREL(%rip), %r12`). In static linking, the
+/// linker relaxes `mov foo@REX_GOTPCRELX(%rip), %reg` to
+/// `lea foo(%rip), %reg`.
+pub const R_X86_64_REX_GOTPCRELX: u32 = 42;
 
 // ===========================================================================
 // i686 Relocation Type Constants (ELF i386 ABI)
@@ -448,7 +459,61 @@ fn apply_x86_64_relocation(
 
         R_X86_64_GOTPCREL => {
             // G + GOT + A - P (GOT PC-relative, 32-bit signed)
-            let value = (ctx.got_address as i64).wrapping_add(a).wrapping_sub(p as i64);
+            // For static linking without GOT, treat as S + A - P (direct PC-relative).
+            if ctx.got_address == 0 {
+                let value = (s as i64).wrapping_add(a).wrapping_sub(p as i64);
+                check_overflow(value, 32, true, reloc.reloc_type)?;
+                write_i32_le(section_data, reloc, value as i32)?;
+            } else {
+                let value = (ctx.got_address as i64).wrapping_add(a).wrapping_sub(p as i64);
+                check_overflow(value, 32, true, reloc.reloc_type)?;
+                write_i32_le(section_data, reloc, value as i32)?;
+            }
+        }
+
+        R_X86_64_GOTPCRELX | R_X86_64_REX_GOTPCRELX => {
+            // GOT PC-relative with linker relaxation opportunity.
+            // For static executables (no GOT), relax to direct PC-relative:
+            //   - `call *foo@GOTPCRELX(%rip)` → relaxed to `call foo`
+            //   - `mov foo@REX_GOTPCRELX(%rip), %reg` → `lea foo(%rip), %reg`
+            //
+            // In both cases, the new displacement is S + A - P (32-bit signed),
+            // identical to R_X86_64_PC32.
+            //
+            // Instruction relaxation (opcode patching):
+            // The linker must also patch the instruction prefix bytes:
+            //   - For `call *foo@GOTPCRELX(%rip)` (FF 15 xx xx xx xx):
+            //     Rewrite to `addr32 call foo` (67 E8 xx xx xx xx) or
+            //     `nop; call foo` (90 E8 xx xx xx xx).
+            //   - For `mov foo@REX_GOTPCRELX(%rip), %reg` (48 8B xx):
+            //     Rewrite to `lea foo(%rip), %reg` (48 8D xx).
+            let reloc_off = reloc.offset as usize;
+            if reloc_off >= 2 {
+                let sec = &mut section_data[reloc.section_index];
+                // Instruction layout relative to the displacement (reloc_off):
+                //   CALL *[rip+disp]: FF 15 disp32  → byte[-2]=FF, byte[-1]=15
+                //   MOV  [rip+disp]:  [REX] 8B ModRM disp32 → byte[-2]=8B, byte[-1]=ModRM
+                let opcode = sec[reloc_off - 2];
+                let modrm_or_opext = sec[reloc_off - 1];
+
+                if opcode == 0xFF && modrm_or_opext == 0x15 {
+                    // `call *[rip+disp]` → `addr32 call disp` (67 E8 rel32)
+                    sec[reloc_off - 2] = 0x67; // addr32 prefix
+                    sec[reloc_off - 1] = 0xE8; // CALL rel32
+                } else if opcode == 0x8B {
+                    // `mov [rip+disp], %reg` → `lea [rip+disp], %reg`
+                    // Change MOV opcode (0x8B) to LEA opcode (0x8D);
+                    // the ModR/M byte stays the same (same register encoding).
+                    sec[reloc_off - 2] = 0x8D; // LEA
+                } else if opcode == 0xFF && modrm_or_opext == 0x25 {
+                    // `jmp *[rip+disp]` → `addr32 jmp disp` (67 E9 rel32)
+                    sec[reloc_off - 2] = 0x67;
+                    sec[reloc_off - 1] = 0xE9; // JMP rel32
+                }
+                // For other patterns (e.g., TEST, CMP), leave instruction
+                // unchanged and just patch the displacement.
+            }
+            let value = (s as i64).wrapping_add(a).wrapping_sub(p as i64);
             check_overflow(value, 32, true, reloc.reloc_type)?;
             write_i32_le(section_data, reloc, value as i32)?;
         }
@@ -1138,6 +1203,7 @@ mod tests {
             symbol_type: SymbolType::Function,
             visibility: SymbolVisibility::Default,
             output_section_index: 0,
+            is_definition: true,
         }
     }
 

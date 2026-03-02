@@ -304,6 +304,9 @@ pub struct Symbol {
     /// The symbol's name (e.g. "main", "_start", "global_var").
     pub name: String,
     /// Index of the section containing this symbol (into `ObjectCode.sections`).
+    /// For defined symbols, this is the 0-based index into the `ObjectCode.sections`
+    /// array. For undefined symbols, this value is ignored (use `is_definition` to
+    /// distinguish defined from undefined symbols).
     pub section_index: usize,
     /// Byte offset of the symbol's definition within its section.
     pub offset: u64,
@@ -315,6 +318,12 @@ pub struct Symbol {
     pub symbol_type: SymbolType,
     /// Symbol visibility for dynamic linking.
     pub visibility: SymbolVisibility,
+    /// Whether this symbol is a definition (`true`) or an undefined reference
+    /// (`false`). This flag is independent of `section_index` and is the
+    /// authoritative source for definedness — the linker uses it to distinguish
+    /// defined symbols from external references, avoiding ambiguity when a
+    /// defined symbol's section happens to be at index 0.
+    pub is_definition: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -842,6 +851,7 @@ mod tests {
             binding: SymbolBinding::Global,
             symbol_type: SymbolType::Function,
             visibility: SymbolVisibility::Default,
+            is_definition: true,
         });
         assert_eq!(obj.symbols.len(), 1);
         assert_eq!(obj.symbols[0].name, "main");

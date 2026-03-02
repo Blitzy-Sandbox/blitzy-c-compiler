@@ -455,8 +455,8 @@ impl CodeGen for I686CodeGen {
         // ---------------------------------------------------------------
 
         // Add function symbols.
-        for (name, offset, size, is_definition) in &func_layout {
-            if *is_definition {
+        for (name, offset, size, is_def) in &func_layout {
+            if *is_def {
                 let symbol = Symbol {
                     name: name.clone(),
                     section_index: text_idx,
@@ -465,6 +465,7 @@ impl CodeGen for I686CodeGen {
                     binding: SymbolBinding::Global,
                     symbol_type: SymbolType::Function,
                     visibility: SymbolVisibility::Default,
+                    is_definition: true,
                 };
                 object.add_symbol(symbol);
             } else {
@@ -477,6 +478,7 @@ impl CodeGen for I686CodeGen {
                     binding: SymbolBinding::Global,
                     symbol_type: SymbolType::Function,
                     visibility: SymbolVisibility::Default,
+                    is_definition: false,
                 };
                 object.add_symbol(symbol);
             }
@@ -494,6 +496,7 @@ impl CodeGen for I686CodeGen {
                     binding: SymbolBinding::Global,
                     symbol_type: SymbolType::Object,
                     visibility: SymbolVisibility::Default,
+                    is_definition: false,
                 };
                 object.add_symbol(symbol);
             } else {
@@ -514,6 +517,7 @@ impl CodeGen for I686CodeGen {
                     binding,
                     symbol_type: SymbolType::Object,
                     visibility: SymbolVisibility::Default,
+                    is_definition: true,
                 };
                 object.add_symbol(symbol);
             }

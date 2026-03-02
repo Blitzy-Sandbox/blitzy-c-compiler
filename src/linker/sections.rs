@@ -309,22 +309,100 @@ pub fn merge_sections(
         entry.push(section);
     }
 
-    // Step 2: Determine output ordering. Sections in section_order come first
-    // (in that order), followed by remaining sections sorted alphabetically.
-    let mut ordered_names: Vec<String> = Vec::new();
-    for &ordered_name in section_order {
-        if groups.contains_key(ordered_name) {
-            ordered_names.push(ordered_name.to_string());
+    // Step 2: Determine output ordering.
+    //
+    // The explicit `section_order` list places well-known sections in the
+    // standard ELF order: RX (.init, .text, .fini) → R (.rodata, .eh_frame)
+    // → RW (.data, .bss) → non-alloc (.comment).
+    //
+    // When linking large libraries like libc.a, many additional sections
+    // appear (e.g. .text.unlikely, .rodata.cst4, .data.rel.ro).  These
+    // "remaining" sections must be interleaved into the correct permission
+    // groups so that all RX sections are contiguous, all R sections are
+    // contiguous, etc.  This is required for non-overlapping PT_LOAD
+    // segments.
+    //
+    // Strategy: identify the last explicit section in each permission group,
+    // and insert remaining sections of that group immediately after it.
+
+    // Helper: determine permission key for a section group name.
+    let perm_key_for = |name: &str| -> SectionPermission {
+        if let Some(inputs) = groups.get(name) {
+            if let Some(first) = inputs.first() {
+                return classify_section_permission(name, first.flags);
+            }
+        }
+        SectionPermission::None
+    };
+
+    // Collect explicitly-ordered sections present in the input.
+    let explicit: Vec<String> = section_order
+        .iter()
+        .filter(|n| groups.contains_key(&n.to_string()))
+        .map(|n| n.to_string())
+        .collect();
+
+    // Collect remaining sections, grouped by permission and sorted by name.
+    let explicit_set: std::collections::HashSet<&str> =
+        explicit.iter().map(|s| s.as_str()).collect();
+    let mut rem_rx: Vec<String> = Vec::new();
+    let mut rem_ro: Vec<String> = Vec::new();
+    let mut rem_rw: Vec<String> = Vec::new();
+    let mut rem_na: Vec<String> = Vec::new();
+    for name in &seen_order {
+        if explicit_set.contains(name.as_str()) {
+            continue;
+        }
+        match perm_key_for(name) {
+            SectionPermission::ReadExecute => rem_rx.push(name.clone()),
+            SectionPermission::ReadOnly    => rem_ro.push(name.clone()),
+            SectionPermission::ReadWrite   => rem_rw.push(name.clone()),
+            SectionPermission::None        => rem_na.push(name.clone()),
         }
     }
-    // Add remaining sections not in the explicit order, sorted for determinism
-    let mut remaining: Vec<String> = seen_order
-        .iter()
-        .filter(|name| !ordered_names.contains(name))
-        .cloned()
-        .collect();
-    remaining.sort();
-    ordered_names.extend(remaining);
+    rem_rx.sort();
+    rem_ro.sort();
+    rem_rw.sort();
+    rem_na.sort();
+
+    // Build final ordering by interleaving remaining sections after the
+    // last explicit section of each permission group.
+    let mut ordered_names: Vec<String> = Vec::new();
+    let mut emitted_rx = false;
+    let mut emitted_ro = false;
+    let mut emitted_rw = false;
+
+    // Find the last explicit section index for each permission group
+    // so we know where to insert remaining sections.
+    let last_rx = explicit.iter().rposition(|n| perm_key_for(n) == SectionPermission::ReadExecute);
+    let last_ro = explicit.iter().rposition(|n| perm_key_for(n) == SectionPermission::ReadOnly);
+    let last_rw = explicit.iter().rposition(|n| perm_key_for(n) == SectionPermission::ReadWrite);
+
+    for (idx, name) in explicit.iter().enumerate() {
+        ordered_names.push(name.clone());
+        // After the last explicit RX section, insert remaining RX sections.
+        if !emitted_rx && last_rx == Some(idx) {
+            ordered_names.extend(rem_rx.drain(..));
+            emitted_rx = true;
+        }
+        // After the last explicit R section, insert remaining R sections.
+        if !emitted_ro && last_ro == Some(idx) {
+            ordered_names.extend(rem_ro.drain(..));
+            emitted_ro = true;
+        }
+        // After the last explicit RW section, insert remaining RW sections.
+        if !emitted_rw && last_rw == Some(idx) {
+            ordered_names.extend(rem_rw.drain(..));
+            emitted_rw = true;
+        }
+    }
+
+    // If no explicit section existed for a permission group, append at end.
+    if !emitted_rx { ordered_names.extend(rem_rx); }
+    if !emitted_ro { ordered_names.extend(rem_ro); }
+    if !emitted_rw { ordered_names.extend(rem_rw); }
+    // Non-alloc sections always go last.
+    ordered_names.extend(rem_na);
 
     // Step 3: For each group, merge the input sections into one output section.
     let mut result = Vec::with_capacity(ordered_names.len());
