@@ -229,8 +229,10 @@ impl I686Opcode {
         if v < I686_OPCODE_COUNT {
             // SAFETY: `v` is verified to be within the contiguous range of
             // #[repr(u32)] enum discriminants (0..I686_OPCODE_COUNT).
-            // Transmuting a bounds-checked u32 to a contiguous repr(u32) enum
-            // is safe. Scope: single transmute of a validated u32.
+            // A safe match on all enum variants would be functionally identical
+            // but impractical for the number of opcodes in the i686 instruction
+            // set. Transmuting a bounds-checked u32 to a contiguous repr(u32)
+            // enum is safe. Scope: single transmute of a validated u32.
             Some(unsafe { std::mem::transmute::<u32, I686Opcode>(v) })
         } else {
             None

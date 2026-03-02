@@ -2288,6 +2288,7 @@ mod tests {
             name: "test_fn".to_string(),
             return_type: IrType::Void,
             params: vec![],
+            param_values: Vec::new(),
             blocks: vec![block],
             entry_block: entry,
             is_definition: true,

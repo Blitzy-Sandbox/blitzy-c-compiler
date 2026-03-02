@@ -1003,9 +1003,23 @@ fn is_regular_builtin(kind: TokenKind) -> bool {
 fn parse_paren_expression(parser: &mut Parser<'_>) -> Expression {
     let start = parser.current_span();
 
+    // Check expression nesting depth before recursing into a parenthesized
+    // expression. Each paren nesting level adds ~8 stack frames through the
+    // expression parsing chain, so we use a separate, lower limit than
+    // statement nesting to prevent stack overflow.
+    if parser.enter_expr_nesting().is_err() {
+        // Depth limit exceeded — an error diagnostic has already been emitted.
+        // Skip to recovery point and return an Error expression.
+        parser.synchronize();
+        let span = parser.span_from(start);
+        return Expression::Error { span };
+    }
+
     // Check for GCC statement expression: `({` ... `})`
     if parser.check(TokenKind::LeftParen) && parser.peek().kind == TokenKind::LeftBrace {
-        return gcc_extensions::parse_statement_expression(parser);
+        let result = gcc_extensions::parse_statement_expression(parser);
+        parser.exit_expr_nesting();
+        return result;
     }
 
     // Consume `(`
@@ -1018,6 +1032,7 @@ fn parse_paren_expression(parser: &mut Parser<'_>) -> Expression {
         let type_name = types::parse_type_name(parser);
 
         if parser.expect(TokenKind::RightParen).is_err() {
+            parser.exit_expr_nesting();
             let span = parser.span_from(start);
             return Expression::Error { span };
         }
@@ -1025,6 +1040,7 @@ fn parse_paren_expression(parser: &mut Parser<'_>) -> Expression {
         // Check for compound literal: `(type){init}`
         if parser.check(TokenKind::LeftBrace) {
             let initializer = parse_compound_initializer(parser);
+            parser.exit_expr_nesting();
             let span = parser.span_from(start);
             return Expression::CompoundLiteral {
                 type_name: Box::new(type_name),
@@ -1035,6 +1051,7 @@ fn parse_paren_expression(parser: &mut Parser<'_>) -> Expression {
 
         // Cast expression: `(type)expr`
         let operand = parse_cast_expression(parser);
+        parser.exit_expr_nesting();
         let span = parser.span_from(start);
         return Expression::Cast {
             type_name: Box::new(type_name),
@@ -1049,6 +1066,9 @@ fn parse_paren_expression(parser: &mut Parser<'_>) -> Expression {
     if parser.expect(TokenKind::RightParen).is_err() {
         recover_to_paren_close(parser);
     }
+
+    // Decrement the expression nesting depth counter on exit.
+    parser.exit_expr_nesting();
 
     let span = parser.span_from(start);
     Expression::Paren {

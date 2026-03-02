@@ -195,10 +195,22 @@ pub(super) fn parse_statement(parser: &mut Parser<'_>) -> Statement {
 pub(super) fn parse_compound_statement(parser: &mut Parser<'_>) -> Statement {
     let start = parser.current_span();
 
+    // Check statement nesting depth before recursing. This prevents stack
+    // overflow on maliciously crafted input with thousands of nested braces.
+    if parser.enter_stmt_nesting().is_err() {
+        // Depth limit exceeded — an error diagnostic has already been emitted.
+        // Skip tokens to find a recovery point and return a Null statement.
+        parser.synchronize();
+        return Statement::Null {
+            span: parser.span_from(start),
+        };
+    }
+
     // Consume the opening `{`.
     if parser.expect(TokenKind::LeftBrace).is_err() {
         // If we cannot even find the opening brace, return a Null statement
         // as a recovery measure.
+        parser.exit_stmt_nesting();
         return Statement::Null {
             span: parser.span_from(start),
         };
@@ -244,6 +256,9 @@ pub(super) fn parse_compound_statement(parser: &mut Parser<'_>) -> Statement {
     if parser.expect(TokenKind::RightBrace).is_err() {
         // Missing `}` — report error but continue; span ends at current position.
     }
+
+    // Decrement the statement nesting depth counter on exit.
+    parser.exit_stmt_nesting();
 
     let span = parser.span_from(start);
     Statement::Compound { items, span }

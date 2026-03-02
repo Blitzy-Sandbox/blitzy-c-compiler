@@ -98,6 +98,26 @@ use crate::frontend::lexer::token::{Token, TokenKind, TokenValue};
 // Parser Struct — Central Parsing State Container
 // ===========================================================================
 
+/// Maximum nesting depth for statement-level recursive constructs (compound
+/// statements, i.e., `{...}` blocks). Each nesting level adds approximately
+/// 3 stack frames to the recursive descent call chain, so a limit of 1024
+/// requires ~3072 frames (~3 MiB), well within the default ~8 MiB stack.
+///
+/// Real-world C codebases rarely exceed 20-30 levels of block nesting.
+const MAX_STATEMENT_NESTING_DEPTH: usize = 1024;
+
+/// Maximum nesting depth for expression-level recursive constructs
+/// (parenthesized expressions, i.e., `((...))` chains). Each expression
+/// nesting level adds approximately 8 stack frames to the recursive descent
+/// call chain (expression → assignment → conditional → binary → unary →
+/// postfix → primary → paren → expression), so the limit must be lower than
+/// statement nesting to prevent stack overflow.
+///
+/// A limit of 512 requires ~4096 frames (~4 MiB), safely within the default
+/// ~8 MiB stack. Real-world C code rarely exceeds 15-20 levels of expression
+/// nesting. GCC and Clang enforce similar internal nesting limits.
+const MAX_EXPRESSION_NESTING_DEPTH: usize = 512;
+
 /// The recursive-descent parser for C11 with GCC extensions.
 ///
 /// `Parser` holds all mutable parsing state: the current position in the token
@@ -159,6 +179,20 @@ pub struct Parser<'a> {
     /// While in panic mode, the parser skips tokens until it finds a
     /// synchronization point (`;`, `}`, `{`, or a statement-starting keyword).
     in_panic_mode: bool,
+
+    /// Current nesting depth for statement-level constructs (compound
+    /// statements / `{...}` blocks). Incremented on entry to a compound
+    /// statement and decremented on exit. When this counter exceeds
+    /// [`MAX_STATEMENT_NESTING_DEPTH`], the parser emits a clean diagnostic
+    /// error instead of continuing to recurse.
+    stmt_nesting_depth: usize,
+
+    /// Current nesting depth for expression-level constructs (parenthesized
+    /// expressions / `((...))` chains). Incremented on entry to an expression
+    /// recursion and decremented on exit. When this counter exceeds
+    /// [`MAX_EXPRESSION_NESTING_DEPTH`], the parser emits a clean diagnostic
+    /// error instead of continuing to recurse.
+    expr_nesting_depth: usize,
 }
 
 // ===========================================================================
@@ -202,6 +236,8 @@ impl<'a> Parser<'a> {
             error_count: 0,
             recovered_count: 0,
             in_panic_mode: false,
+            stmt_nesting_depth: 0,
+            expr_nesting_depth: 0,
         }
     }
 
@@ -714,6 +750,68 @@ impl<'a> Parser<'a> {
         if let Some(saved) = self.scope_stack.pop() {
             self.typedef_names = saved;
         }
+    }
+
+    // =======================================================================
+    // Nesting Depth Tracking
+    // =======================================================================
+
+    /// Attempts to enter a nested statement-level construct (compound
+    /// statement / `{...}` block). Increments the statement nesting counter
+    /// and checks against [`MAX_STATEMENT_NESTING_DEPTH`].
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(())` if the depth is within the allowed limit.
+    /// * `Err(())` if the nesting depth limit has been exceeded. An error
+    ///   diagnostic is emitted in GCC-compatible format and the caller should
+    ///   return an error/recovery AST node rather than recursing further.
+    pub(crate) fn enter_stmt_nesting(&mut self) -> Result<(), ()> {
+        self.stmt_nesting_depth += 1;
+        if self.stmt_nesting_depth > MAX_STATEMENT_NESTING_DEPTH {
+            self.error(&format!(
+                "nesting depth limit exceeded (maximum {} levels)",
+                MAX_STATEMENT_NESTING_DEPTH
+            ));
+            Err(())
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Exits a nested statement-level construct, decrementing the statement
+    /// nesting counter.
+    pub(crate) fn exit_stmt_nesting(&mut self) {
+        self.stmt_nesting_depth = self.stmt_nesting_depth.saturating_sub(1);
+    }
+
+    /// Attempts to enter a nested expression-level construct (parenthesized
+    /// expression recursion). Increments the expression nesting counter and
+    /// checks against [`MAX_EXPRESSION_NESTING_DEPTH`].
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(())` if the depth is within the allowed limit.
+    /// * `Err(())` if the nesting depth limit has been exceeded. An error
+    ///   diagnostic is emitted in GCC-compatible format and the caller should
+    ///   return an Error expression rather than recursing further.
+    pub(crate) fn enter_expr_nesting(&mut self) -> Result<(), ()> {
+        self.expr_nesting_depth += 1;
+        if self.expr_nesting_depth > MAX_EXPRESSION_NESTING_DEPTH {
+            self.error(&format!(
+                "expression nesting depth limit exceeded (maximum {} levels)",
+                MAX_EXPRESSION_NESTING_DEPTH
+            ));
+            Err(())
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Exits a nested expression-level construct, decrementing the expression
+    /// nesting counter.
+    pub(crate) fn exit_expr_nesting(&mut self) {
+        self.expr_nesting_depth = self.expr_nesting_depth.saturating_sub(1);
     }
 
     // =======================================================================

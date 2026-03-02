@@ -682,7 +682,10 @@ impl CType {
             }
             CType::Struct(s) => s.is_complete,
             CType::Enum(e) => e.is_complete,
-            CType::Function(_) => true,
+            // Function types are not object types (C11 §6.2.5) and have no
+            // size — they cannot be the type of an object, so they are not
+            // considered "complete" in the object-type sense.
+            CType::Function(_) => false,
             CType::Error => false,
             // These should be resolved before completeness checks, but handle gracefully.
             CType::Typedef { underlying, .. } => underlying.is_complete(),

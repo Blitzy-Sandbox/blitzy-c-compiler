@@ -1640,6 +1640,7 @@ mod tests {
             name: name.to_string(),
             return_type: IrType::I64,
             params: vec![],
+            param_values: Vec::new(),
             blocks,
             entry_block: entry,
             is_definition: true,
@@ -1747,6 +1748,7 @@ mod tests {
         let f = Function {
             name: "add_test".into(), return_type: IrType::I64,
             params: vec![("a".into(), IrType::I64), ("b".into(), IrType::I64)],
+            param_values: Vec::new(),
             blocks: vec![b], entry_block: BlockId(0), is_definition: true,
         };
         let r = s.select_function(&f).unwrap();
@@ -1762,6 +1764,7 @@ mod tests {
         let f = Function {
             name: "mul".into(), return_type: IrType::I64,
             params: vec![("a".into(), IrType::I64), ("b".into(), IrType::I64)],
+            param_values: Vec::new(),
             blocks: vec![b], entry_block: BlockId(0), is_definition: true,
         };
         let r = s.select_function(&f).unwrap();
@@ -1778,6 +1781,7 @@ mod tests {
         let f = Function {
             name: "div".into(), return_type: IrType::I64,
             params: vec![("a".into(), IrType::I64), ("b".into(), IrType::I64)],
+            param_values: Vec::new(),
             blocks: vec![b], entry_block: BlockId(0), is_definition: true,
         };
         let r = s.select_function(&f).unwrap();
@@ -1794,6 +1798,7 @@ mod tests {
         let f = Function {
             name: "modtest".into(), return_type: IrType::I64,
             params: vec![("a".into(), IrType::I64), ("b".into(), IrType::I64)],
+            param_values: Vec::new(),
             blocks: vec![b], entry_block: BlockId(0), is_definition: true,
         };
         let r = s.select_function(&f).unwrap();
@@ -1813,6 +1818,7 @@ mod tests {
         let f = Function {
             name: "cmp".into(), return_type: IrType::I64,
             params: vec![("a".into(), IrType::I64), ("b".into(), IrType::I64)],
+            param_values: Vec::new(),
             blocks: vec![b], entry_block: BlockId(0), is_definition: true,
         };
         let r = s.select_function(&f).unwrap();
@@ -1832,6 +1838,7 @@ mod tests {
         let f = Function {
             name: "sel".into(), return_type: IrType::I64,
             params: vec![("a".into(), IrType::I64), ("b".into(), IrType::I64)],
+            param_values: Vec::new(),
             blocks: vec![b], entry_block: BlockId(0), is_definition: true,
         };
         let r = s.select_function(&f).unwrap();
@@ -1849,6 +1856,7 @@ mod tests {
         let f = Function {
             name: "ld".into(), return_type: IrType::I64,
             params: vec![("p".into(), IrType::Pointer(Box::new(IrType::I64)))],
+            param_values: Vec::new(),
             blocks: vec![b], entry_block: BlockId(0), is_definition: true,
         };
         let r = s.select_function(&f).unwrap();
@@ -1868,6 +1876,7 @@ mod tests {
                 ("v".into(), IrType::I32),
                 ("p".into(), IrType::Pointer(Box::new(IrType::I32))),
             ],
+            param_values: Vec::new(),
             blocks: vec![b], entry_block: BlockId(0), is_definition: true,
         };
         let r = s.select_function(&f).unwrap();
@@ -1898,6 +1907,7 @@ mod tests {
         let f = Function {
             name: "cb".into(), return_type: IrType::Void,
             params: vec![("c".into(), IrType::I1)],
+            param_values: Vec::new(),
             blocks: vec![b0, b1, b2], entry_block: BlockId(0), is_definition: true,
         };
         let r = s.select_function(&f).unwrap();
@@ -1911,6 +1921,7 @@ mod tests {
         let f = Function {
             name: "ret".into(), return_type: IrType::I64,
             params: vec![("v".into(), IrType::I64)],
+            param_values: Vec::new(),
             blocks: vec![b], entry_block: BlockId(0), is_definition: true,
         };
         let r = s.select_function(&f).unwrap();
@@ -1929,6 +1940,7 @@ mod tests {
         let f = Function {
             name: "sx".into(), return_type: IrType::I64,
             params: vec![("v".into(), IrType::I32)],
+            param_values: Vec::new(),
             blocks: vec![b], entry_block: BlockId(0), is_definition: true,
         };
         let r = s.select_function(&f).unwrap();
@@ -1945,6 +1957,7 @@ mod tests {
         let f = Function {
             name: "fpe".into(), return_type: IrType::F64,
             params: vec![("v".into(), IrType::F32)],
+            param_values: Vec::new(),
             blocks: vec![b], entry_block: BlockId(0), is_definition: true,
         };
         let r = s.select_function(&f).unwrap();
@@ -1961,6 +1974,7 @@ mod tests {
         let f = Function {
             name: "sc".into(), return_type: IrType::F64,
             params: vec![("v".into(), IrType::I64)],
+            param_values: Vec::new(),
             blocks: vec![b], entry_block: BlockId(0), is_definition: true,
         };
         let r = s.select_function(&f).unwrap();
@@ -1995,6 +2009,7 @@ mod tests {
         let f = Function {
             name: "fa".into(), return_type: IrType::F64,
             params: vec![("a".into(), IrType::F64), ("b".into(), IrType::F64)],
+            param_values: Vec::new(),
             blocks: vec![b], entry_block: BlockId(0), is_definition: true,
         };
         let r = s.select_function(&f).unwrap();
@@ -2016,6 +2031,7 @@ mod tests {
         let f = Function {
             name: "sw".into(), return_type: IrType::Void,
             params: vec![("v".into(), IrType::I64)],
+            param_values: Vec::new(),
             blocks: vec![b0, b1, b2, b3], entry_block: BlockId(0), is_definition: true,
         };
         let r = s.select_function(&f).unwrap();

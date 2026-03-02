@@ -945,6 +945,7 @@ mod tests {
             return_type: IrType::Void,
             params,
             blocks,
+            param_values: Vec::new(),
             entry_block: BlockId(0),
             is_definition: true,
         }

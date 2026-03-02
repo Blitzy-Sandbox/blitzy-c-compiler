@@ -1618,6 +1618,7 @@ mod tests {
             name: name.to_string(),
             return_type,
             params,
+            param_values: Vec::new(),
             blocks: vec![BasicBlock::new(BlockId(0), "entry".to_string())],
             entry_block: BlockId(0),
             is_definition: true,

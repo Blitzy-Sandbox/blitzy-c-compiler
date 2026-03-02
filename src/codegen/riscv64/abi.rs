@@ -1388,6 +1388,7 @@ mod tests {
             name: name.to_string(),
             return_type: ret,
             params,
+            param_values: Vec::new(),
             blocks: vec![
                 make_basic_block(0, "entry", crate::ir::Terminator::Return { value: None }),
             ],
@@ -1401,6 +1402,7 @@ mod tests {
             name: name.to_string(),
             return_type: ret,
             params: params.clone(),
+            param_values: Vec::new(),
             blocks: vec![
                 make_basic_block(0, "entry", crate::ir::Terminator::Branch {
                     target: crate::ir::BlockId(1),
