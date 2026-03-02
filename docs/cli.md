@@ -497,3 +497,5 @@ Quick reference of all supported flags:
 | `-O1` | Optimization | Basic optimization |
 | `-O2` | Optimization | Aggressive optimization |
 | `--target <triple>` | Target | Select target architecture |
+| `--help` | Informational | Display usage information and list all supported flags |
+| `--version` / `-v` | Informational | Display the compiler version string |

@@ -12,7 +12,7 @@ The IR is governed by five core design principles:
 
 3. **Typed Values** — Every IR value carries a type drawn from the IR type system (see [IR Type System](#ir-type-system)). Types enable the IR to validate transformations at construction time, ensure that instruction operands are compatible, and communicate operand sizes to downstream code generators.
 
-4. **Explicit Control Flow** — Control flow is represented as a graph of basic blocks connected by explicit terminator instructions (`Br`, `CondBr`, `Switch`, `Ret`). There is no implicit fall-through between blocks. Every block must end with exactly one terminator, making control-flow analysis straightforward.
+4. **Explicit Control Flow** — Control flow is represented as a graph of basic blocks connected by explicit terminator instructions (`Br`, `CondBr`, `Switch`, `Ret`, `Unreachable`). There is no implicit fall-through between blocks. Every block must end with exactly one terminator, making control-flow analysis straightforward.
 
 5. **Memory-Explicit Operations** — All memory accesses are represented as explicit `Load`, `Store`, and `Alloca` instructions. There is no implicit memory access hidden inside arithmetic or comparison instructions. This explicitness allows the `mem2reg` pass to promote stack allocations to SSA registers in a clean, well-defined manner.
 
@@ -297,6 +297,7 @@ Terminator instructions end a basic block and define the control flow edges to s
 | `Br(target)` | Target basic block label | Unconditional branch — transfers control to `target` |
 | `CondBr(cond, true_bb, false_bb)` | `i1` condition + two basic block labels | Conditional branch — if `cond` is `i1(1)`, transfer to `true_bb`; otherwise transfer to `false_bb` |
 | `Switch(value, default_bb, cases)` | Integer value + default label + list of `(constant, label)` pairs | Multi-way branch — transfers to the label matching `value`, or `default_bb` if no case matches |
+| `Unreachable` | *(none)* | Signals that control flow cannot reach past this point. Placed after calls to `_Noreturn` functions or other provably unreachable code paths. Has no successor blocks. |
 
 > **No fall-through:** Unlike machine code, the IR does not permit implicit fall-through between blocks. Every block must explicitly branch to its successor(s). This makes control-flow analysis trivially correct — the CFG edges are exactly the terminator targets.
 
@@ -308,6 +309,9 @@ Terminator instructions end a basic block and define the control flow edges to s
 | `Phi(incoming)` | List of `(ValueId, BlockId)` pairs | Same type as all incoming values | SSA phi node — selects the value corresponding to the predecessor block from which control arrived. Must appear at the beginning of a basic block, before any non-phi instructions. |
 | `Cast(value, target_type)` | Source value + target IR type | `target_type` | Type conversion — changes the type of a value through sign extension, zero extension, truncation, or float/int conversion (see sub-operations below) |
 | `BitCast(value, target_type)` | Source value + target IR type | `target_type` | Reinterpret the bits of `value` as `target_type` without performing any conversion. Source and target must have the same bit width. Used for pointer casts and type punning. |
+| `Select(cond, true_val, false_val)` | `i1` condition + two values of the same type | Same type as the operand values | Conditional value selection — returns `true_val` if `cond` is nonzero, `false_val` otherwise. Equivalent to the C ternary operator `cond ? a : b` without branching. |
+| `Const(constant)` | A `Constant` value (integer or float literal) | Type of the constant | Constant materialization — produces a compile-time constant value. Used to introduce literal values into the IR instruction stream. |
+| `Copy(source)` | A single source value | Same type as `source` | Value copy — produces a new value identical to `source`. Used during register allocation and lowering to represent register-to-register moves. |
 
 #### Cast Sub-Operations
 
@@ -327,7 +331,7 @@ The `Cast` instruction carries an explicit `CastKind` that specifies the convers
 
 ### Instruction Summary
 
-All 24 IR instructions in one view:
+All 28 IR instructions and terminators in one view:
 
 | # | Instruction | Category | Produces Value |
 |---|---|---|---|
@@ -352,9 +356,13 @@ All 24 IR instructions in one view:
 | 19 | `Br` | Control Flow | No |
 | 20 | `CondBr` | Control Flow | No |
 | 21 | `Switch` | Control Flow | No |
-| 22 | `Phi` | Misc (SSA) | Yes |
-| 23 | `Cast` | Misc | Yes |
-| 24 | `BitCast` | Misc | Yes |
+| 22 | `Unreachable` | Control Flow | No |
+| 23 | `Phi` | Misc (SSA) | Yes |
+| 24 | `Cast` | Misc | Yes |
+| 25 | `BitCast` | Misc | Yes |
+| 26 | `Select` | Misc | Yes |
+| 27 | `Const` | Misc | Yes |
+| 28 | `Copy` | Misc | Yes |
 
 ---
 
@@ -404,7 +412,7 @@ A **basic block** is a straight-line sequence of instructions with the following
 
 1. **Phi nodes first:** Zero or more `Phi` instructions at the beginning of the block.
 2. **Body instructions:** Zero or more non-terminator, non-phi instructions in sequential order.
-3. **Exactly one terminator:** A single terminator instruction (`Ret`, `Br`, `CondBr`, or `Switch`) at the end.
+3. **Exactly one terminator:** A single terminator instruction (`Ret`, `Br`, `CondBr`, `Switch`, or `Unreachable`) at the end.
 4. **Unique label:** Each block has a unique `BlockId` identifier within its function.
 
 Instructions within a block execute sequentially from top to bottom. Control flow can only enter a block at the top (at the first phi node or body instruction) and can only exit at the terminator.
@@ -430,6 +438,7 @@ The **Control Flow Graph (CFG)** is a directed graph where:
 | `CondBr(_, true_bb, false_bb)` | Two edges: current → `true_bb`, current → `false_bb` |
 | `Switch(_, default_bb, cases)` | N+1 edges: current → `default_bb`, current → each case target |
 | `Ret(_)` | Zero edges (function exit) |
+| `Unreachable` | Zero edges (provably unreachable code) |
 
 **Entry block:** The first basic block of every function is the designated entry point. All `Alloca` instructions for local variables are placed in the entry block to ensure they dominate all uses.
 

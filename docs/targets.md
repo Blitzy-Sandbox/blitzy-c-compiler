@@ -148,9 +148,9 @@ The following relocation types are supported by the `bcc` integrated linker for 
 | `R_X86_64_32S` | 11 | Direct 32-bit sign-extended |
 | `R_X86_64_16` | 12 | Direct 16-bit zero-extended |
 | `R_X86_64_PC16` | 13 | 16-bit PC-relative |
-| `R_X86_64_8` | 14 | Direct 8-bit sign-extended |
-| `R_X86_64_PC8` | 15 | 8-bit PC-relative |
-| `R_X86_64_REX_GOTPCRELX` | 42 | Relaxable GOTPCREL |
+| `R_X86_64_PC64` | 24 | PC-relative 64-bit |
+| `R_X86_64_GOTPCRELX` | 41 | Relaxable GOTPCREL |
+| `R_X86_64_REX_GOTPCRELX` | 42 | Relaxable GOTPCREL with REX prefix |
 
 ### Security Hardening
 
@@ -307,7 +307,6 @@ Each general-purpose register has sub-register aliases: `eax` (32-bit) → `ax` 
 | `R_386_PC32` | 2 | PC-relative 32-bit |
 | `R_386_GOT32` | 3 | 32-bit GOT entry |
 | `R_386_PLT32` | 4 | 32-bit PLT address |
-| `R_386_COPY` | 5 | Copy symbol at runtime |
 | `R_386_GLOB_DAT` | 6 | Create GOT entry |
 | `R_386_JMP_SLOT` | 7 | Create PLT entry |
 | `R_386_RELATIVE` | 8 | Adjust by program base |
@@ -441,12 +440,9 @@ Each SIMD register can be accessed at different widths: `v0` (128-bit), `d0` (64
 | `R_AARCH64_PREL32` | 261 | PC-relative 32-bit |
 | `R_AARCH64_ADR_PREL_PG_HI21` | 275 | Page-relative ADRP immediate |
 | `R_AARCH64_ADD_ABS_LO12_NC` | 277 | Low 12-bit absolute ADD immediate |
-| `R_AARCH64_LDST8_ABS_LO12_NC` | 278 | Low 12-bit load/store (byte) |
-| `R_AARCH64_LDST16_ABS_LO12_NC` | 284 | Low 12-bit load/store (halfword) |
-| `R_AARCH64_LDST32_ABS_LO12_NC` | 285 | Low 12-bit load/store (word) |
-| `R_AARCH64_LDST64_ABS_LO12_NC` | 286 | Low 12-bit load/store (doubleword) |
-| `R_AARCH64_CALL26` | 283 | Function call within ±128 MB |
 | `R_AARCH64_JUMP26` | 282 | Unconditional branch within ±128 MB |
+| `R_AARCH64_CALL26` | 283 | Function call within ±128 MB |
+| `R_AARCH64_LDST64_ABS_LO12_NC` | 286 | Low 12-bit load/store (doubleword) |
 | `R_AARCH64_GLOB_DAT` | 1025 | Create GOT entry |
 | `R_AARCH64_JUMP_SLOT` | 1026 | Create PLT entry |
 | `R_AARCH64_RELATIVE` | 1027 | Adjust by program base |
@@ -617,19 +613,17 @@ The RISC-V 64 target follows the **LP64D** ABI, which passes floating-point argu
 | `R_RISCV_NONE` | 0 | No relocation |
 | `R_RISCV_32` | 1 | Direct 32-bit absolute |
 | `R_RISCV_64` | 2 | Direct 64-bit absolute |
+| `R_RISCV_RELATIVE` | 3 | Adjust by program base |
+| `R_RISCV_JUMP_SLOT` | 5 | Create PLT entry |
 | `R_RISCV_BRANCH` | 16 | 12-bit PC-relative branch |
 | `R_RISCV_JAL` | 17 | 20-bit PC-relative JAL |
 | `R_RISCV_CALL` | 18 | `auipc` + `jalr` pair (32-bit PC-relative) |
-| `R_RISCV_CALL_PLT` | 19 | `auipc` + `jalr` pair via PLT |
-| `R_RISCV_GOT_HI20` | 20 | High 20 bits of GOT entry PC-offset |
 | `R_RISCV_PCREL_HI20` | 23 | High 20 bits of PC-relative offset |
 | `R_RISCV_PCREL_LO12_I` | 24 | Low 12 bits of PC-relative (I-type) |
 | `R_RISCV_PCREL_LO12_S` | 25 | Low 12 bits of PC-relative (S-type) |
 | `R_RISCV_HI20` | 26 | High 20 bits of absolute address |
 | `R_RISCV_LO12_I` | 27 | Low 12 bits of absolute (I-type) |
 | `R_RISCV_LO12_S` | 28 | Low 12 bits of absolute (S-type) |
-| `R_RISCV_ADD32` | 35 | 32-bit addition |
-| `R_RISCV_SUB32` | 39 | 32-bit subtraction |
 | `R_RISCV_RELAX` | 51 | Linker relaxation marker |
 
 ### Encoding Notes

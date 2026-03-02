@@ -214,6 +214,13 @@ bcc -static source.c -o output
 |---|---|
 | `--target <triple>` | Select target architecture (e.g., `x86_64-linux-gnu`, `aarch64-linux-gnu`) |
 
+### Informational Flags
+
+| Flag | Description |
+|---|---|
+| `--help` | Display usage information and list all supported flags |
+| `--version` / `-v` | Display the compiler version string |
+
 For the complete CLI reference with detailed descriptions and examples, see [`docs/cli.md`](docs/cli.md).
 
 ---
@@ -403,11 +410,11 @@ Non-native architecture binaries are executed via **QEMU user-mode emulation** (
 # Run all validation tests
 cargo test --test validation
 
-# Individual validation targets
-cargo test --test sqlite
-cargo test --test lua
-cargo test --test zlib
-cargo test --test redis
+# Individual validation targets (run specific sub-modules within the validation harness)
+cargo test --test validation -- sqlite
+cargo test --test validation -- lua
+cargo test --test validation -- zlib
+cargo test --test validation -- redis
 ```
 
 The CI validation pipeline is defined in [`.github/workflows/validation.yml`](.github/workflows/validation.yml).

@@ -119,14 +119,21 @@ Debugging Information Entries (DIEs) form a tree structure rooted at the `DW_TAG
 DW_TAG_compile_unit (root — one per translation unit)
 ├── DW_TAG_base_type              (int, char, float, etc.)
 ├── DW_TAG_pointer_type           (pointer-to-T)
+├── DW_TAG_const_type             (const-qualified type)
+├── DW_TAG_volatile_type          (volatile-qualified type)
 ├── DW_TAG_typedef                (typedef aliases)
 ├── DW_TAG_structure_type         (struct definitions)
 │   └── DW_TAG_member             (struct fields)
+├── DW_TAG_union_type             (union definitions)
+│   └── DW_TAG_member             (union fields)
+├── DW_TAG_enumeration_type       (enum definitions)
+│   └── DW_TAG_enumerator         (enum constants)
 ├── DW_TAG_array_type             (array types)
 │   └── DW_TAG_subrange_type      (array bounds)
 ├── DW_TAG_variable               (global variables)
 └── DW_TAG_subprogram             (function definitions)
     ├── DW_TAG_formal_parameter   (function parameters)
+    ├── DW_TAG_unspecified_parameters (variadic "..." indicator)
     ├── DW_TAG_variable           (local variables)
     └── DW_TAG_lexical_block      (nested scopes)
         └── DW_TAG_variable       (block-scoped variables)
@@ -284,6 +291,58 @@ Represents a `typedef` alias.
 |---|---|---|
 | `DW_AT_name` | `DW_FORM_strp` | Typedef name |
 | `DW_AT_type` | `DW_FORM_ref4` | Reference to the underlying type DIE |
+
+#### `DW_TAG_const_type`
+
+Represents a `const`-qualified type. Wraps an underlying type DIE to express `const T`.
+
+| Attribute | Form | Description |
+|---|---|---|
+| `DW_AT_type` | `DW_FORM_ref4` | Reference to the underlying (unqualified) type DIE |
+
+#### `DW_TAG_volatile_type`
+
+Represents a `volatile`-qualified type. Wraps an underlying type DIE to express `volatile T`.
+
+| Attribute | Form | Description |
+|---|---|---|
+| `DW_AT_type` | `DW_FORM_ref4` | Reference to the underlying (unqualified) type DIE |
+
+#### `DW_TAG_union_type`
+
+Represents a C `union` definition. Structurally identical to `DW_TAG_structure_type` but all members share the same offset (0). Contains child `DW_TAG_member` DIEs for each union field.
+
+| Attribute | Form | Description |
+|---|---|---|
+| `DW_AT_name` | `DW_FORM_strp` | Union tag name (omitted for anonymous unions) |
+| `DW_AT_byte_size` | `DW_FORM_data4` | Total size of the union in bytes |
+
+Each child `DW_TAG_member` DIE has the same attributes as structure members (see `DW_TAG_structure_type`), but `DW_AT_data_member_location` is always `0` since all union members overlap.
+
+#### `DW_TAG_enumeration_type`
+
+Represents a C `enum` definition. Contains child `DW_TAG_enumerator` DIEs for each enumerator constant.
+
+| Attribute | Form | Description |
+|---|---|---|
+| `DW_AT_name` | `DW_FORM_strp` | Enum tag name (omitted for anonymous enums) |
+| `DW_AT_byte_size` | `DW_FORM_data4` | Size of the enum type in bytes |
+| `DW_AT_type` | `DW_FORM_ref4` | Reference to the underlying integer type DIE |
+
+#### `DW_TAG_enumerator`
+
+Represents a single enumerator constant within a `DW_TAG_enumeration_type`. Children of `DW_TAG_enumeration_type` DIEs.
+
+| Attribute | Form | Description |
+|---|---|---|
+| `DW_AT_name` | `DW_FORM_strp` | Enumerator name |
+| `DW_AT_const_value` | `DW_FORM_sdata` | Signed integer value of the enumerator |
+
+#### `DW_TAG_unspecified_parameters`
+
+Represents the variadic `...` in a function parameter list. A leaf DIE (no attributes and no children) placed as the last child of a `DW_TAG_subprogram` DIE for variadic functions.
+
+*(No attributes — this is a marker-only DIE.)*
 
 ---
 
