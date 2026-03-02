@@ -873,6 +873,7 @@ impl TokenKind {
                 | TokenKind::Typeof
                 | TokenKind::GccInt128
                 | TokenKind::GccAutoType
+                | TokenKind::BuiltinVaList
         )
     }
 

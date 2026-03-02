@@ -858,7 +858,7 @@ fn generate_builtin_start(
             let relocs = vec![codegen::Relocation {
                 offset: 15,
                 symbol: String::from("main"),
-                reloc_type: codegen::RelocationType::X86_64_PLT32,
+                reloc_type: codegen::RelocationType::I386_PC32,
                 addend: -4,
                 section_index: 0,
             }];
@@ -1206,9 +1206,26 @@ fn link_static_executable(
     let base_address = script::default_base_address(&config.target);
     let class = if is_64bit { elf::ELFCLASS64 } else { elf::ELFCLASS32 };
     let ehdr_sz = elf::ehdr_size(class) as u64;
-    let estimated_phdr_count = 4u64;
     let phdr_sz = elf::phdr_size(class) as u64;
-    let header_size = ehdr_sz + estimated_phdr_count * phdr_sz;
+
+    // Count actual program headers by scanning which permission categories
+    // have allocatable sections. This MUST match what build_program_headers()
+    // will produce, otherwise the header size estimate causes section file
+    // offsets to diverge from the ELF writer's actual placement, creating
+    // LOAD segment mismatches that crash i686 and RISC-V binaries.
+    let mut has_rx = false;
+    let mut has_ro = false;
+    let mut has_rw = false;
+    for sec in &merged {
+        if sec.flags & elf::SHF_ALLOC == 0 { continue; }
+        let is_exec = sec.flags & elf::SHF_EXECINSTR != 0;
+        let is_write = sec.flags & elf::SHF_WRITE != 0;
+        if is_exec { has_rx = true; }
+        else if is_write { has_rw = true; }
+        else { has_ro = true; }
+    }
+    let phdr_count: u64 = (has_rx as u64) + (has_ro as u64) + (has_rw as u64) + 1; // +1 for GNU_STACK
+    let header_size = ehdr_sz + phdr_count * phdr_sz;
 
     let _layout = sections::compute_layout(&mut merged, base_address, header_size, is_64bit);
 
@@ -1504,9 +1521,21 @@ fn link_shared_library(
     let base_address: u64 = 0;
     let class = if is_64bit { elf::ELFCLASS64 } else { elf::ELFCLASS32 };
     let ehdr_sz = elf::ehdr_size(class) as u64;
-    let estimated_phdr_count = 5u64; // More segments for shared libs (PT_DYNAMIC).
     let phdr_sz = elf::phdr_size(class) as u64;
-    let header_size = ehdr_sz + estimated_phdr_count * phdr_sz;
+    // Count actual segments for shared libraries (same logic as executable + PT_DYNAMIC).
+    let mut has_rx_so = false;
+    let mut has_ro_so = false;
+    let mut has_rw_so = false;
+    for sec in &merged {
+        if sec.flags & elf::SHF_ALLOC == 0 { continue; }
+        let is_exec = sec.flags & elf::SHF_EXECINSTR != 0;
+        let is_write = sec.flags & elf::SHF_WRITE != 0;
+        if is_exec { has_rx_so = true; }
+        else if is_write { has_rw_so = true; }
+        else { has_ro_so = true; }
+    }
+    let phdr_count_so: u64 = (has_rx_so as u64) + (has_ro_so as u64) + (has_rw_so as u64) + 2; // +1 GNU_STACK, +1 PT_DYNAMIC
+    let header_size = ehdr_sz + phdr_count_so * phdr_sz;
 
     let _layout = sections::compute_layout(&mut merged, base_address, header_size, is_64bit);
 
@@ -1624,6 +1653,99 @@ fn link_shared_library(
     // Step 10: Build symbol table for output.
     let (symtab_data, strtab_data) = resolver.generate_symtab(is_64bit);
 
+    // Step 10b: Generate dynamic sections for the shared library.
+    // Collect exported (global) symbols for the .dynsym table.
+    let all_resolved = resolver.all_resolved();
+    let exported_for_dyn: Vec<_> = all_resolved
+        .iter()
+        .filter(|s| {
+            matches!(
+                s.binding,
+                symbols::SymbolBinding::Global | symbols::SymbolBinding::Weak
+            )
+        })
+        .cloned()
+        .cloned()
+        .collect();
+
+    // Derive the soname from the config output path (if it looks like a .so).
+    let soname_str = config
+        .output_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(String::from);
+
+    let needed_libs: Vec<String> = Vec::new(); // No DT_NEEDED for now
+
+    if let Ok(dyn_out) = dynamic::generate_dynamic_sections(
+        &exported_for_dyn,
+        &needed_libs,
+        soname_str.as_deref(),
+        &config.target,
+    ) {
+        // Add dynamic sections to the merged list so they appear in the ELF.
+        // These sections need SHF_ALLOC so the kernel maps them into memory.
+        let dynstr_sec = sections::MergedSection {
+            name: String::from(".dynstr"),
+            data: dyn_out.dynstr.clone(),
+            section_type: elf::SHT_STRTAB,
+            flags: elf::SHF_ALLOC,
+            alignment: 1,
+            virtual_address: 0,
+            file_offset: 0,
+            mem_size: dyn_out.dynstr.len() as u64,
+            input_mappings: Vec::new(),
+        };
+        let dynsym_entsize: u64 = if is_64bit { 24 } else { 16 };
+        let dynsym_sec = sections::MergedSection {
+            name: String::from(".dynsym"),
+            data: dyn_out.dynsym.clone(),
+            section_type: elf::SHT_DYNSYM,
+            flags: elf::SHF_ALLOC,
+            alignment: if is_64bit { 8 } else { 4 },
+            virtual_address: 0,
+            file_offset: 0,
+            mem_size: dyn_out.dynsym.len() as u64,
+            input_mappings: Vec::new(),
+        };
+        let hash_sec = sections::MergedSection {
+            name: String::from(".hash"),
+            data: dyn_out.hash.clone(),
+            section_type: elf::SHT_HASH,
+            flags: elf::SHF_ALLOC,
+            alignment: 4,
+            virtual_address: 0,
+            file_offset: 0,
+            mem_size: dyn_out.hash.len() as u64,
+            input_mappings: Vec::new(),
+        };
+        let dynamic_sec = sections::MergedSection {
+            name: String::from(".dynamic"),
+            data: dyn_out.dynamic.clone(),
+            section_type: elf::SHT_DYNAMIC,
+            flags: elf::SHF_ALLOC | elf::SHF_WRITE,
+            alignment: if is_64bit { 8 } else { 4 },
+            virtual_address: 0,
+            file_offset: 0,
+            mem_size: dyn_out.dynamic.len() as u64,
+            input_mappings: Vec::new(),
+        };
+
+        merged.push(dynstr_sec);
+        merged.push(dynsym_sec);
+        merged.push(hash_sec);
+        merged.push(dynamic_sec);
+
+        // Recompute layout so the new sections get valid virtual addresses
+        // and file offsets.
+        let _relayout = sections::compute_layout(
+            &mut merged,
+            base_address,
+            header_size,
+            is_64bit,
+        );
+    }
+
     // Step 11: Emit the final ELF shared object.
     build_elf_output(
         &merged,
@@ -1664,6 +1786,17 @@ fn build_elf_output(
 
     // Add merged output sections (code, data, bss, rodata, etc.).
     for sec in merged {
+        // Set sh_entsize for structured sections that require it.
+        let entsize = match sec.section_type {
+            elf::SHT_DYNSYM => {
+                if is_64bit { 24 } else { 16 }
+            }
+            elf::SHT_DYNAMIC => {
+                if is_64bit { 16 } else { 8 }
+            }
+            elf::SHT_HASH => 4,
+            _ => 0,
+        };
         writer.add_section(elf::OutputSection {
             name: sec.name.clone(),
             data: sec.data.clone(),
@@ -1672,7 +1805,7 @@ fn build_elf_output(
                 sh_flags: sec.flags,
                 sh_addr: sec.virtual_address,
                 sh_addralign: sec.alignment,
-                sh_entsize: 0,
+                sh_entsize: entsize,
                 sh_link: 0,
                 sh_info: 0,
             },
@@ -1870,18 +2003,73 @@ fn build_program_headers(
     }
 
     // Emit PT_LOAD segments in standard order: R+X, R, R+W.
+    // The ELF spec requires p_offset % p_align == p_vaddr % p_align.
+    // For the first LOAD segment (executable code), we extend it back to file
+    // offset 0 so that the ELF and program headers are included in the mapping.
+    // This is standard Linux ELF practice and ensures the congruence property
+    // is satisfied across all architectures (i686, x86-64, AArch64, RISC-V 64).
+    let mut is_first_load = true;
     for seg_opt in [&rx_seg, &ro_seg, &rw_seg] {
         if let Some(ref info) = seg_opt {
+            let (p_offset, p_vaddr, p_filesz, p_memsz) = if is_first_load {
+                // First LOAD: start at offset 0 to include ELF headers.
+                // Virtual address is page-aligned base, file size covers through
+                // end of segment's last section.
+                let base_vaddr = info.min_vaddr & !(page_size - 1); // page-align down
+                let extra_prefix = info.min_offset; // bytes before first section
+                (
+                    0u64,
+                    base_vaddr,
+                    info.file_size + extra_prefix,
+                    info.mem_size + (info.min_vaddr - base_vaddr),
+                )
+            } else {
+                // Subsequent LOAD segments: ensure congruence property.
+                // p_offset must satisfy p_offset % p_align == p_vaddr % p_align.
+                let vaddr_page_offset = info.min_vaddr % page_size;
+                let aligned_file_offset = if info.min_offset % page_size == vaddr_page_offset {
+                    info.min_offset
+                } else {
+                    // Adjust file offset down to satisfy congruence.
+                    (info.min_offset & !(page_size - 1)) + vaddr_page_offset
+                };
+                let extra = info.min_offset.saturating_sub(aligned_file_offset);
+                (
+                    aligned_file_offset,
+                    info.min_vaddr - extra,
+                    info.file_size + extra,
+                    info.mem_size + extra,
+                )
+            };
+
             writer.add_program_header(elf::OutputPhdr {
                 p_type: elf::PT_LOAD,
                 p_flags: info.flags,
-                p_offset: info.min_offset,
-                p_vaddr: info.min_vaddr,
-                p_paddr: info.min_vaddr,
-                p_filesz: info.file_size,
-                p_memsz: info.mem_size,
+                p_offset,
+                p_vaddr,
+                p_paddr: p_vaddr,
+                p_filesz,
+                p_memsz,
                 p_align: page_size,
             });
+            is_first_load = false;
+        }
+    }
+
+    // PT_DYNAMIC — if a .dynamic section exists (shared libraries).
+    for sec in merged {
+        if sec.section_type == elf::SHT_DYNAMIC && sec.flags & elf::SHF_ALLOC != 0 {
+            writer.add_program_header(elf::OutputPhdr {
+                p_type: elf::PT_DYNAMIC,
+                p_flags: elf::PF_R | elf::PF_W,
+                p_offset: sec.file_offset,
+                p_vaddr: sec.virtual_address,
+                p_paddr: sec.virtual_address,
+                p_filesz: sec.data.len() as u64,
+                p_memsz: sec.data.len() as u64,
+                p_align: if _is_64bit { 8 } else { 4 },
+            });
+            break;
         }
     }
 

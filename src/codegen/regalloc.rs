@@ -404,6 +404,11 @@ pub fn compute_live_intervals(function: &Function) -> Vec<LiveInterval> {
         cfg.add_block(block.clone());
     }
 
+    // Rebuild successor/predecessor edges from terminators.
+    // The IR builder may not populate BasicBlock::successors directly;
+    // this method scans all terminators and derives the edges.
+    cfg.compute_edges();
+
     // Verify the CFG entry matches the function's entry.
     let _cfg_entry = cfg.entry();
     let _cfg_blocks = cfg.blocks();

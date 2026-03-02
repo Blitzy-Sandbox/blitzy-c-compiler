@@ -895,8 +895,13 @@ pub fn compute_stack_frame(
     // - Leaf function (no calls)
     // - Total frame (callee saves + body) fits in 128 bytes
     // - No callee-saved pushes needed
+    // - No local variables (locals_size == 0) — functions with locals use
+    //   RBP-relative addressing which requires the frame pointer to be set up.
+    //   Without a prologue (push rbp / mov rbp,rsp), RBP is uninitialized
+    //   and any RBP-relative access will segfault.
     let total_unaligned = callee_save_bytes + body_size;
-    let use_red_zone = !has_calls && total_unaligned <= 128 && callee_saved.is_empty();
+    let use_red_zone = !has_calls && total_unaligned <= 128 && callee_saved.is_empty()
+        && locals_size == 0 && spill_slots == 0;
 
     // Compute aligned frame size for the sub rsp instruction.
     // After push rbp (8 bytes) the stack is 16-byte aligned (because the

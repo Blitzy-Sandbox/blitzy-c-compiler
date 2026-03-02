@@ -536,6 +536,10 @@ pub struct Aarch64InstructionSelector {
     stack_offset: i32,
     label_counter: u32,
     block_labels: HashMap<u32, u32>,
+    /// IR Values that represent function parameters — already mapped to
+    /// ABI registers by `lower_params`.  Const instructions for these
+    /// values must be skipped so the real parameter values are preserved.
+    param_value_set: std::collections::HashSet<Value>,
 }
 
 impl Aarch64InstructionSelector {
@@ -553,7 +557,23 @@ impl Aarch64InstructionSelector {
             stack_offset: 0,
             label_counter: 0,
             block_labels: HashMap::new(),
+            param_value_set: std::collections::HashSet::new(),
         }
+    }
+
+    /// Build a mapping from virtual register IDs to IR Values by inverting
+    /// the value_map (Value → MachineOperand).  Used for post-isel register
+    /// assignment: vreg_id → Value → PhysReg (from regalloc).
+    pub fn build_vreg_to_value_map(&self) -> HashMap<u32, Value> {
+        let mut m = HashMap::new();
+        for (&val, op) in &self.value_map {
+            if let MachineOperand::Register(r) = op {
+                if r.0 >= 64 {
+                    m.insert(r.0 as u32, val);
+                }
+            }
+        }
+        m
     }
 
     // ---------------------------------------------------------------
@@ -642,6 +662,13 @@ impl Aarch64InstructionSelector {
         self.stack_offset = 0;
         self.label_counter = 0;
         self.block_labels.clear();
+        self.param_value_set.clear();
+
+        // Record which IR Values are function parameters so that
+        // select_const skips the placeholder Const instructions.
+        for &pv in &function.param_values {
+            self.param_value_set.insert(pv);
+        }
 
         // Pre-assign labels for every block.
         for blk in &function.blocks {
@@ -691,7 +718,11 @@ impl Aarch64InstructionSelector {
         let mut nsrn: usize = 0;
 
         for (i, (_name, ty)) in function.params.iter().enumerate() {
-            let val = Value(i as u32);
+            let val = if i < function.param_values.len() {
+                function.param_values[i]
+            } else {
+                Value(i as u32)
+            };
             if ty.is_float() {
                 if nsrn < 8 {
                     self.set_operand(val, MachineOperand::Register(FLOAT_ARG_REGS[nsrn]));
@@ -1362,6 +1393,11 @@ impl Aarch64InstructionSelector {
     fn select_const(
         &mut self, result: Value, constant: &Constant,
     ) -> Result<(), CodeGenError> {
+        // Skip placeholder Const instructions for function parameters —
+        // lower_params already mapped them to the correct ABI registers.
+        if self.param_value_set.contains(&result) {
+            return Ok(());
+        }
         match constant {
             Constant::Integer { value, .. } => {
                 let d = self.alloc_vreg();

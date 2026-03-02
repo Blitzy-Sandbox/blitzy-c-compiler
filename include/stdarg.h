@@ -16,6 +16,22 @@
  * self-contained with no dependencies on other headers.
  */
 
+/*
+ * Support the __need___va_list partial-include pattern used by glibc's
+ * <stdio.h>.  When __need___va_list is defined, only __gnuc_va_list is
+ * provided so that <stdio.h> can declare vfprintf() and friends without
+ * pulling in the full va_start/va_arg/va_end machinery.
+ */
+#ifndef __GNUC_VA_LIST
+#define __GNUC_VA_LIST
+typedef __builtin_va_list __gnuc_va_list;
+#endif
+
+#ifdef __need___va_list
+#undef __need___va_list
+/* Only __gnuc_va_list was needed — stop here. */
+#else
+
 #ifndef _STDARG_H
 #define _STDARG_H
 
@@ -86,3 +102,4 @@ typedef __builtin_va_list va_list;
 #define va_copy(dest, src) __builtin_va_copy(dest, src)
 
 #endif /* _STDARG_H */
+#endif /* !__need___va_list */

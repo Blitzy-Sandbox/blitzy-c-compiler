@@ -1271,7 +1271,7 @@ pub fn generate_argument_loads(
 
     for (i, ((_name, ty), class)) in params.iter().zip(classifications.iter()).enumerate() {
         // Find the allocated register for this parameter value.
-        // Parameters are assigned Value indices starting from 0.
+        // Use Value(i) as placeholder — callers should use param_values when available.
         let param_value = Value(i as u32);
         let dest_reg = find_allocated_reg(alloc_result, param_value);
 

@@ -146,6 +146,13 @@ pub(super) fn parse_external_declaration(parser: &mut Parser<'_>) -> Declaration
     // Check for GCC attributes after declarator.
     let post_attrs = gcc_extensions::try_parse_attributes(parser);
 
+    // Skip optional GCC asm label: `__asm__("symbol_name")` used by glibc
+    // for assembly-level symbol renaming (e.g., __REDIRECT macro).
+    skip_asm_label(parser);
+
+    // Check for GCC attributes that may appear after asm label.
+    let _post_asm_attrs = gcc_extensions::try_parse_attributes(parser);
+
     // Check for function definition: declarator followed by `{`.
     // This only applies to non-typedef declarations.
     if !is_typedef && parser.check(TokenKind::LeftBrace) {
@@ -1647,6 +1654,9 @@ fn parse_variable_declaration(
 ) -> Declaration {
     let mut declarators = Vec::new();
 
+    // Skip optional GCC asm label on first declarator.
+    skip_asm_label(parser);
+
     // Parse optional initializer for the first declarator.
     let first_init = if parser.match_token(TokenKind::Equal) {
         Some(parse_initializer(parser))
@@ -1780,7 +1790,34 @@ fn parse_kr_identifier_list(parser: &mut Parser<'_>, start: SourceSpan) -> Param
 // ===========================================================================
 
 /// Synchronizes the parser to the next declaration boundary after an error.
-///
+/// Skips an optional GCC `__asm__("symbol_name")` label attached to a
+/// declaration. Used by glibc's `__REDIRECT` macro for assembly-level symbol
+/// renaming. The syntax is:
+///   `__asm__` `(` string-literal `)` | `asm` `(` string-literal `)`
+/// We simply consume the tokens without storing them — the asm name does
+/// not affect semantic analysis or code generation in our compiler.
+fn skip_asm_label(parser: &mut Parser<'_>) {
+    if parser.check(TokenKind::Asm) {
+        parser.advance(); // consume __asm__
+        if parser.match_token(TokenKind::LeftParen) {
+            // Skip everything inside until matching ')'.
+            let mut depth = 1u32;
+            while !parser.is_at_end() && depth > 0 {
+                if parser.check(TokenKind::LeftParen) {
+                    depth += 1;
+                } else if parser.check(TokenKind::RightParen) {
+                    depth -= 1;
+                    if depth == 0 {
+                        parser.advance(); // consume final ')'
+                        break;
+                    }
+                }
+                parser.advance();
+            }
+        }
+    }
+}
+
 /// Skips tokens until `;`, `}`, or a declaration-starting keyword is found.
 /// This provides error recovery for malformed declarations.
 fn synchronize_declaration(parser: &mut Parser<'_>) {

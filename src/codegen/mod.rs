@@ -482,7 +482,7 @@ impl ObjectCode {
 /// Operands are the arguments to machine instructions after instruction
 /// selection but before final encoding. The encoder translates these into
 /// binary fields within the instruction encoding.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum MachineOperand {
     /// A physical register, assigned by the register allocator.
     Register(PhysReg),

@@ -41,6 +41,7 @@ use crate::ir::{
     Callee, CastOp, CompareOp, Constant, FloatCompareOp,
     Function, Instruction, IrType, Terminator, Value,
 };
+use crate::ir::instructions::BlockId;
 use crate::codegen::x86_64::abi::{
     ReturnClass,
     classify_return_type, compute_argument_locations,
@@ -401,6 +402,22 @@ pub struct X86_64InstructionSelector {
     pic_enabled: bool,
     /// Current stack offset for alloca instructions (grows downward from RBP).
     stack_offset: i32,
+    /// Set of IR Values that represent function parameters.  These are
+    /// already mapped to their ABI registers by `lower_params`, so any
+    /// `Const` instruction whose result is in this set must be *skipped*
+    /// rather than emitting a load-immediate that would clobber the real
+    /// parameter value sitting in the ABI register.
+    param_value_set: std::collections::HashSet<Value>,
+    /// Pre-computed register allocation map from the register allocator.
+    /// When present, `get_operand` uses the physical register assignment
+    /// directly instead of creating virtual registers.  This is critical
+    /// for producing correct code because the post-isel resolver maps
+    /// unresolved vregs to RAX, which would cause all values to collide.
+    alloc_map: HashMap<Value, PhysReg>,
+    /// Pending phi resolution moves collected during instruction selection.
+    /// Each entry is (phi_result_value, incoming_value, predecessor_block_id).
+    /// These are resolved after all blocks have been processed.
+    pending_phis: Vec<(Value, Value, BlockId)>,
 }
 
 impl X86_64InstructionSelector {
@@ -419,6 +436,9 @@ impl X86_64InstructionSelector {
             instructions: Vec::new(),
             pic_enabled,
             stack_offset: 0,
+            param_value_set: std::collections::HashSet::new(),
+            pending_phis: Vec::new(),
+            alloc_map: HashMap::new(),
         }
     }
 
@@ -429,12 +449,45 @@ impl X86_64InstructionSelector {
         vreg
     }
 
-    /// Get the machine operand for an IR value. If the value has not been
-    /// mapped yet, allocate a new virtual register.
+    /// Provide register allocation results so `get_operand` can use
+    /// physical registers directly instead of creating virtual registers.
+    pub fn set_allocation_map(&mut self, alloc: &HashMap<Value, PhysReg>) {
+        self.alloc_map = alloc.clone();
+    }
+
+    /// Build a mapping from virtual register IDs to IR Values.
+    /// After instruction selection, each IR Value was assigned a vreg via
+    /// `get_operand`. This method inverts the value_map to produce
+    /// vreg_id → Value so that the register assignment phase can map
+    /// vregs back to IR Values and then to physical registers.
+    pub fn build_vreg_to_value_map(&self) -> HashMap<u32, Value> {
+        let mut map = HashMap::new();
+        for (&value, operand) in &self.value_map {
+            if let MachineOperand::Register(reg) = operand {
+                // Virtual registers have IDs >= 32
+                if reg.0 >= 32 {
+                    map.insert(reg.0 as u32, value);
+                }
+            }
+        }
+        map
+    }
+
+    /// Get the machine operand for an IR value.
+    ///
+    /// Lookup order:
+    /// 1. If the value was explicitly bound via `set_operand` (e.g., by
+    ///    `lower_params`), return that binding.
+    /// 2. Otherwise allocate a fresh virtual register. The post-isel
+    ///    register assignment phase maps these vregs to physical registers
+    ///    using the regalloc results.
     fn get_operand(&mut self, val: Value) -> MachineOperand {
         if let Some(op) = self.value_map.get(&val) {
             return op.clone();
         }
+        // Allocate a fresh virtual register for this IR Value.
+        // The post-isel register assignment phase will map this vreg to a
+        // physical register using vreg_to_value + value_to_reg from regalloc.
         let vreg = self.alloc_vreg();
         let op = MachineOperand::Register(vreg);
         self.value_map.insert(val, op.clone());
@@ -479,6 +532,16 @@ impl X86_64InstructionSelector {
         self.instructions.clear();
         self.next_vreg = 32;
         self.stack_offset = 0;
+        self.pending_phis.clear();
+        self.param_value_set.clear();
+
+        // Record which IR Values are function parameters so that
+        // select_const can skip the placeholder Const instructions
+        // the IR builder emits for them (the real values live in ABI
+        // registers mapped by lower_params).
+        for &pv in &function.param_values {
+            self.param_value_set.insert(pv);
+        }
 
         // Map function parameters to their ABI register locations.
         self.lower_params(function);
@@ -513,7 +576,94 @@ impl X86_64InstructionSelector {
             }
         }
 
+        // ---- Phi resolution pass ----
+        // Insert MOV copies to resolve phi nodes. For each block with phi
+        // nodes, insert a `MOV phi_dst, incoming_value` before the branch
+        // instruction in each predecessor block.
+        self.resolve_phi_nodes(function);
+
         Ok(std::mem::take(&mut self.instructions))
+    }
+
+    /// Insert phi-resolution copies before branch instructions.
+    ///
+    /// For each pending phi from instruction selection, inserts `MOV dst, src`
+    /// at the end of each predecessor block (just before the terminator/jump)
+    /// to copy the incoming value to the phi result register.
+    fn resolve_phi_nodes(&mut self, _function: &Function) {
+        // Collect all phi moves needed: (pred_block_label, dst_operand, src_operand)
+        let pending = std::mem::take(&mut self.pending_phis);
+        let mut phi_moves: Vec<(u32, MachineOperand, MachineOperand)> = Vec::new();
+
+        for (result_val, incoming_val, pred_block) in &pending {
+            let dst = self.get_operand(*result_val);
+            let src = self.get_operand(*incoming_val);
+            if src != dst {
+                phi_moves.push((pred_block.0, dst.clone(), src));
+            }
+        }
+
+        if phi_moves.is_empty() {
+            return;
+        }
+
+        // For each predecessor block label, find the position of the last
+        // instruction before the block's terminator (branch/jump/ret) and
+        // insert the phi copy there.
+        // Strategy: find NOP(Label(block_id)) markers and the corresponding
+        // jump/branch instructions to insert copies before them.
+        let mut insertions: Vec<(usize, Vec<MachineInstr>)> = Vec::new();
+
+        for (pred_label, dst, src) in &phi_moves {
+            // Find the block region: starts at NOP(Label(pred_label))
+            // and ends at the next NOP(Label(...)) or end of instructions.
+            let mut block_start = None;
+            let mut block_end = self.instructions.len();
+            for (i, instr) in self.instructions.iter().enumerate() {
+                if instr.opcode == opcodes::NOP
+                    && instr.operands.len() == 1
+                {
+                    if let MachineOperand::Label(lbl) = &instr.operands[0] {
+                        if *lbl == *pred_label {
+                            block_start = Some(i);
+                        } else if block_start.is_some() {
+                            block_end = i;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if let Some(_start) = block_start {
+                // Find the last branch/jump/ret instruction in this block range
+                let mut insert_pos = block_end;
+                for i in (0..block_end).rev() {
+                    if i < block_start.unwrap_or(0) { break; }
+                    let op = self.instructions[i].opcode;
+                    if op == opcodes::JMP
+                        || op == opcodes::JCC
+                        || op == opcodes::RET
+                    {
+                        insert_pos = i;
+                        break;
+                    }
+                }
+
+                let mov_instr = MachineInstr::with_operands(
+                    opcodes::MOV_RR,
+                    vec![dst.clone(), src.clone()],
+                );
+                insertions.push((insert_pos, vec![mov_instr]));
+            }
+        }
+
+        // Sort insertions by position (descending) to preserve indices
+        insertions.sort_by(|a, b| b.0.cmp(&a.0));
+        for (pos, instrs) in insertions {
+            for (j, instr) in instrs.into_iter().enumerate() {
+                self.instructions.insert(pos + j, instr);
+            }
+        }
     }
 
     // ===================================================================
@@ -522,6 +672,11 @@ impl X86_64InstructionSelector {
 
     /// Map function parameters to their ABI-specified register locations
     /// so that the first use of each parameter value resolves correctly.
+    ///
+    /// Uses `function.param_values` (populated by the IR builder) to identify
+    /// the exact IR Value IDs that represent function parameters, and maps
+    /// each to the correct ABI register (rdi, rsi, rdx, rcx, r8, r9 for
+    /// integer args under System V AMD64).
     fn lower_params(&mut self, function: &Function) {
         let param_types: Vec<IrType> = function
             .params
@@ -531,8 +686,15 @@ impl X86_64InstructionSelector {
         let layout = compute_argument_locations(&param_types);
 
         for (i, (_name, ty)) in function.params.iter().enumerate() {
-            // Assign an IR Value(i) — the builder numbers params sequentially.
-            let val = Value(i as u32);
+            // Use the actual IR Value ID from param_values instead of Value(i).
+            // The IR builder records param values as they are created, so
+            // param_values[i] is the correct Value for parameter i.
+            let val = if i < function.param_values.len() {
+                function.param_values[i]
+            } else {
+                // Fallback for functions without param_values (extern stubs).
+                Value(i as u32)
+            };
             self.type_map.insert(val, ty.clone());
             if let Some(loc) = layout.locations.get(i) {
                 if let Some(reg) = loc.register {
@@ -655,14 +817,17 @@ impl X86_64InstructionSelector {
 
             // ---- Phi nodes ----
             Instruction::Phi { result, ty, incoming } => {
-                // Phi nodes are mostly handled by register allocation.
-                // At isel time we simply ensure the result value is mapped.
+                // Allocate operand for the phi result so it gets a vreg.
                 let _op = self.get_operand(*result);
-                // Emit copy stubs for each incoming edge that the regalloc
-                // will later materialise. For now, ensure incoming values
-                // are also mapped.
+                // Ensure incoming values also have operands allocated.
                 for (val, _block) in incoming {
                     let _src = self.get_operand(*val);
+                }
+                // Collect phi resolution info for post-processing.
+                // We'll insert MOV copies before branch instructions in
+                // each predecessor block.
+                for (val, block) in incoming {
+                    self.pending_phis.push((*result, *val, *block));
                 }
                 let _ = ty;
             }
@@ -954,6 +1119,16 @@ impl X86_64InstructionSelector {
         let lhs_op = self.get_operand(lhs);
         let rhs_op = self.get_operand(rhs);
 
+        // CRITICAL: Save the divisor into RCX (a physical register, NOT a
+        // vreg) BEFORE moving the dividend to RAX.  Using a physical register
+        // avoids the unmapped-vreg-fallback-to-RAX problem that would clobber
+        // the divisor when apply_register_assignments_v2 resolves it.
+        // RCX is safe: x86-64 IDIV only implicitly uses RAX and RDX.
+        self.emit_instr(
+            opcodes::MOV_RR,
+            vec![MachineOperand::Register(RCX), rhs_op],
+        );
+
         // Move dividend to RAX.
         self.emit_instr(
             opcodes::MOV_RR,
@@ -979,26 +1154,13 @@ impl X86_64InstructionSelector {
             );
         }
 
-        // Move divisor to a temporary if it's in RAX or RDX (avoid clobber).
-        let divisor_reg = match &rhs_op {
-            MachineOperand::Register(r) if *r == RAX || *r == RDX => {
-                let tmp = self.alloc_vreg();
-                self.emit_instr(
-                    opcodes::MOV_RR,
-                    vec![MachineOperand::Register(tmp), rhs_op],
-                );
-                MachineOperand::Register(tmp)
-            }
-            _ => rhs_op,
-        };
-
-        // Emit IDIV or DIV.
+        // Emit IDIV or DIV using the saved divisor in RCX.
         let div_op = if is_signed {
             opcodes::IDIV_R
         } else {
             opcodes::DIV_R
         };
-        self.emit_instr(div_op, vec![divisor_reg]);
+        self.emit_instr(div_op, vec![MachineOperand::Register(RCX)]);
 
         // Result: quotient in RAX, remainder in RDX.
         let result_reg = if is_div { RAX } else { RDX };
@@ -1847,6 +2009,15 @@ impl X86_64InstructionSelector {
         result: Value,
         value: &Constant,
     ) -> Result<(), CodeGenError> {
+        // The IR builder emits a placeholder Const instruction for each
+        // function parameter (with value = parameter index).  lower_params
+        // has already mapped these Values to the correct ABI registers
+        // (rdi, rsi, …).  We must NOT emit a load-immediate here, as that
+        // would clobber the real argument sitting in the ABI register.
+        if self.param_value_set.contains(&result) {
+            return Ok(());
+        }
+
         let dst = self.get_operand(result);
 
         match value {

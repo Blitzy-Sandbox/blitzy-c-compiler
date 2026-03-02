@@ -180,7 +180,7 @@ impl CompilationContext {
             target,
             source_map: SourceMap::new(),
             diagnostics: DiagnosticEmitter::new(),
-            interner: Interner::new(),
+            interner: Interner::with_keywords(),
             arena: Arena::new(),
         }
     }
@@ -714,46 +714,100 @@ fn set_executable_permission(path: &Path) {
 fn build_debug_cu_info(
     source_file: &str,
     ir_module: &Module,
-    _object_code: &ObjectCode,
+    object_code: &ObjectCode,
 ) -> CompilationUnitDebugInfo {
     // Determine compilation directory (current working directory).
     let comp_dir = std::env::current_dir()
         .map(|p| p.display().to_string())
         .unwrap_or_else(|_| ".".to_string());
 
-    // Collect function debug info from the IR module.
+    // Build a lookup from function name to (offset, size) in the object code
+    // so we can populate low_pc / high_pc with real addresses.
+    let sym_map: std::collections::HashMap<&str, (u64, u64)> = object_code
+        .symbols
+        .iter()
+        .filter(|s| {
+            s.is_definition
+                && matches!(
+                    s.symbol_type,
+                    crate::codegen::SymbolType::Function
+                )
+        })
+        .map(|s| (s.name.as_str(), (s.offset, s.size)))
+        .collect();
+
+    // Track the overall code range.
+    let mut cu_low: u64 = u64::MAX;
+    let mut cu_high: u64 = 0;
+
+    // Collect function debug info from the IR module, wiring in addresses.
+    let mut line_counter: u32 = 1; // Approximate line number per function
     let functions: Vec<FunctionDebugInfo> = ir_module
         .functions
         .iter()
         .filter(|f| f.is_definition)
         .map(|f| {
+            let (low_pc, high_pc) = sym_map
+                .get(f.name.as_str())
+                .copied()
+                .map(|(off, sz)| (off, off + sz))
+                .unwrap_or((0, 0));
+
+            if low_pc < cu_low {
+                cu_low = low_pc;
+            }
+            if high_pc > cu_high {
+                cu_high = high_pc;
+            }
+
+            let decl_line = line_counter;
+            line_counter += 3; // Approximate spacing
+
+            // Create a minimal line mapping — one entry per function mapping
+            // the start address to the function's source line.
+            let line_mappings = if low_pc < high_pc {
+                vec![crate::debug::SourceMapping {
+                    address: low_pc,
+                    file_id: 0, // 0-based file index (first source file)
+                    line: decl_line,
+                    column: 1,
+                    is_stmt: true,
+                }]
+            } else {
+                Vec::new()
+            };
+
             FunctionDebugInfo {
                 name: f.name.clone(),
                 linkage_name: None,
-                low_pc: 0,
-                high_pc: 0,
+                low_pc,
+                high_pc,
                 file_id: 0,
-                line: 0,
+                line: decl_line,
                 return_type: crate::debug::DebugTypeRef::Void,
                 parameters: Vec::new(),
                 local_variables: Vec::new(),
-                line_mappings: Vec::new(),
+                line_mappings,
                 frame_info: FunctionFrameInfo {
-                    cfa_register: 0,
-                    cfa_offset: 0,
+                    cfa_register: 6, // rbp for x86-64
+                    cfa_offset: 16,
                     saved_registers: Vec::new(),
                 },
             }
         })
         .collect();
 
+    if cu_low == u64::MAX {
+        cu_low = 0;
+    }
+
     CompilationUnitDebugInfo {
         producer: "bcc 0.1.0".to_string(),
         language: crate::debug::DW_LANG_C11,
         source_file: source_file.to_string(),
         comp_dir,
-        low_pc: 0,
-        high_pc: 0,
+        low_pc: cu_low,
+        high_pc: cu_high,
         functions,
         global_variables: Vec::new(),
         source_files: vec![source_file.to_string()],

@@ -112,6 +112,10 @@ pub struct Function {
     pub return_type: IrType,
     /// Parameter names and their IR types, in declaration order.
     pub params: Vec<(String, IrType)>,
+    /// IR Value IDs for each function parameter, in declaration order.
+    /// These are the values that the code generator should map to ABI
+    /// register locations (rdi, rsi, rdx, rcx, r8, r9 for System V AMD64).
+    pub param_values: Vec<Value>,
     /// Basic blocks comprising the function body. Empty for declarations.
     pub blocks: Vec<BasicBlock>,
     /// The entry block ID (the first block executed on function entry).
@@ -157,6 +161,8 @@ struct FunctionBuilder {
     return_type: IrType,
     /// Parameter (name, IR type) pairs.
     params: Vec<(String, IrType)>,
+    /// IR Value IDs for function parameters, populated during param lowering.
+    param_values: Vec<Value>,
     /// Basic blocks built so far.
     blocks: Vec<BasicBlock>,
     /// The current block being appended to.
@@ -175,6 +181,7 @@ impl FunctionBuilder {
             name,
             return_type,
             params,
+            param_values: Vec::new(),
             blocks: vec![entry_block],
             current_block: entry_id,
             entry_block: entry_id,
@@ -441,6 +448,227 @@ impl<'a> IrBuilder<'a> {
         }
     }
 
+    /// Returns the IR type associated with a Value.
+    ///
+    /// Checks the current function's instructions for the Value's defining
+    /// instruction and returns its result type. Returns I64 (pointer size)
+    /// as a conservative fallback if the value's type cannot be determined.
+    fn value_type(&self, val: Value) -> IrType {
+        if let Some(ref fb) = self.current_function {
+            // Search through all blocks for the defining instruction
+            for block in &fb.blocks {
+                for inst in &block.instructions {
+                    if inst.result() == Some(val) {
+                        if let Some(ty) = inst.result_type() {
+                            // For Alloca instructions, the stored type is what
+                            // sizeof should return, not the pointer type.
+                            if let Instruction::Alloca { ty: alloca_ty, .. } = inst {
+                                return alloca_ty.clone();
+                            }
+                            // For Load instructions, return the loaded type.
+                            return ty.clone();
+                        }
+                    }
+                }
+            }
+        }
+        // Conservative fallback: pointer-sized integer.
+        IrType::int_type_for_size(self.target.pointer_size as usize)
+    }
+
+    /// Resolves a TypeName AST node to a byte size for sizeof evaluation.
+    ///
+    /// Inspects the type specifiers in the TypeName to determine the base C type,
+    /// then computes the target-specific size. Handles pointers via abstract
+    /// declarator inspection.
+    fn resolve_sizeof_type_name(&self, type_name: &crate::frontend::parser::ast::TypeName) -> i64 {
+        use crate::frontend::parser::ast::TypeSpecifier;
+
+        // Check if the abstract declarator makes this a pointer type.
+        let has_pointer = type_name.abstract_declarator.as_ref()
+            .map(|ad| !ad.pointer.is_empty())
+            .unwrap_or(false);
+        if has_pointer {
+            return self.target.pointer_size as i64;
+        }
+
+        let size = self.resolve_sizeof_type_specifier(&type_name.specifiers.type_specifier);
+        size
+    }
+
+    /// Resolves a TypeSpecifier to a byte size for sizeof evaluation.
+    fn resolve_sizeof_type_specifier(&self, spec: &crate::frontend::parser::ast::TypeSpecifier) -> i64 {
+        use crate::frontend::parser::ast::TypeSpecifier;
+        match spec {
+            TypeSpecifier::Void => 0, // sizeof(void) is 0 (GCC extension: 1, but 0 is standard)
+            TypeSpecifier::Bool => 1,
+            TypeSpecifier::Char => 1,
+            TypeSpecifier::Short => 2,
+            TypeSpecifier::Int => 4,
+            TypeSpecifier::Long => self.target.long_size as i64,
+            TypeSpecifier::LongLong => 8,
+            TypeSpecifier::Float => 4,
+            TypeSpecifier::Double => 8,
+            TypeSpecifier::LongDouble => self.target.long_double_size as i64,
+            TypeSpecifier::Signed(inner) => self.resolve_sizeof_type_specifier(inner),
+            TypeSpecifier::Unsigned(inner) => self.resolve_sizeof_type_specifier(inner),
+            TypeSpecifier::Complex(inner) => self.resolve_sizeof_type_specifier(inner) * 2,
+            TypeSpecifier::Atomic(inner) => self.resolve_sizeof_type_specifier(inner),
+            TypeSpecifier::Qualified { inner, .. } => self.resolve_sizeof_type_specifier(inner),
+            // Struct/union/enum definitions and references — compute from members
+            TypeSpecifier::Struct(def) => {
+                let mut total: i64 = 0;
+                for member in &def.members {
+                    if let crate::frontend::parser::ast::StructMember::Field { specifiers, declarators, .. } = member {
+                        let field_sz = self.resolve_sizeof_type_specifier(&specifiers.type_specifier);
+                        total += field_sz * (declarators.len().max(1) as i64);
+                    }
+                }
+                if total == 0 { self.target.pointer_size as i64 } else { total }
+            }
+            TypeSpecifier::Enum(_) => 4, // Enum underlying type is always int
+            // For references, fall back to pointer size (conservative)
+            TypeSpecifier::StructRef { .. } | TypeSpecifier::UnionRef { .. } |
+            TypeSpecifier::EnumRef { .. } => self.target.pointer_size as i64,
+            TypeSpecifier::Union(def) => {
+                let mut max: i64 = 0;
+                for member in &def.members {
+                    if let crate::frontend::parser::ast::StructMember::Field { specifiers, .. } = member {
+                        let sz = self.resolve_sizeof_type_specifier(&specifiers.type_specifier);
+                        if sz > max { max = sz; }
+                    }
+                }
+                if max == 0 { self.target.pointer_size as i64 } else { max }
+            }
+            TypeSpecifier::TypedefName { .. } => self.target.pointer_size as i64,
+            TypeSpecifier::Typeof { .. } | TypeSpecifier::TypeofType { .. } => {
+                self.target.pointer_size as i64
+            }
+            TypeSpecifier::Error => self.target.pointer_size as i64,
+        }
+    }
+
+    /// Resolves a TypeName AST node to an alignment for _Alignof evaluation.
+    fn resolve_alignof_type_name(&self, type_name: &crate::frontend::parser::ast::TypeName) -> i64 {
+        // For pointer types, alignment = pointer alignment
+        let has_pointer = type_name.abstract_declarator.as_ref()
+            .map(|ad| !ad.pointer.is_empty())
+            .unwrap_or(false);
+        if has_pointer {
+            return self.target.pointer_size as i64;
+        }
+        // For most types, alignment = min(size, max_alignment)
+        let size = self.resolve_sizeof_type_specifier(&type_name.specifiers.type_specifier);
+        if size == 0 { 1 } else { size.min(self.target.max_alignment as i64) }
+    }
+
+    /// Resolves a TypeSpecifier into an IrType for local variable allocation.
+    ///
+    /// This allows the IR builder to allocate correct sizes for local variables
+    /// including arrays (e.g. `char buf[8192]` allocates 8192 bytes, not 4).
+    fn resolve_specifier_to_ir_type(
+        &self,
+        spec: &crate::frontend::parser::ast::TypeSpecifier,
+    ) -> IrType {
+        use crate::frontend::parser::ast::TypeSpecifier;
+        match spec {
+            TypeSpecifier::Void => IrType::Void,
+            TypeSpecifier::Bool => IrType::I8,
+            TypeSpecifier::Char => IrType::I8,
+            TypeSpecifier::Short => IrType::I16,
+            TypeSpecifier::Int => IrType::I32,
+            TypeSpecifier::Long => {
+                IrType::int_type_for_size(self.target.long_size as usize)
+            }
+            TypeSpecifier::LongLong => IrType::I64,
+            TypeSpecifier::Float => IrType::F32,
+            TypeSpecifier::Double => IrType::F64,
+            TypeSpecifier::LongDouble => IrType::F64,
+            TypeSpecifier::Signed(inner)
+            | TypeSpecifier::Unsigned(inner)
+            | TypeSpecifier::Atomic(inner)
+            | TypeSpecifier::Qualified { inner, .. } => {
+                self.resolve_specifier_to_ir_type(inner)
+            }
+            TypeSpecifier::Complex(inner) => {
+                // Simplify: treat _Complex as just the base type
+                self.resolve_specifier_to_ir_type(inner)
+            }
+            TypeSpecifier::Enum(_) | TypeSpecifier::EnumRef { .. } => IrType::I32,
+            _ => IrType::I32, // fallback for struct, union, typedef, etc.
+        }
+    }
+
+    /// Resolves a Declarator (from a local variable declaration) to an IrType,
+    /// accounting for pointer and array suffixes.
+    ///
+    /// For `char buf[8192]`: base_ir=I8, declarator has Array(8192) → Array { I8, 8192 }
+    /// For `int *p`: base_ir=I32, declarator has pointer → Pointer(I32)
+    fn resolve_declarator_ir_type(
+        &self,
+        base_ir: IrType,
+        declarator: &crate::frontend::parser::ast::Declarator,
+    ) -> IrType {
+        use crate::frontend::parser::ast::DirectDeclarator;
+        let mut result = base_ir;
+
+        // Apply pointer modifiers
+        for _ptr in &declarator.pointer {
+            result = IrType::Pointer(Box::new(result));
+        }
+
+        // Apply direct declarator modifiers (array)
+        result = self.resolve_direct_decl_ir_type(result, &declarator.direct);
+
+        result
+    }
+
+    fn resolve_direct_decl_ir_type(
+        &self,
+        base_ir: IrType,
+        direct: &crate::frontend::parser::ast::DirectDeclarator,
+    ) -> IrType {
+        use crate::frontend::parser::ast::{DirectDeclarator, ArraySize as AstArraySize};
+        match direct {
+            DirectDeclarator::Identifier(_) | DirectDeclarator::Abstract => base_ir,
+            DirectDeclarator::Parenthesized(inner) => {
+                self.resolve_declarator_ir_type(base_ir, inner)
+            }
+            DirectDeclarator::Array { base, size, .. } => {
+                let inner = self.resolve_direct_decl_ir_type(base_ir, base);
+                let count = match size {
+                    AstArraySize::Fixed(expr) => {
+                        // Try to evaluate the size as a constant
+                        self.try_eval_const_expr(expr).unwrap_or(0) as usize
+                    }
+                    AstArraySize::Unspecified | AstArraySize::VLA => 0,
+                    AstArraySize::Static(expr) => {
+                        self.try_eval_const_expr(expr).unwrap_or(0) as usize
+                    }
+                };
+                IrType::Array {
+                    element: Box::new(inner),
+                    count,
+                }
+            }
+            DirectDeclarator::Function { .. } => {
+                // Function declarators produce function types — locals can't
+                // be function types, so fall back to pointer.
+                IrType::Pointer(Box::new(base_ir))
+            }
+        }
+    }
+
+    /// Try to evaluate a constant expression at IR-build time.
+    /// Returns None if the expression cannot be evaluated to a compile-time constant.
+    fn try_eval_const_expr(&self, expr: &crate::frontend::parser::ast::Expression) -> Option<i64> {
+        use crate::frontend::parser::ast::Expression;
+        match expr {
+            Expression::IntegerLiteral { value, .. } => Some(*value as i64),
+            _ => None,
+        }
+    }
+
     // -----------------------------------------------------------------------
     // Top-level declaration lowering
     // -----------------------------------------------------------------------
@@ -505,6 +733,7 @@ impl<'a> IrBuilder<'a> {
                         &resolved_type.as_ref().cloned().unwrap_or(CType::Integer(IntegerKind::Int))
                     ),
                     params: Vec::new(),
+                    param_values: Vec::new(),
                     blocks: Vec::new(),
                     entry_block: BlockId(0),
                     is_definition: false,
@@ -633,7 +862,9 @@ impl<'a> IrBuilder<'a> {
             };
             self.emit_instruction(alloca_inst);
 
-            // Create a value representing the parameter
+            // Create a value representing the parameter.
+            // The code generator maps these param_val IDs to ABI register
+            // locations (e.g., rdi, rsi, rdx for System V AMD64).
             let param_val = self.new_value(param_ty.clone());
             let const_inst = Instruction::Const {
                 result: param_val,
@@ -642,9 +873,13 @@ impl<'a> IrBuilder<'a> {
                     ty: param_ty.clone(),
                 },
             };
-            // We represent parameter values as constants with their index for now;
-            // the actual parameter passing is handled by the code generator.
-            // For the IR, we just store the param into the alloca.
+            // Store param_val into the function builder's param_values list
+            // so the code generator can identify which IR Values correspond
+            // to function parameters and map them to ABI registers.
+            if let Some(ref mut fb) = self.current_function {
+                fb.param_values.push(param_val);
+            }
+            // Store the param into the alloca for later use by the function body.
             let store_inst = Instruction::Store {
                 value: param_val,
                 ptr: alloca_val,
@@ -652,15 +887,14 @@ impl<'a> IrBuilder<'a> {
             self.emit_instruction(const_inst);
             self.emit_instruction(store_inst);
 
-            // Register the alloca for later use when lowering references to this param
-            if let Some(ref mut fb) = self.current_function {
-                // We need an InternId for the param name, but we don't have the interner.
-                // Store using a synthetic InternId based on the parameter index.
-                let synthetic_id = InternId::from_raw(0x8000_0000 + i as u32);
-                fb.local_values.insert(synthetic_id, alloca_val);
+            // Register the alloca using the real InternId for the parameter name
+            // so that Identifier expression lookups can find it.
+            if let Some(real_id) = self.interner.get(param_name) {
+                if let Some(ref mut fb) = self.current_function {
+                    fb.local_values.insert(real_id, alloca_val);
+                }
+            } else {
             }
-            // Also store with a name-based lookup
-            let _ = param_name; // Name stored in params vec
         }
 
         // Lower the function body
@@ -708,6 +942,7 @@ impl<'a> IrBuilder<'a> {
             name: fb.name,
             return_type: fb.return_type,
             params: fb.params,
+            param_values: fb.param_values,
             blocks: fb.blocks,
             entry_block: fb.entry_block,
             is_definition: true,
@@ -725,9 +960,10 @@ impl<'a> IrBuilder<'a> {
     /// Resolves the function signature from the AST and optional resolved CType.
     fn resolve_function_signature(
         &self,
-        _func_def: &FunctionDef,
+        func_def: &FunctionDef,
         resolved_type: &Option<CType>,
     ) -> (CType, Vec<(String, CType)>) {
+        // First try from the resolved semantic type
         if let Some(CType::Function(ft)) = resolved_type {
             let params: Vec<(String, CType)> = ft
                 .params
@@ -741,8 +977,154 @@ impl<'a> IrBuilder<'a> {
             return (*ft.return_type.clone(), params);
         }
 
-        // Fall back to void return with no params
-        (CType::Void, Vec::new())
+        // Fallback: extract return type from specifiers and parameters from
+        // the AST declarator when semantic resolution did not produce a
+        // Function CType (e.g. the sema pass stored the resolved type in a
+        // form the IR builder cannot reach).
+        let return_type = self.specifier_to_ctype(&func_def.specifiers.type_specifier);
+
+        // Walk into the declarator to find the Function direct declarator
+        let param_list = Self::extract_param_list_from_declarator(&func_def.declarator);
+
+        let params: Vec<(String, CType)> = match param_list {
+            Some(pl) => {
+                pl.params.iter().enumerate().map(|(i, pd)| {
+                    // Extract parameter name from its declarator
+                    let name = pd.declarator.as_ref()
+                        .map(|d| Self::extract_declarator_name(d, self.interner))
+                        .unwrap_or_else(|| format!("__param_{}", i));
+
+                    // Convert parameter type specifier to CType, then apply
+                    // pointer/array modifiers from the declarator
+                    let base_ctype = self.specifier_to_ctype(&pd.specifiers.type_specifier);
+                    let ctype = if let Some(ref d) = pd.declarator {
+                        self.apply_declarator_to_ctype(base_ctype, d)
+                    } else {
+                        base_ctype
+                    };
+                    (name, ctype)
+                }).collect()
+            }
+            None => Vec::new(),
+        };
+
+        (return_type, params)
+    }
+
+    /// Extracts the ParamList from a function Declarator by walking the
+    /// DirectDeclarator tree to find the Function variant.
+    fn extract_param_list_from_declarator(
+        declarator: &crate::frontend::parser::ast::Declarator,
+    ) -> Option<&crate::frontend::parser::ast::ParamList> {
+        Self::extract_param_list_from_direct(&declarator.direct)
+    }
+
+    /// Recursive helper to find ParamList in a DirectDeclarator tree.
+    fn extract_param_list_from_direct(
+        dd: &crate::frontend::parser::ast::DirectDeclarator,
+    ) -> Option<&crate::frontend::parser::ast::ParamList> {
+        use crate::frontend::parser::ast::DirectDeclarator;
+        match dd {
+            DirectDeclarator::Function { params, .. } => Some(params),
+            DirectDeclarator::Parenthesized(inner) => {
+                Self::extract_param_list_from_declarator(inner)
+            }
+            DirectDeclarator::Array { base, .. } => {
+                Self::extract_param_list_from_direct(base)
+            }
+            _ => None,
+        }
+    }
+
+    /// Converts a TypeSpecifier to a CType for the AST-based fallback path
+    /// in resolve_function_signature.
+    fn specifier_to_ctype(
+        &self,
+        spec: &crate::frontend::parser::ast::TypeSpecifier,
+    ) -> CType {
+        use crate::frontend::parser::ast::TypeSpecifier;
+        match spec {
+            TypeSpecifier::Void => CType::Void,
+            TypeSpecifier::Bool => CType::Integer(IntegerKind::Bool),
+            TypeSpecifier::Char => CType::Integer(IntegerKind::Char),
+            TypeSpecifier::Short => CType::Integer(IntegerKind::Short),
+            TypeSpecifier::Int => CType::Integer(IntegerKind::Int),
+            TypeSpecifier::Long => CType::Integer(IntegerKind::Long),
+            TypeSpecifier::LongLong => CType::Integer(IntegerKind::LongLong),
+            TypeSpecifier::Float => CType::Float(FloatKind::Float),
+            TypeSpecifier::Double => CType::Float(FloatKind::Double),
+            TypeSpecifier::LongDouble => CType::Float(FloatKind::LongDouble),
+            TypeSpecifier::Signed(inner) => self.specifier_to_ctype(inner),
+            TypeSpecifier::Unsigned(inner) => {
+                match self.specifier_to_ctype(inner) {
+                    CType::Integer(IntegerKind::Char) => CType::Integer(IntegerKind::UnsignedChar),
+                    CType::Integer(IntegerKind::Short) => CType::Integer(IntegerKind::UnsignedShort),
+                    CType::Integer(IntegerKind::Int) => CType::Integer(IntegerKind::UnsignedInt),
+                    CType::Integer(IntegerKind::Long) => CType::Integer(IntegerKind::UnsignedLong),
+                    CType::Integer(IntegerKind::LongLong) => CType::Integer(IntegerKind::UnsignedLongLong),
+                    other => other,
+                }
+            }
+            TypeSpecifier::Atomic(inner) | TypeSpecifier::Qualified { inner, .. } => {
+                self.specifier_to_ctype(inner)
+            }
+            TypeSpecifier::Complex(inner) => self.specifier_to_ctype(inner),
+            TypeSpecifier::Enum(_) | TypeSpecifier::EnumRef { .. } => {
+                CType::Integer(IntegerKind::Int)
+            }
+            _ => CType::Integer(IntegerKind::Int), // fallback for struct, union, typedef, etc.
+        }
+    }
+
+    /// Applies pointer and array modifiers from a Declarator to a base CType.
+    /// Used by the AST-based fallback path in resolve_function_signature.
+    fn apply_declarator_to_ctype(
+        &self,
+        mut base: CType,
+        declarator: &crate::frontend::parser::ast::Declarator,
+    ) -> CType {
+        // Apply pointer modifiers
+        for _ptr in &declarator.pointer {
+            base = CType::Pointer {
+                pointee: Box::new(base),
+                qualifiers: crate::sema::types::TypeQualifiers::default(),
+            };
+        }
+        // Apply array modifiers from direct declarator
+        base = self.apply_direct_decl_to_ctype(base, &declarator.direct);
+        base
+    }
+
+    /// Recursive helper for apply_declarator_to_ctype.
+    fn apply_direct_decl_to_ctype(
+        &self,
+        base: CType,
+        direct: &crate::frontend::parser::ast::DirectDeclarator,
+    ) -> CType {
+        use crate::frontend::parser::ast::{DirectDeclarator, ArraySize as AstArraySize};
+        match direct {
+            DirectDeclarator::Identifier(_) | DirectDeclarator::Abstract => base,
+            DirectDeclarator::Parenthesized(inner) => {
+                self.apply_declarator_to_ctype(base, inner)
+            }
+            DirectDeclarator::Array { base: dd_base, size, .. } => {
+                let inner = self.apply_direct_decl_to_ctype(base, dd_base);
+                let count = match size {
+                    AstArraySize::Fixed(expr) => {
+                        self.try_eval_const_expr(expr).unwrap_or(0) as usize
+                    }
+                    _ => 0,
+                };
+                CType::Array {
+                    element: Box::new(inner),
+                    size: crate::sema::types::ArraySize::Fixed(count),
+                }
+            }
+            DirectDeclarator::Function { base: dd_base, .. } => {
+                // For function pointers in params, just use the base
+                self.apply_direct_decl_to_ctype(base, dd_base)
+            }
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -1254,8 +1636,16 @@ impl<'a> IrBuilder<'a> {
                         continue;
                     }
 
-                    // Default to i32 if no resolved type (actual resolution happens in sema)
-                    let var_type = IrType::I32;
+                    // Resolve the variable's type from the declaration specifiers
+                    // and declarator, so arrays (e.g. char buf[8192]) get their
+                    // full size allocated on the stack.
+                    let base_ir = self.resolve_specifier_to_ir_type(
+                        &_specifiers.type_specifier,
+                    );
+                    let var_type = self.resolve_declarator_ir_type(
+                        base_ir,
+                        &init_decl.declarator,
+                    );
 
                     // Allocate stack space
                     let alloca_val = self.new_value(var_type.clone().pointer_to());
@@ -1284,15 +1674,13 @@ impl<'a> IrBuilder<'a> {
                         }
                     }
 
-                    // Register in the local values map
-                    if let Some(ref mut fb) = self.current_function {
-                        // Use a synthetic InternId for now
-                        let synthetic_id = InternId::from_raw(self.next_value_id + 0x4000_0000);
-                        fb.local_values.insert(synthetic_id, alloca_val);
+                    // Register the alloca using the real InternId for the
+                    // variable name so Identifier expression lookups find it.
+                    if let Some(real_id) = self.interner.get(&var_name) {
+                        if let Some(ref mut fb) = self.current_function {
+                            fb.local_values.insert(real_id, alloca_val);
+                        }
                     }
-
-                    // Also register in the global symbol_values map using the alloca
-                    // (variable reference lowering will look here)
                 }
             }
             _ => {
@@ -1384,6 +1772,7 @@ impl<'a> IrBuilder<'a> {
             Expression::Identifier { name, .. } => {
                 // Look up the variable in symbol_values or function builder locals
                 if let Some(ref fb) = self.current_function {
+                    let resolved_name = self.interner.resolve(*name);
                     if let Some(&alloca_val) = fb.local_values.get(name) {
                         // Load from the alloca
                         let result = self.new_value(IrType::I32);
@@ -1545,10 +1934,26 @@ impl<'a> IrBuilder<'a> {
             }
 
             // === Sizeof ===
-            Expression::SizeofExpr { .. } | Expression::SizeofType { .. } => {
-                // sizeof produces a compile-time constant
-                // Default to pointer_size for generic sizeof
-                let size_val = self.target.pointer_size as i64;
+            Expression::SizeofExpr { expr, .. } => {
+                // sizeof(expr) — compute the size of the expression's type.
+                // We resolve the expression's IR type and use its target-specific size.
+                let expr_val = self.lower_expression(expr);
+                let ir_ty = self.value_type(expr_val);
+                let size_val = ir_ty.size(self.target) as i64;
+                let result = self.new_value(IrType::I64);
+                let inst = Instruction::Const {
+                    result,
+                    value: Constant::Integer {
+                        value: size_val,
+                        ty: IrType::I64,
+                    },
+                };
+                self.emit_instruction(inst);
+                result
+            }
+            Expression::SizeofType { type_name, .. } => {
+                // sizeof(type) — resolve the TypeName to a size.
+                let size_val = self.resolve_sizeof_type_name(type_name);
                 let result = self.new_value(IrType::I64);
                 let inst = Instruction::Const {
                     result,
@@ -1562,12 +1967,14 @@ impl<'a> IrBuilder<'a> {
             }
 
             // === Alignof ===
-            Expression::Alignof { .. } => {
+            Expression::Alignof { type_name, .. } => {
+                // _Alignof(type) — resolve the TypeName to an alignment.
+                let align_val = self.resolve_alignof_type_name(type_name);
                 let result = self.new_value(IrType::I64);
                 let inst = Instruction::Const {
                     result,
                     value: Constant::Integer {
-                        value: self.target.max_alignment as i64,
+                        value: align_val,
                         ty: IrType::I64,
                     },
                 };
@@ -2051,7 +2458,8 @@ impl<'a> IrBuilder<'a> {
 
     /// Lowers pre-increment (++x) or pre-decrement (--x).
     fn lower_pre_increment(&mut self, operand: &Expression, is_increment: bool) -> Value {
-        // Simplified: evaluate operand, add/sub 1, return new value
+        // Get the address of the operand to store back.
+        let addr = self.get_lvalue_address(operand);
         let val = self.lower_expression(operand);
         let one = self.emit_const_int(1, IrType::I32);
         let result = self.new_value(IrType::I32);
@@ -2070,31 +2478,41 @@ impl<'a> IrBuilder<'a> {
                 ty: IrType::I32,
             });
         }
+        // Store the new value back to the operand's location.
+        if let Some(ptr) = addr {
+            self.emit_instruction(Instruction::Store { value: result, ptr });
+        }
         result
     }
 
     /// Lowers post-increment (x++) or post-decrement (x--).
     fn lower_post_increment(&mut self, operand: &Expression, is_increment: bool) -> Value {
+        // Get the address of the operand to store back.
+        let addr = self.get_lvalue_address(operand);
         // Evaluate operand (get current value), then increment, return original value
         let original = self.lower_expression(operand);
         let one = self.emit_const_int(1, IrType::I32);
-        let _new_val = self.new_value(IrType::I32);
+        let new_val = self.new_value(IrType::I32);
         if is_increment {
             self.emit_instruction(Instruction::Add {
-                result: _new_val,
+                result: new_val,
                 lhs: original,
                 rhs: one,
                 ty: IrType::I32,
             });
         } else {
             self.emit_instruction(Instruction::Sub {
-                result: _new_val,
+                result: new_val,
                 lhs: original,
                 rhs: one,
                 ty: IrType::I32,
             });
         }
-        // Return the original (pre-increment/decrement) value
+        // Store the new (incremented/decremented) value back to the operand's location.
+        if let Some(ptr) = addr {
+            self.emit_instruction(Instruction::Store { value: new_val, ptr });
+        }
+        // Return the original (pre-increment/decrement) value.
         original
     }
 
@@ -2109,17 +2527,31 @@ impl<'a> IrBuilder<'a> {
         target: &Expression,
         value: &Expression,
     ) -> Value {
+        // Get the address of the assignment target first (before evaluating RHS
+        // which might clobber value_map entries if target and value overlap).
+        let target_addr = self.get_lvalue_address(target);
+
         let rhs = self.lower_expression(value);
 
-        match op {
+        let result_val = match op {
             AssignmentOp::Assign => {
-                // Simple assignment: evaluate RHS, store to LHS location
-                // For now, simplified: just return the RHS value
+                // Simple assignment: store RHS to LHS location.
                 rhs
             }
             _ => {
-                // Compound assignment: load LHS, operate with RHS, store result
-                let lhs = self.lower_expression(target);
+                // Compound assignment: load current LHS value, operate, produce result.
+                let lhs = if let Some(addr) = target_addr {
+                    let load_result = self.new_value(IrType::I32);
+                    let load_inst = Instruction::Load {
+                        result: load_result,
+                        ty: IrType::I32,
+                        ptr: addr,
+                    };
+                    self.emit_instruction(load_inst);
+                    load_result
+                } else {
+                    self.lower_expression(target)
+                };
                 let result = self.new_value(IrType::I32);
                 let inst = match op {
                     AssignmentOp::AddAssign => Instruction::Add {
@@ -2190,7 +2622,18 @@ impl<'a> IrBuilder<'a> {
                 self.emit_instruction(inst);
                 result
             }
+        };
+
+        // Emit the Store instruction to write the result back to the target.
+        if let Some(addr) = target_addr {
+            let store_inst = Instruction::Store {
+                value: result_val,
+                ptr: addr,
+            };
+            self.emit_instruction(store_inst);
         }
+
+        result_val
     }
 
     // -----------------------------------------------------------------------
@@ -2294,6 +2737,84 @@ impl<'a> IrBuilder<'a> {
     // -----------------------------------------------------------------------
     // Helper methods
     // -----------------------------------------------------------------------
+
+    /// Returns the memory address (alloca pointer) for an lvalue expression
+    /// so that the caller can emit a Store to it.  Falls back to
+    /// `lower_expression` (which loads the value) for constructs that have
+    /// no addressable location — the caller must detect that and skip the
+    /// Store in such a case.
+    fn get_lvalue_address(&mut self, expr: &Expression) -> Option<Value> {
+        match expr {
+            Expression::Identifier { name, .. } => {
+                // Look up the alloca pointer in local_values / symbol_values.
+                if let Some(ref fb) = self.current_function {
+                    if let Some(&alloca_val) = fb.local_values.get(name) {
+                        return Some(alloca_val);
+                    }
+                }
+                if let Some(&val) = self.symbol_values.get(name) {
+                    return Some(val);
+                }
+                None
+            }
+            Expression::UnaryPrefix { op, operand, .. }
+                if *op == UnaryOp::Dereference =>
+            {
+                // *ptr — the address is the value of the pointer expression.
+                Some(self.lower_expression(operand))
+            }
+            Expression::Subscript { array, index, .. } => {
+                // array[index] — compute GEP and return the resulting pointer.
+                let array_val = self.lower_expression(array);
+                let index_val = self.lower_expression(index);
+                let gep_result = self.new_value(IrType::I32.pointer_to());
+                let gep = Instruction::GetElementPtr {
+                    result: gep_result,
+                    base_ty: IrType::I32,
+                    ptr: array_val,
+                    indices: vec![index_val],
+                    in_bounds: true,
+                };
+                self.emit_instruction(gep);
+                Some(gep_result)
+            }
+            Expression::MemberAccess { object, member, .. } => {
+                // struct.field — compute GEP for the field.
+                let obj_addr = self.get_lvalue_address(object);
+                if let Some(base) = obj_addr {
+                    let idx = self.emit_const_int(0, IrType::I32);
+                    let gep_result = self.new_value(IrType::I32.pointer_to());
+                    let gep = Instruction::GetElementPtr {
+                        result: gep_result,
+                        base_ty: IrType::I32,
+                        ptr: base,
+                        indices: vec![idx],
+                        in_bounds: true,
+                    };
+                    self.emit_instruction(gep);
+                    Some(gep_result)
+                } else {
+                    None
+                }
+            }
+            Expression::ArrowAccess { pointer, member, .. } => {
+                // ptr->field — load pointer then GEP.
+                let ptr = self.lower_expression(pointer);
+                let idx = self.emit_const_int(0, IrType::I32);
+                let gep_result = self.new_value(IrType::I32.pointer_to());
+                let gep = Instruction::GetElementPtr {
+                    result: gep_result,
+                    base_ty: IrType::I32,
+                    ptr,
+                    indices: vec![idx],
+                    in_bounds: true,
+                };
+                self.emit_instruction(gep);
+                Some(gep_result)
+            }
+            _ => None,
+        }
+    }
 
     /// Emits an integer constant instruction and returns the result value.
     fn emit_const_int(&mut self, value: i64, ty: IrType) -> Value {

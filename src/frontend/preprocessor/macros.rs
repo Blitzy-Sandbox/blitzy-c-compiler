@@ -233,6 +233,18 @@ impl MacroTable {
         self.macros.contains_key(name)
     }
 
+    /// Checks whether a macro is defined AND is a function-like macro.
+    ///
+    /// Used by the multi-line expansion post-pass to detect function-like
+    /// macro invocations whose argument lists span multiple lines.
+    pub fn is_function_like(&self, name: &str) -> bool {
+        if let Some(def) = self.macros.get(name) {
+            matches!(def.kind, MacroKind::FunctionLike { .. })
+        } else {
+            false
+        }
+    }
+
     /// Looks up a macro using an interned identifier for integration with
     /// the lexer's string interning system.
     ///

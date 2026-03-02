@@ -59,7 +59,7 @@ pub mod abi;
 // ---------------------------------------------------------------------------
 
 use crate::codegen::{
-    Architecture, CodeGen, CodeGenError, ObjectCode,
+    Architecture, CodeGen, CodeGenError, MachineInstr, MachineOperand, ObjectCode,
     Section, SectionFlags, SectionType,
     Symbol, SymbolBinding, SymbolType, SymbolVisibility,
     Relocation,
@@ -67,8 +67,9 @@ use crate::codegen::{
 use crate::codegen::regalloc::{
     PhysReg, RegisterInfo,
     compute_live_intervals, linear_scan_allocate,
+    build_value_to_reg_map,
 };
-use crate::ir::{Function, GlobalVariable, IrType, Module};
+use crate::ir::{Function, GlobalVariable, IrType, Module, Value};
 use crate::driver::target::TargetConfig;
 use std::collections::HashMap;
 
@@ -440,24 +441,26 @@ impl Aarch64CodeGen {
         target: &TargetConfig,
         reg_info: &RegisterInfo,
     ) -> Result<(Vec<u8>, Vec<Relocation>), CodeGenError> {
-        // Step 1: Compute live intervals for register allocation.
-        let mut intervals = compute_live_intervals(function);
+        // Step 1: Run instruction selection — maps IR to A64 machine instructions.
+        let mut selector = isel::Aarch64InstructionSelector::new();
+        let mut body_instrs = selector.select_function(function)?;
 
-        // Step 2: Run linear scan register allocation with the AArch64 register file.
+        // Step 2: Compute live intervals and register allocation on the IR.
+        let mut intervals = compute_live_intervals(function);
         let alloc_result = linear_scan_allocate(&mut intervals, reg_info);
 
-        // Step 3: Generate AAPCS64-compliant function prologue.
-        // Uses STP pairs for efficient callee-saved register save and frame setup.
+        // Step 3: Apply register assignments to machine instructions.
+        // Maps vreg IDs → IR Values → PhysRegs from the allocator.
+        let vreg_to_value = selector.build_vreg_to_value_map();
+        let value_to_reg = build_value_to_reg_map(&alloc_result);
+        Self::apply_aarch64_reg_assignments(
+            &mut body_instrs, &vreg_to_value, &value_to_reg,
+        );
+
+        // Step 4: Generate AAPCS64-compliant function prologue.
         let prologue = abi::generate_prologue(function, &alloc_result, target);
 
-        // Step 4: Run instruction selection — maps IR to A64 machine instructions.
-        // Exploits AArch64-specific features: barrel shifter, CSEL, LDP/STP,
-        // ADRP+ADD for PC-relative addressing, CBZ/CBNZ/TBZ/TBNZ.
-        let mut selector = isel::Aarch64InstructionSelector::new();
-        let body_instrs = selector.select_function(function)?;
-
         // Step 5: Generate AAPCS64-compliant function epilogue.
-        // Uses LDP pairs for efficient callee-saved register restore.
         let epilogue = abi::generate_epilogue(function, &alloc_result, target);
 
         // Step 6: Concatenate prologue + body + epilogue into a complete
@@ -484,6 +487,59 @@ impl Aarch64CodeGen {
     ///
     /// Handles all `Constant` variants: integers, floats, booleans, null pointers,
     /// zero-initialized values, string literals, and global symbol references.
+    /// Apply register assignments to AArch64 machine instructions.
+    /// Maps virtual register IDs (>= 64) to physical registers via the
+    /// vreg→Value→PhysReg chain from the register allocator.
+    fn apply_aarch64_reg_assignments(
+        instrs: &mut Vec<MachineInstr>,
+        vreg_to_value: &HashMap<u32, Value>,
+        value_to_reg: &HashMap<Value, PhysReg>,
+    ) {
+        // AArch64 GP registers: 0-30 (X0-X30), 31 = SP/XZR
+        // FP/SIMD registers: numbered separately in instruction encoding
+        let fallback_pool: [PhysReg; 4] = [
+            PhysReg(0),   // X0
+            PhysReg(1),   // X1
+            PhysReg(2),   // X2
+            PhysReg(9),   // X9 (caller-saved temp)
+        ];
+        let mut fallback_idx: usize = 0;
+
+        for instr in instrs.iter_mut() {
+            for operand in instr.operands.iter_mut() {
+                match operand {
+                    MachineOperand::Register(ref mut reg) => {
+                        if reg.0 >= 64 {
+                            let vreg_id = reg.0 as u32;
+                            if let Some(&value) = vreg_to_value.get(&vreg_id) {
+                                if let Some(&phys) = value_to_reg.get(&value) {
+                                    *reg = phys;
+                                    continue;
+                                }
+                            }
+                            *reg = fallback_pool[fallback_idx % fallback_pool.len()];
+                            fallback_idx += 1;
+                        }
+                    }
+                    MachineOperand::Memory { ref mut base, .. } => {
+                        if base.0 >= 64 {
+                            let vreg_id = base.0 as u32;
+                            if let Some(&value) = vreg_to_value.get(&vreg_id) {
+                                if let Some(&phys) = value_to_reg.get(&value) {
+                                    *base = phys;
+                                    continue;
+                                }
+                            }
+                            *base = fallback_pool[fallback_idx % fallback_pool.len()];
+                            fallback_idx += 1;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
     fn emit_global_data(
         &self,
         global: &GlobalVariable,

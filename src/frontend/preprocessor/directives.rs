@@ -416,17 +416,116 @@ fn evaluate_if_expression(
         return Err(());
     }
 
+    // Phase 1: Pre-evaluate `defined(X)` / `defined X` BEFORE macro expansion.
+    // Per C11 §6.10.1p4, defined-expressions are evaluated before macro
+    // replacement. We replace them with literal "1" or "0" so that macro
+    // expansion doesn't corrupt the identifier arguments.
+    let pre_defined = replace_defined_with_literals(trimmed, &ctx.macro_table);
+
+    // Phase 2: Expand remaining macros in the expression text.
+    let mut expansion_guard = std::collections::HashSet::new();
+    let expanded = ctx.macro_table.expand_line(&pre_defined, &mut expansion_guard);
+    let expanded_trimmed = expanded.trim();
+    if expanded_trimmed.is_empty() {
+        ctx.diagnostics.error(location, "#if with no expression");
+        return Err(());
+    }
+
     // Field-level borrow splitting: borrow macro_table immutably and
     // diagnostics mutably simultaneously through the struct fields.
     let macro_table = &ctx.macro_table;
     let diagnostics = &mut ctx.diagnostics;
     let is_defined = |name: &str| -> bool { macro_table.is_defined(name) };
-    evaluate_to_bool(trimmed, &is_defined, diagnostics, location)
+    evaluate_to_bool(expanded_trimmed, &is_defined, diagnostics, location)
 }
 
 // ---------------------------------------------------------------------------
 // extract_single_identifier — helper for #ifdef, #ifndef, #undef
 // ---------------------------------------------------------------------------
+
+/// Replaces all `defined(X)` and `defined X` occurrences in the expression
+/// text with literal `1` or `0` based on whether macro X is currently defined.
+///
+/// This MUST be done before macro expansion, per C11 §6.10.1p4, to prevent
+/// the identifier argument of `defined` from being macro-expanded.
+fn replace_defined_with_literals(text: &str, macro_table: &MacroTable) -> String {
+    let bytes = text.as_bytes();
+    let len = bytes.len();
+    let mut result = String::with_capacity(len);
+    let mut i = 0;
+
+    while i < len {
+        // Skip string/char literals
+        if bytes[i] == b'"' || bytes[i] == b'\'' {
+            let quote = bytes[i];
+            result.push(quote as char);
+            i += 1;
+            while i < len && bytes[i] != quote {
+                if bytes[i] == b'\\' && i + 1 < len {
+                    result.push(bytes[i] as char);
+                    i += 1;
+                }
+                result.push(bytes[i] as char);
+                i += 1;
+            }
+            if i < len {
+                result.push(bytes[i] as char);
+                i += 1;
+            }
+            continue;
+        }
+        // Check for 'defined' keyword
+        if i + 7 <= len && &text[i..i + 7] == "defined" {
+            // Make sure it's a word boundary (not part of a longer identifier)
+            let before_ok = i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_');
+            let after_ok = i + 7 >= len || !(bytes[i + 7].is_ascii_alphanumeric() || bytes[i + 7] == b'_');
+            if before_ok && after_ok {
+                let mut j = i + 7;
+                // Skip whitespace
+                while j < len && bytes[j].is_ascii_whitespace() {
+                    j += 1;
+                }
+                if j < len && bytes[j] == b'(' {
+                    // defined(IDENT) form
+                    j += 1;
+                    while j < len && bytes[j].is_ascii_whitespace() {
+                        j += 1;
+                    }
+                    let ident_start = j;
+                    while j < len && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_') {
+                        j += 1;
+                    }
+                    let ident = &text[ident_start..j];
+                    while j < len && bytes[j].is_ascii_whitespace() {
+                        j += 1;
+                    }
+                    if j < len && bytes[j] == b')' {
+                        j += 1;
+                        let val = if !ident.is_empty() && macro_table.is_defined(ident) { "1" } else { "0" };
+                        result.push_str(val);
+                        i = j;
+                        continue;
+                    }
+                    // Malformed — pass through unchanged
+                } else if j < len && (bytes[j].is_ascii_alphabetic() || bytes[j] == b'_') {
+                    // defined IDENT form
+                    let ident_start = j;
+                    while j < len && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_') {
+                        j += 1;
+                    }
+                    let ident = &text[ident_start..j];
+                    let val = if macro_table.is_defined(ident) { "1" } else { "0" };
+                    result.push_str(val);
+                    i = j;
+                    continue;
+                }
+            }
+        }
+        result.push(bytes[i] as char);
+        i += 1;
+    }
+    result
+}
 
 /// Extracts a single C identifier from the beginning of the text.
 ///

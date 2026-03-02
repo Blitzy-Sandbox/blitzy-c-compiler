@@ -411,6 +411,10 @@ pub struct Riscv64InstructionSelector<'a> {
     used_callee_saved: Vec<PhysReg>,
     /// Accumulated relocations for the current function.
     relocations: Vec<Relocation>,
+    /// IR Values that represent function parameters — already assigned to
+    /// ABI registers by the allocator.  Const instructions for these must
+    /// be skipped so the actual argument values are preserved.
+    param_value_set: std::collections::HashSet<Value>,
 }
 
 impl<'a> Riscv64InstructionSelector<'a> {
@@ -431,6 +435,7 @@ impl<'a> Riscv64InstructionSelector<'a> {
             num_spill_slots: alloc_result.num_spill_slots,
             used_callee_saved: alloc_result.used_callee_saved.clone(),
             relocations: Vec::new(),
+            param_value_set: std::collections::HashSet::new(),
         }
     }
 
@@ -453,6 +458,13 @@ impl<'a> Riscv64InstructionSelector<'a> {
         self.relocations.clear();
         self.block_labels.clear();
         self.label_counter = 0;
+        self.param_value_set.clear();
+
+        // Record which IR Values are function parameters so that
+        // select_const skips the placeholder Const instructions.
+        for &pv in &function.param_values {
+            self.param_value_set.insert(pv);
+        }
 
         // Pre-assign labels to all blocks so forward branches can reference them.
         for block in &function.blocks {
@@ -1592,6 +1604,12 @@ impl<'a> Riscv64InstructionSelector<'a> {
         constant: &Constant,
         instrs: &mut Vec<MachineInstr>,
     ) {
+        // Skip placeholder Const instructions for function parameters —
+        // their ABI registers are already assigned by the allocator.
+        if self.param_value_set.contains(&result) {
+            return;
+        }
+
         let dest = self.get_reg(result);
 
         match constant {

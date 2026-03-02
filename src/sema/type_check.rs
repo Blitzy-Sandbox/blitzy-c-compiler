@@ -90,6 +90,20 @@ fn is_assignment_compatible(target: &CType, value: &CType) -> bool {
         return true;
     }
 
+    // 3b. pointer ← function (function-to-pointer decay: C11 §6.3.2.1 p4)
+    //     A function designator is automatically converted to a pointer to the
+    //     function. This allows `int (*fp)(int) = func;` where func is a
+    //     function name.
+    if t.is_pointer() && matches!(v.canonical(), CType::Function(_)) {
+        return true;
+    }
+
+    // 3c. function pointer type ← function (same decay, target IS the fn type)
+    if matches!(t.canonical(), CType::Function(_)) && matches!(v.canonical(), CType::Function(_))
+    {
+        return true;
+    }
+
     // 4. pointer ← null pointer constant (integer literal 0)
     if t.is_pointer() && v.is_null_pointer_constant() {
         return true;

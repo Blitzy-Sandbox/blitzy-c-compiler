@@ -387,6 +387,12 @@ impl Preprocessor {
             include_depth,
         )?;
 
+        // Post-processing: re-expand multi-line function-like macro invocations.
+        // Per-line expansion misses macro calls whose argument lists span
+        // multiple lines (common in glibc headers, e.g. __REDIRECT).
+        // We do a second pass that merges such lines and re-expands.
+        let output = Self::expand_multiline_macros(output, &ctx.macro_table);
+
         // Check for unterminated conditionals at end of file.
         // Only check at the top level (include_depth == 0) because
         // conditionals can legally span across include boundaries.
@@ -775,6 +781,164 @@ impl Preprocessor {
     }
 
     /// Replaces C11 trigraph sequences (§5.2.1.1).
+    /// Post-processing pass that expands function-like macro invocations whose
+    /// argument lists span multiple lines. Per-line expansion in `process_lines`
+    /// cannot handle these because `expand_line` only sees one line at a time.
+    ///
+    /// Algorithm: scan lines for identifiers that are defined as function-like
+    /// macros and are followed (possibly across line boundaries) by `(`.  When
+    /// found, join lines until the parentheses balance, expand the merged text,
+    /// and emit the result with the correct number of newlines preserved.
+    fn expand_multiline_macros(output: String, macro_table: &MacroTable) -> String {
+        let lines: Vec<&str> = output.split('\n').collect();
+        let total = lines.len();
+        let mut result = String::with_capacity(output.len());
+        let mut i = 0;
+
+        while i < total {
+            let line = lines[i];
+            // Quick check: does this line contain an unexpanded function-like
+            // macro with an unbalanced '(' ?
+            if let Some(merged_count) = Self::needs_multiline_expansion(line, &lines[i..], macro_table) {
+                if merged_count > 0 {
+                    // Merge lines i..i+merged_count into one, expand, emit.
+                    let mut merged = String::new();
+                    for j in 0..=merged_count {
+                        if j > 0 { merged.push(' '); }
+                        merged.push_str(lines[i + j].trim());
+                    }
+                    let mut guard = HashSet::new();
+                    let expanded = macro_table.expand_line(&merged, &mut guard);
+                    result.push_str(&expanded);
+                    result.push('\n');
+                    // Emit blank newlines for the consumed continuation lines.
+                    for _ in 0..merged_count {
+                        result.push('\n');
+                    }
+                    i += merged_count + 1;
+                    continue;
+                }
+            }
+            result.push_str(line);
+            if i + 1 < total { result.push('\n'); }
+            i += 1;
+        }
+        result
+    }
+
+    /// Checks whether `line` contains an unexpanded function-like macro call
+    /// with unbalanced parentheses, and if so, how many additional lines from
+    /// `remaining` are needed to complete the call.
+    ///
+    /// Returns `Some(0)` if no merging is needed, `Some(n)` if n additional
+    /// lines should be merged, or `None` if no function-like macro is found.
+    fn needs_multiline_expansion(line: &str, remaining: &[&str], macro_table: &MacroTable) -> Option<usize> {
+        // Scan the line for identifiers that are function-like macros.
+        let bytes = line.as_bytes();
+        let len = bytes.len();
+        let mut pos = 0;
+
+        while pos < len {
+            // Skip non-identifier chars.
+            if !(bytes[pos].is_ascii_alphabetic() || bytes[pos] == b'_') {
+                // Skip string/char literals to avoid false matches.
+                if bytes[pos] == b'"' || bytes[pos] == b'\'' {
+                    let quote = bytes[pos];
+                    pos += 1;
+                    while pos < len && bytes[pos] != quote {
+                        if bytes[pos] == b'\\' { pos += 1; }
+                        pos += 1;
+                    }
+                    if pos < len { pos += 1; }
+                }  else {
+                    pos += 1;
+                }
+                continue;
+            }
+            // Extract identifier.
+            let start = pos;
+            while pos < len && (bytes[pos].is_ascii_alphanumeric() || bytes[pos] == b'_') {
+                pos += 1;
+            }
+            let ident = &line[start..pos];
+
+            // Check if it's a function-like macro.
+            if !macro_table.is_function_like(ident) {
+                continue;
+            }
+
+            // Look for '(' after optional whitespace.
+            let mut p = pos;
+            while p < len && bytes[p].is_ascii_whitespace() { p += 1; }
+            if p >= len || bytes[p] != b'(' {
+                continue;
+            }
+
+            // Count parentheses balance from '(' onward.
+            let mut depth: i32 = 0;
+            let mut in_string = false;
+            let mut in_char = false;
+            let mut scan = p;
+            // Scan rest of this line.
+            while scan < len {
+                let b = bytes[scan];
+                if in_string {
+                    if b == b'\\' { scan += 1; }
+                    else if b == b'"' { in_string = false; }
+                } else if in_char {
+                    if b == b'\\' { scan += 1; }
+                    else if b == b'\'' { in_char = false; }
+                } else {
+                    match b {
+                        b'"' => in_string = true,
+                        b'\'' => in_char = true,
+                        b'(' => depth += 1,
+                        b')' => {
+                            depth -= 1;
+                            if depth == 0 { return Some(0); }
+                        }
+                        _ => {}
+                    }
+                }
+                scan += 1;
+            }
+
+            // Parentheses not balanced — scan subsequent lines.
+            if depth > 0 {
+                let mut extra = 1;
+                while extra < remaining.len() && extra <= 30 {
+                    let next_line = remaining[extra].as_bytes();
+                    for &b in next_line {
+                        if in_string {
+                            if b == b'\\' { /* skip next handled by byte iter */ }
+                            else if b == b'"' { in_string = false; }
+                        } else if in_char {
+                            if b == b'\\' { }
+                            else if b == b'\'' { in_char = false; }
+                        } else {
+                            match b {
+                                b'"' => in_string = true,
+                                b'\'' => in_char = true,
+                                b'(' => depth += 1,
+                                b')' => {
+                                    depth -= 1;
+                                    if depth == 0 {
+                                        return Some(extra);
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    extra += 1;
+                }
+                // Couldn't balance — don't merge (avoid infinite merging).
+                return None;
+            }
+        }
+        None
+    }
+
     fn replace_trigraphs(source: &str) -> String {
         let bytes = source.as_bytes();
         let len = bytes.len();

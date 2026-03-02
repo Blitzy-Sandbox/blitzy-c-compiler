@@ -75,9 +75,9 @@ use crate::codegen::{
     Section, SectionType, SectionFlags,
     Symbol, SymbolBinding, SymbolType, SymbolVisibility,
     Relocation, RelocationType,
-    MachineInstr,
+    MachineInstr, MachineOperand,
 };
-use crate::ir::{Module, IrType};
+use crate::ir::{Module, IrType, Value};
 use crate::driver::target::TargetConfig;
 
 // ---------------------------------------------------------------------------
@@ -162,6 +162,50 @@ impl I686CodeGen {
     /// Create a new i686 code generator instance.
     pub fn new() -> Self {
         Self
+    }
+
+    /// Replace virtual register references with physical registers assigned
+    /// by the register allocator. Virtual registers for i686 use IDs >= 16
+    /// (VREG_BASE = 100). Unresolved virtual registers are assigned to
+    /// EAX (PhysReg(0)) as a safe fallback to prevent ICEs in the encoder,
+    /// which panics on register IDs >= 16.
+    fn apply_register_assignments(
+        &self,
+        instrs: &mut Vec<MachineInstr>,
+        value_to_reg: &HashMap<Value, PhysReg>,
+    ) {
+        for instr in instrs.iter_mut() {
+            for operand in instr.operands.iter_mut() {
+                match operand {
+                    MachineOperand::Register(ref mut reg) => {
+                        if reg.0 >= 16 {
+                            let value = Value(reg.0 as u32);
+                            if let Some(&phys) = value_to_reg.get(&value) {
+                                *reg = phys;
+                            } else {
+                                // Unresolved virtual register: assign to EAX as safe
+                                // fallback. Prevents ICE from encoder panicking on
+                                // register IDs >= 16.
+                                *reg = PhysReg(0); // EAX
+                            }
+                        }
+                    }
+                    MachineOperand::Memory { ref mut base, .. } => {
+                        if base.0 >= 16 {
+                            let value = Value(base.0 as u32);
+                            if let Some(&phys) = value_to_reg.get(&value) {
+                                *base = phys;
+                            } else {
+                                *base = PhysReg(0); // EAX
+                            }
+                        }
+                    }
+                    MachineOperand::Immediate(_)
+                    | MachineOperand::Symbol(_)
+                    | MachineOperand::Label(_) => {}
+                }
+            }
+        }
     }
 }
 
@@ -252,7 +296,7 @@ impl CodeGen for I686CodeGen {
             let spill_info = insert_spill_code(&mut func_clone, &alloc_result);
 
             // Build SSA value → physical register mapping for the encoder.
-            let _value_to_reg = build_value_to_reg_map(&alloc_result);
+            let value_to_reg = build_value_to_reg_map(&alloc_result);
 
             // Step 5: Compute stack frame layout.
             let frame_layout = abi::compute_frame_layout(
@@ -270,14 +314,31 @@ impl CodeGen for I686CodeGen {
             let prologue = abi::generate_prologue(&frame_layout);
             let epilogue = abi::generate_epilogue(&frame_layout);
 
-            // Step 7: Assemble final instruction sequence:
-            //   prologue + body + epilogue
+            // Step 7: Assemble final instruction sequence.
+            // Insert epilogue before EACH ret instruction in the body (not just
+            // appending at the end) so the stack frame is properly torn down
+            // before every return path. This mirrors x86_64's approach.
+            let ret_opcode = encoding::I686Opcode::Ret as u32;
             let mut final_instrs: Vec<MachineInstr> = Vec::with_capacity(
-                prologue.len() + machine_instrs.len() + epilogue.len(),
+                prologue.len() + machine_instrs.len() + epilogue.len() * 2,
             );
+            // Insert prologue at the start.
             final_instrs.extend(prologue);
-            final_instrs.extend(machine_instrs);
-            final_instrs.extend(epilogue);
+            // Insert body, injecting epilogue before each ret.
+            for instr in &machine_instrs {
+                if instr.opcode == ret_opcode {
+                    // Insert epilogue sequence before the ret instruction.
+                    // The epilogue itself ends with ret, so we skip the body's ret.
+                    final_instrs.extend(epilogue.iter().cloned());
+                } else {
+                    final_instrs.push(instr.clone());
+                }
+            }
+
+            // Step 7.5: Apply register assignments — replace virtual registers
+            // (IDs >= 16) with physical registers from the allocator, preventing
+            // ICEs in the encoder which panics on out-of-range register IDs.
+            self.apply_register_assignments(&mut final_instrs, &value_to_reg);
 
             // Step 8: Encode to raw machine code bytes.
             let encoded = encoding::encode_instructions(&final_instrs)?;

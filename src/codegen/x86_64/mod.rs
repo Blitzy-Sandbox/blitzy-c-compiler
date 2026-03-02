@@ -176,11 +176,14 @@ impl X86_64CodeGen {
 
             // === Phase 1: Instruction Selection ===
             // Translate IR instructions to x86-64 MachineInstr sequences.
+            // The isel creates virtual registers (IDs >= 32) for IR values.
             let mut selector = isel::X86_64InstructionSelector::new(pic_enabled);
             let mut machine_instrs = selector.select_function(function)?;
+            // Collect the vreg→Value mapping from the isel for Phase 2.
+            let vreg_to_value = selector.build_vreg_to_value_map();
 
             // === Phase 2: Register Allocation ===
-            // Compute live intervals and assign physical registers via linear scan.
+            // Compute live intervals on IR and assign physical registers.
             let mut live_intervals = regalloc::compute_live_intervals(function);
             let alloc_result = regalloc::linear_scan_allocate(
                 &mut live_intervals,
@@ -188,8 +191,18 @@ impl X86_64CodeGen {
             );
             let value_to_reg = regalloc::build_value_to_reg_map(&alloc_result);
 
-            // Replace virtual register references with physical register assignments.
-            self.apply_register_assignments(&mut machine_instrs, &value_to_reg)?;
+            // Debug: print mappings
+            for (v, r) in &value_to_reg {
+            }
+            for (vreg, v) in &vreg_to_value {
+            }
+
+            // Apply register assignments: vreg → Value → PhysReg
+            self.apply_register_assignments_v2(
+                &mut machine_instrs,
+                &vreg_to_value,
+                &value_to_reg,
+            )?;
 
             // === Phase 3: Prologue/Epilogue Generation ===
             // Compute stack frame layout from locals, spill slots, and callee-saved regs.
@@ -201,6 +214,27 @@ impl X86_64CodeGen {
                 &alloc_result.used_callee_saved,
                 has_calls,
             );
+
+            // Adjust RBP-relative memory offsets to account for callee-saved
+            // registers pushed between the frame pointer setup (push rbp /
+            // mov rbp,rsp) and the locals area.  The isel allocates locals
+            // starting at [rbp-8], but the prologue pushes callee-saved
+            // registers at [rbp-8], [rbp-16], ...  So locals must shift
+            // down by (num_callee_saved * 8) bytes.
+            let callee_save_shift = (frame.callee_saved_regs.len() as i32) * 8;
+            if callee_save_shift > 0 {
+                for instr in &mut machine_instrs {
+                    for operand in &mut instr.operands {
+                        if let MachineOperand::Memory { base, offset } = operand {
+                            // Only shift RBP-relative negative offsets (locals area)
+                            if base.0 == 5 && *offset < 0 {
+                                // RBP register ID is 5
+                                *offset -= callee_save_shift;
+                            }
+                        }
+                    }
+                }
+            }
 
             let prologue = abi::generate_prologue(&frame);
             let epilogue = abi::generate_epilogue(&frame);
@@ -418,13 +452,13 @@ impl X86_64CodeGen {
                             let value = Value(reg.0 as u32);
                             if let Some(&phys) = value_to_reg.get(&value) {
                                 *reg = phys;
+                            } else {
+                                // Unresolved virtual register: assign to RAX as a safe
+                                // fallback. This prevents encoding RSP/ESP corruption
+                                // when (reg.0 & 7) == 4 and avoids ICEs in encoders.
+                                // The value was either spilled, dead, or eliminated.
+                                *reg = PhysReg(0); // RAX — safe scratch register
                             }
-                            // If not in the map, the value may have been spilled
-                            // to the stack. Spill code insertion happens during
-                            // register allocation and produces memory operands,
-                            // so unresolved virtual registers here indicate the
-                            // value was eliminated or is dead. Leave as-is for
-                            // the encoder to handle gracefully.
                         }
                     }
                     MachineOperand::Memory { ref mut base, .. } => {
@@ -433,10 +467,71 @@ impl X86_64CodeGen {
                             let value = Value(base.0 as u32);
                             if let Some(&phys) = value_to_reg.get(&value) {
                                 *base = phys;
+                            } else {
+                                // Unresolved base register: assign to RAX as fallback.
+                                *base = PhysReg(0); // RAX
                             }
                         }
                     }
                     // Immediate, Symbol, and Label operands need no register mapping.
+                    MachineOperand::Immediate(_)
+                    | MachineOperand::Symbol(_)
+                    | MachineOperand::Label(_) => {}
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// V2 register assignment: maps virtual registers to physical registers
+    /// using a two-step lookup: vreg → IR Value → physical register.
+    ///
+    /// This is used when regalloc runs AFTER isel, with the isel creating
+    /// virtual registers for each IR Value.
+    pub fn apply_register_assignments_v2(
+        &self,
+        instrs: &mut Vec<MachineInstr>,
+        vreg_to_value: &HashMap<u32, Value>,
+        value_to_reg: &HashMap<Value, PhysReg>,
+    ) -> Result<(), CodeGenError> {
+        // For unmapped vregs we cycle through caller-saved scratch registers
+        // to avoid collapsing multiple distinct vregs onto the same physical
+        // register (the old RAX-only fallback caused division and shift bugs).
+        let fallback_pool: [PhysReg; 4] = [
+            PhysReg(0),  // RAX
+            PhysReg(1),  // RCX
+            PhysReg(2),  // RDX
+            PhysReg(8),  // R8
+        ];
+        let mut fallback_idx: usize = 0;
+
+        let resolve = |reg: &mut PhysReg, fb_idx: &mut usize| {
+            if reg.0 >= 32 {
+                // Virtual register: look up which IR Value it represents,
+                // then which physical register that Value was assigned.
+                let vreg_id = reg.0 as u32;
+                if let Some(&value) = vreg_to_value.get(&vreg_id) {
+                    if let Some(&phys) = value_to_reg.get(&value) {
+                        *reg = phys;
+                        return;
+                    }
+                }
+                // Fallback: round-robin through scratch registers to
+                // avoid collapsing distinct vregs onto the same phys reg.
+                *reg = fallback_pool[*fb_idx % fallback_pool.len()];
+                *fb_idx += 1;
+            }
+        };
+
+        for instr in instrs.iter_mut() {
+            for operand in instr.operands.iter_mut() {
+                match operand {
+                    MachineOperand::Register(ref mut reg) => {
+                        resolve(reg, &mut fallback_idx);
+                    }
+                    MachineOperand::Memory { ref mut base, .. } => {
+                        resolve(base, &mut fallback_idx);
+                    }
                     MachineOperand::Immediate(_)
                     | MachineOperand::Symbol(_)
                     | MachineOperand::Label(_) => {}

@@ -280,9 +280,12 @@ impl<'a> ISel<'a> {
                     base: EBP,
                     offset: info.stack_offset,
                 };
-                // We need a synthetic Value for the parameter.
-                // Parameters are typically the first N values in the function.
-                let param_val = Value(i as u32);
+                // Use the actual param Value ID recorded by the IR builder.
+                let param_val = if i < self.function.param_values.len() {
+                    self.function.param_values[i]
+                } else {
+                    Value(i as u32)
+                };
                 self.bind_value(param_val, operand.clone());
                 self.type_map.insert(param_val, param_ty.clone());
 
@@ -1693,6 +1696,13 @@ impl<'a> ISel<'a> {
         result: Value,
         constant: &Constant,
     ) -> Result<(), CodeGenError> {
+        // The IR builder emits placeholder Const instructions for function
+        // parameters (value = param index).  select_all() already bound
+        // these Values to their cdecl stack locations.  Skip the const
+        // so we don't clobber the real parameter mapping.
+        if self.function.param_values.contains(&result) {
+            return Ok(());
+        }
         match constant {
             Constant::Integer { value, ty } => {
                 if Self::is_i64(ty) {

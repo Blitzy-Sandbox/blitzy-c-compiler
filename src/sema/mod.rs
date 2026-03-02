@@ -218,6 +218,40 @@ impl<'a> SemanticAnalyzer<'a> {
     }
 
     // -----------------------------------------------------------------------
+    // Built-in type registration
+    // -----------------------------------------------------------------------
+
+    /// Registers compiler built-in types in the symbol table.
+    ///
+    /// Called once during analyzer initialization, before processing any user
+    /// declarations. This makes built-in types like `__builtin_va_list` available
+    /// as typedef names throughout the translation unit.
+    fn register_builtin_types(&mut self) {
+        // __builtin_va_list — required by <stdarg.h>.
+        // Represented as a pointer to void for type-checking purposes.
+        // The actual ABI-specific layout (struct on x86-64/AArch64, char* on
+        // i686/RISC-V) is handled by the code generation backends.
+        if let Some(va_list_id) = self.interner.get("__builtin_va_list") {
+            let va_list_type = CType::Pointer {
+                pointee: Box::new(CType::Void),
+                qualifiers: TypeQualifiers::default(),
+            };
+            let sym = Symbol {
+                name: va_list_id,
+                ty: va_list_type,
+                storage_class: None,
+                linkage: Linkage::None,
+                is_defined: true,
+                is_tentative: false,
+                kind: SymbolKind::Typedef,
+                location: SourceSpan::dummy(),
+                scope_depth: 0,
+            };
+            let _ = self.symbol_table.insert(va_list_id, sym, self.diagnostics);
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // Public entry point: analyze()
     // -----------------------------------------------------------------------
 
@@ -247,6 +281,12 @@ impl<'a> SemanticAnalyzer<'a> {
         diagnostics: &'a mut DiagnosticEmitter,
     ) -> Result<TypedTranslationUnit, ()> {
         let mut analyzer = SemanticAnalyzer::new(target, interner, diagnostics);
+
+        // Register built-in types in the symbol table before processing any
+        // user declarations. __builtin_va_list is required by <stdarg.h> and
+        // is represented as a pointer to void (the actual ABI-specific layout
+        // is handled by the code generation backends).
+        analyzer.register_builtin_types();
 
         // File scope is already established by SymbolTable::new() and ScopeStack::new().
         // Iterate over all top-level declarations.
@@ -374,10 +414,22 @@ impl<'a> SemanticAnalyzer<'a> {
 
             if let Some(name_id) = name {
                 // Determine if this is a definition (has initializer or is not extern).
-                let is_defined = init_decl.initializer.is_some()
-                    || (storage_class != Some(StorageClass::Extern)
-                        && self.scope_stack.is_file_scope());
+                // Function declarations without a body (handled here, not in
+                // analyze_function_definition) are NEVER definitions — they are
+                // merely forward declarations. Only variable declarations at
+                // file scope without `extern` are tentative definitions.
+                let is_function_type = matches!(decl_type, CType::Function(_));
+                let is_defined = if is_function_type {
+                    // Function declarations in this path never have a body,
+                    // so they are never definitions.
+                    false
+                } else {
+                    init_decl.initializer.is_some()
+                        || (storage_class != Some(StorageClass::Extern)
+                            && self.scope_stack.is_file_scope())
+                };
                 let is_tentative = !is_defined
+                    && !is_function_type
                     && storage_class != Some(StorageClass::Extern)
                     && self.scope_stack.is_file_scope();
 
@@ -388,7 +440,11 @@ impl<'a> SemanticAnalyzer<'a> {
                     linkage,
                     is_defined,
                     is_tentative,
-                    kind: SymbolKind::Variable,
+                    kind: if is_function_type {
+                        SymbolKind::Function
+                    } else {
+                        SymbolKind::Variable
+                    },
                     location: init_decl.span,
                     scope_depth: self.scope_stack.depth(),
                 };
@@ -1232,11 +1288,40 @@ impl<'a> SemanticAnalyzer<'a> {
 
             // --- GCC Extensions ---
             Expression::StatementExpr { body, .. } => {
-                // GCC statement expression: the type is the type of the last
-                // expression in the compound statement.
-                // For simplicity, analyze the body and return void.
-                self.analyze_statement(body);
-                CType::Void
+                // GCC statement expression: `({ stmts; expr; })`.
+                // The type is the type of the last expression statement in the
+                // compound body.  If the body is empty or ends with a
+                // non-expression item, the result type is void.
+                //
+                // We must capture the type DURING analysis (while variables
+                // declared inside the body are still in scope), not after.
+                if let Statement::Compound { items, .. } = body.as_ref() {
+                    self.scope_stack.push(ScopeKind::Block);
+                    let mut last_expr_type = CType::Void;
+                    for item in items.iter() {
+                        match item {
+                            BlockItem::Declaration(decl) => {
+                                self.analyze_declaration(decl);
+                                last_expr_type = CType::Void;
+                            }
+                            BlockItem::Statement(Statement::Expression {
+                                expr,
+                                ..
+                            }) => {
+                                last_expr_type = self.analyze_expression(expr);
+                            }
+                            BlockItem::Statement(stmt) => {
+                                self.analyze_statement(stmt);
+                                last_expr_type = CType::Void;
+                            }
+                        }
+                    }
+                    self.scope_stack.pop();
+                    last_expr_type
+                } else {
+                    self.analyze_statement(body);
+                    CType::Void
+                }
             }
 
             Expression::LabelAddr { label, span } => {
@@ -1644,7 +1729,37 @@ impl<'a> SemanticAnalyzer<'a> {
                 base: inner_base,
                 params,
             } => {
-                let return_type = self.apply_direct_declarator(base, inner_base);
+                // C declarators use an "inside-out" rule. For function pointer
+                // declarators like `(*fp)(int, int)`, the parenthesized pointer
+                // `*` wraps the FUNCTION type, not the return type.
+                //
+                // When the base is Parenthesized(Decl { pointer: [*], direct: Ident(fp) }),
+                // we must:
+                //  1. Compute the return type from the inner direct declarator only
+                //     (skipping pointer modifiers inside the parens)
+                //  2. Build the function type with that return type
+                //  3. Apply the inner pointer modifiers AROUND the function type
+                //
+                // For `int (*fp)(int, int)`:
+                //   return_type = int   (from base specifier + Ident(fp))
+                //   func_type   = Function(int, [int, int])
+                //   result      = Pointer { pointee: Function(int, [int, int]) }
+
+                // Determine return type and any deferred pointer wrapping.
+                let (return_type, deferred_pointers) = match inner_base.as_ref() {
+                    DirectDeclarator::Parenthesized(inner_decl)
+                        if !inner_decl.pointer.is_empty() =>
+                    {
+                        // Recurse only on the direct part (skipping pointer modifiers).
+                        let rt = self.apply_direct_declarator(base, &inner_decl.direct);
+                        (rt, inner_decl.pointer.as_slice())
+                    }
+                    _ => {
+                        let rt = self.apply_direct_declarator(base, inner_base);
+                        (rt, [].as_slice())
+                    }
+                };
+
                 let mut func_params = Vec::new();
                 for param in &params.params {
                     let param_type =
@@ -1667,12 +1782,24 @@ impl<'a> SemanticAnalyzer<'a> {
                         ty: adjusted,
                     });
                 }
-                CType::Function(FunctionType {
+                let mut result = CType::Function(FunctionType {
                     return_type: Box::new(return_type),
                     params: func_params,
                     is_variadic: params.variadic,
                     is_old_style: false,
-                })
+                });
+
+                // Apply deferred pointer modifiers from the parenthesized
+                // declarator around the function type (inside-out rule).
+                for ptr in deferred_pointers {
+                    let quals = self.resolve_qualifiers(&ptr.qualifiers);
+                    result = CType::Pointer {
+                        pointee: Box::new(result),
+                        qualifiers: quals,
+                    };
+                }
+
+                result
             }
         }
     }
@@ -1749,11 +1876,45 @@ impl<'a> SemanticAnalyzer<'a> {
             }
             Initializer::Compound { items, .. } => {
                 // Compound initializers: validate each item against the
-                // corresponding member/element type. Simplified for now —
-                // full designated initializer support requires struct/array
-                // member traversal.
-                for item in items {
-                    self.analyze_initializer(&item.initializer, target_type, span);
+                // corresponding member/element type.
+                // For arrays: use the element type for each initializer item.
+                // For structs/unions: use the corresponding field type.
+                // For scalar types: the first element initializes the scalar.
+                match target_type {
+                    CType::Array { element, .. } => {
+                        for item in items {
+                            self.analyze_initializer(&item.initializer, element, span);
+                        }
+                    }
+                    CType::Struct(st) if !st.is_union => {
+                        for (i, item) in items.iter().enumerate() {
+                            if i < st.fields.len() {
+                                self.analyze_initializer(
+                                    &item.initializer,
+                                    &st.fields[i].ty,
+                                    span,
+                                );
+                            }
+                        }
+                    }
+                    CType::Struct(st) if st.is_union => {
+                        // Union initialization: only the first member.
+                        if let Some(item) = items.first() {
+                            if let Some(field) = st.fields.first() {
+                                self.analyze_initializer(
+                                    &item.initializer,
+                                    &field.ty,
+                                    span,
+                                );
+                            }
+                        }
+                    }
+                    _ => {
+                        // Scalar with compound initializer: C allows `int x = {42};`
+                        if let Some(item) = items.first() {
+                            self.analyze_initializer(&item.initializer, target_type, span);
+                        }
+                    }
                 }
             }
         }

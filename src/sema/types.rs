@@ -682,7 +682,7 @@ impl CType {
             }
             CType::Struct(s) => s.is_complete,
             CType::Enum(e) => e.is_complete,
-            CType::Function(_) => false,
+            CType::Function(_) => true,
             CType::Error => false,
             // These should be resolved before completeness checks, but handle gracefully.
             CType::Typedef { underlying, .. } => underlying.is_complete(),
