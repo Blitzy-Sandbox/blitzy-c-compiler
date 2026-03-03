@@ -31,20 +31,28 @@
  *   int            = 32 bits on all targets
  *   long long      = 64 bits on all targets
  *
- * Note: int64_t uses long long (not long) for portability;
- * while long is 64-bit on LP64 targets, long long is 64-bit
- * on both ILP32 and LP64, keeping the definition consistent.
+ * Note: int64_t uses `long` on LP64 targets to match glibc's
+ * <bits/types.h> which defines __int64_t as `signed long int`.
+ * On ILP32 (i686) where long is 32-bit, `long long` is used.
  * ============================================================ */
 
 typedef signed char        int8_t;
 typedef short              int16_t;
 typedef int                int32_t;
+#if defined(__x86_64__) || defined(__aarch64__) || (defined(__riscv) && __riscv_xlen == 64)
+typedef long               int64_t;
+#else
 typedef long long          int64_t;
+#endif
 
 typedef unsigned char      uint8_t;
 typedef unsigned short     uint16_t;
 typedef unsigned int       uint32_t;
+#if defined(__x86_64__) || defined(__aarch64__) || (defined(__riscv) && __riscv_xlen == 64)
+typedef unsigned long      uint64_t;
+#else
 typedef unsigned long long uint64_t;
+#endif
 
 /* ============================================================
  * Minimum-width integer types (C11 Section 7.20.1.2)
@@ -114,8 +122,13 @@ typedef unsigned int  uintptr_t;
  * 64-bit width on both ILP32 and LP64 targets.
  * ============================================================ */
 
+#if defined(__x86_64__) || defined(__aarch64__) || (defined(__riscv) && __riscv_xlen == 64)
+typedef long               intmax_t;
+typedef unsigned long      uintmax_t;
+#else
 typedef long long          intmax_t;
 typedef unsigned long long uintmax_t;
+#endif
 
 /* ============================================================
  * Limits of exact-width integer types (C11 Section 7.20.2.1)

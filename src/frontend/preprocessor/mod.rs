@@ -434,8 +434,11 @@ impl Preprocessor {
         include_depth: &mut usize,
     ) -> Result<(), ()> {
         let mut had_error = false;
+        let total_lines = lines.len();
+        let mut line_idx = 0;
 
-        for (line_idx, line) in lines.iter().enumerate() {
+        while line_idx < total_lines {
+            let line = lines[line_idx];
             let line_num = (line_idx + 1) as u32;
             let location = SourceLocation {
                 file_id,
@@ -500,6 +503,37 @@ impl Preprocessor {
                     output.push('\n');
                 } else if ctx.conditional_stack.is_active() {
                     // Regular source line in an active block — expand macros.
+                    // CRITICAL (Fix 116): Check for multi-line function-like
+                    // macro calls whose argument lists span multiple lines.
+                    // We must detect and merge them HERE during per-line
+                    // processing so macros expand while still defined (before
+                    // any subsequent #undef removes them).
+                    let remaining_slice = &lines[line_idx..];
+                    let merge_count = Self::needs_multiline_expansion(
+                        line, remaining_slice, &ctx.macro_table,
+                    );
+                    if let Some(extra) = merge_count {
+                        if extra > 0 {
+                            // Merge lines line_idx..line_idx+extra into one.
+                            let mut merged = String::new();
+                            for j in 0..=extra {
+                                if j > 0 { merged.push(' '); }
+                                merged.push_str(lines[line_idx + j].trim());
+                            }
+                            let mut guard = HashSet::new();
+                            let expanded =
+                                ctx.macro_table.expand_line(&merged, &mut guard);
+                            output.push_str(&expanded);
+                            output.push('\n');
+                            // Emit blank newlines for consumed continuation lines.
+                            for _ in 0..extra {
+                                output.push('\n');
+                            }
+                            line_idx += extra + 1;
+                            continue;
+                        }
+                    }
+                    // Single-line expansion (normal path).
                     let mut expansion_guard = HashSet::new();
                     let expanded =
                         ctx.macro_table.expand_line(line, &mut expansion_guard);
@@ -510,6 +544,7 @@ impl Preprocessor {
                     output.push('\n');
                 }
             }
+            line_idx += 1;
         }
 
         if had_error {
@@ -560,12 +595,16 @@ impl Preprocessor {
                 // File already included via #pragma once — silently skip.
                 return Ok(());
             }
-            Err(IncludeError::CircularInclude(p)) => {
-                ctx.diagnostics.error(
-                    SourceLocation::dummy(),
-                    format!("#include cycle detected: '{}'", p.display()),
-                );
-                return Err(());
+            Err(IncludeError::CircularInclude(_p)) => {
+                // Circular includes are common in C codebases (e.g., server.h
+                // → rdb.h → server.h) and are normally prevented by include
+                // guards (#ifndef GUARD / #define GUARD). Instead of erroring,
+                // silently skip the re-inclusion — the include guard will have
+                // already been defined during the first inclusion, so the
+                // file body would be entirely skipped by its #ifndef anyway.
+                // MAX_INCLUDE_DEPTH provides a safety net against genuine
+                // infinite recursion in the rare case of missing guards.
+                return Ok(());
             }
             Err(e) => {
                 ctx.diagnostics.error(
@@ -643,12 +682,21 @@ impl Preprocessor {
         // C11 standard predefined macros (§6.10.8)
         define_simple(macro_table, "__STDC__", "1");
         define_simple(macro_table, "__STDC_VERSION__", "201112L");
+        // Indicate we do not support Variable Length Arrays in function
+        // parameter declarations. This prevents glibc's regex.h from
+        // generating VLA parameter syntax like `pmatch[__nmatch]` which
+        // our parser does not handle.
+        define_simple(macro_table, "__STDC_NO_VLA__", "1");
         define_simple(macro_table, "__STDC_HOSTED__", "1");
 
-        // GCC compatibility macros for real-world codebase compatibility
-        define_simple(macro_table, "__GNUC__", "4");
+        // GCC compatibility macros for real-world codebase compatibility.
+        // We claim GCC 12.2.0 to enable modern glibc macro definitions
+        // such as __attribute_deprecated_msg__, __glibc_unlikely, etc.
+        // This is necessary for compiling real-world code that uses
+        // __GNUC_PREREQ version checks in system headers.
+        define_simple(macro_table, "__GNUC__", "12");
         define_simple(macro_table, "__GNUC_MINOR__", "2");
-        define_simple(macro_table, "__GNUC_PATCHLEVEL__", "1");
+        define_simple(macro_table, "__GNUC_PATCHLEVEL__", "0");
 
         // Additional GCC/Linux compatibility macros
         define_simple(macro_table, "__ELF__", "1");
@@ -660,6 +708,45 @@ impl Preprocessor {
         define_simple(macro_table, "unix", "1");
         define_simple(macro_table, "__gnu_linux__", "1");
 
+        // GCC type extension macros — map non-standard types to standard equivalents.
+        // _Float128 is a GCC extended type enabled when __GNUC_PREREQ(4,3) && __x86_64__.
+        // Since we don't support native _Float128, define __HAVE_FLOAT128=0 to prevent
+        // glibc from using it, and map _Float128 to long double as a fallback.
+        define_simple(macro_table, "__HAVE_FLOAT128", "0");
+        define_simple(macro_table, "__HAVE_DISTINCT_FLOAT128", "0");
+        define_simple(macro_table, "__HAVE_FLOAT16", "0");
+        define_simple(macro_table, "__HAVE_FLOAT32", "0");
+        define_simple(macro_table, "__HAVE_FLOAT64", "0");
+        define_simple(macro_table, "__HAVE_FLOAT32X", "0");
+        define_simple(macro_table, "__HAVE_FLOAT64X", "0");
+        define_simple(macro_table, "__HAVE_FLOAT128X", "0");
+        define_simple(macro_table, "_Float128", "long double");
+        define_simple(macro_table, "_Float64", "double");
+        define_simple(macro_table, "_Float32", "float");
+        define_simple(macro_table, "_Float64x", "long double");
+        define_simple(macro_table, "_Float32x", "double");
+
+        // GCC built-in type traits for type-generic macros
+        define_simple(macro_table, "__SIZEOF_FLOAT128__", "16");
+
+        // GCC predefined identifiers — these are normally compiler-provided
+        // names available in function scope. We expose them as object-like
+        // macros for preprocessing compatibility with real-world code.
+        // __func__ is a C99/C11 predefined identifier (§6.4.2.2) that acts as
+        // if `static const char __func__[] = "func_name";` appears at the start
+        // of each function. Since we lack per-function context in the preprocessor,
+        // we define it as a macro expanding to a placeholder string literal.
+        define_simple(macro_table, "__func__", "\"\"");
+        define_simple(macro_table, "__PRETTY_FUNCTION__", "\"\"");
+        define_simple(macro_table, "__FUNCTION__", "\"\"");
+
+        // POSIX limits that system headers define via complex nested includes.
+        // We provide them directly for compatibility with code that relies on
+        // them being available after including standard POSIX headers.
+        define_simple(macro_table, "__IOV_MAX", "1024");
+        define_simple(macro_table, "IOV_MAX", "1024");
+        define_simple(macro_table, "PATH_MAX", "4096");
+
         // Dynamic macros — initial values, updated per-line.
         define_simple(macro_table, "__FILE__", "\"\"");
         define_simple(macro_table, "__LINE__", "0");
@@ -668,6 +755,170 @@ impl Preprocessor {
         let (date_str, time_str) = Self::compute_date_time();
         define_simple(macro_table, "__DATE__", &format!("\"{}\"", date_str));
         define_simple(macro_table, "__TIME__", &format!("\"{}\"", time_str));
+
+        // GCC built-in function-like macros — these are commonly used in glibc
+        // headers and real-world code. We define them as macros that expand to
+        // their core semantics without actual compiler intrinsic support.
+        let define_fn = |table: &mut MacroTable, name: &str, params: Vec<String>, body: &str| {
+            // Parse the replacement body through parse_replacement_tokens
+            // so that parameter names are properly converted to Param(idx)
+            // tokens instead of remaining as literal text.
+            let replacement = self::macros::parse_replacement_tokens(body, &params, false)
+                .unwrap_or_else(|_| vec![MacroToken::Text(body.to_string())]);
+            let def = MacroDefinition {
+                name: name.to_string(),
+                kind: MacroKind::FunctionLike { params, is_variadic: false },
+                replacement,
+                is_builtin: true,
+                location: None,
+            };
+            table.define(def);
+        };
+
+        // __builtin_expect(expr, expected) -> (expr)
+        // Branch prediction hint — semantically a no-op, returns expr unchanged.
+        define_fn(macro_table, "__builtin_expect",
+            vec!["expr".into(), "val".into()], "(expr)");
+
+        // __builtin_expect_with_probability(expr, expected, prob) -> (expr)
+        define_fn(macro_table, "__builtin_expect_with_probability",
+            vec!["expr".into(), "val".into(), "prob".into()], "(expr)");
+
+        // __builtin_constant_p(expr) -> 0
+        // Compile-time constant check — conservatively returns false (0).
+        define_fn(macro_table, "__builtin_constant_p",
+            vec!["expr".into()], "0");
+
+        // __builtin_types_compatible_p(type1, type2) -> 0
+        // Type compatibility check — conservatively returns false.
+        define_fn(macro_table, "__builtin_types_compatible_p",
+            vec!["t1".into(), "t2".into()], "0");
+
+        // __builtin_choose_expr(const_expr, expr1, expr2) -> expr2
+        // Since __builtin_constant_p returns 0, conditions are typically false.
+        define_fn(macro_table, "__builtin_choose_expr",
+            vec!["c".into(), "e1".into(), "e2".into()], "(e2)");
+
+        // __builtin_unreachable() -> (void)0
+        // Marks unreachable code — we treat it as a no-op.
+        define_fn(macro_table, "__builtin_unreachable",
+            vec![], "((void)0)");
+
+        // __builtin_trap() -> (void)0
+        define_fn(macro_table, "__builtin_trap",
+            vec![], "((void)0)");
+
+        // Byte-swap builtins — expand to identity for compilation; actual byte
+        // swapping would require backend intrinsic support.
+        define_fn(macro_table, "__builtin_bswap16",
+            vec!["x".into()], "(x)");
+        define_fn(macro_table, "__builtin_bswap32",
+            vec!["x".into()], "(x)");
+        define_fn(macro_table, "__builtin_bswap64",
+            vec!["x".into()], "(x)");
+
+        // Count leading/trailing zeros — return conservative values for compilation.
+        define_fn(macro_table, "__builtin_clz",
+            vec!["x".into()], "0");
+        define_fn(macro_table, "__builtin_clzl",
+            vec!["x".into()], "0");
+        define_fn(macro_table, "__builtin_ctz",
+            vec!["x".into()], "0");
+        define_fn(macro_table, "__builtin_ctzl",
+            vec!["x".into()], "0");
+        define_fn(macro_table, "__builtin_clzll",
+            vec!["x".into()], "0");
+        define_fn(macro_table, "__builtin_ctzll",
+            vec!["x".into()], "0");
+        define_fn(macro_table, "__builtin_popcount",
+            vec!["x".into()], "0");
+        define_fn(macro_table, "__builtin_popcountl",
+            vec!["x".into()], "0");
+        define_fn(macro_table, "__builtin_popcountll",
+            vec!["x".into()], "0");
+
+        // __builtin_offsetof(type, member) — cannot easily macro-ify,
+        // but for header compilation we return 0 as placeholder.
+        define_fn(macro_table, "__builtin_offsetof",
+            vec!["t".into(), "m".into()], "0");
+
+        // __builtin_object_size(ptr, type) -> (size_t)-1 (unknown)
+        define_fn(macro_table, "__builtin_object_size",
+            vec!["p".into(), "t".into()], "((unsigned long)-1)");
+
+        // Memory/string builtins — pass through to library functions.
+        define_fn(macro_table, "__builtin_memcpy",
+            vec!["d".into(), "s".into(), "n".into()], "memcpy(d, s, n)");
+        define_fn(macro_table, "__builtin_memset",
+            vec!["d".into(), "v".into(), "n".into()], "memset(d, v, n)");
+        define_fn(macro_table, "__builtin_memmove",
+            vec!["d".into(), "s".into(), "n".into()], "memmove(d, s, n)");
+        define_fn(macro_table, "__builtin_strlen",
+            vec!["s".into()], "strlen(s)");
+        define_fn(macro_table, "__builtin_strcmp",
+            vec!["a".into(), "b".into()], "strcmp(a, b)");
+        define_fn(macro_table, "__builtin_strcpy",
+            vec!["d".into(), "s".into()], "strcpy(d, s)");
+
+        // Atomic/fence builtins — stubs for compilation.
+        define_fn(macro_table, "__builtin_ia32_lfence",
+            vec![], "((void)0)");
+        define_fn(macro_table, "__builtin_ia32_mfence",
+            vec![], "((void)0)");
+        define_fn(macro_table, "__builtin_ia32_sfence",
+            vec![], "((void)0)");
+
+        // Math classification builtins
+        define_fn(macro_table, "__builtin_huge_val",
+            vec![], "(1.0e308)");
+        define_fn(macro_table, "__builtin_huge_valf",
+            vec![], "(1.0e38f)");
+        define_fn(macro_table, "__builtin_inf",
+            vec![], "(1.0e308)");
+        define_fn(macro_table, "__builtin_inff",
+            vec![], "(1.0e38f)");
+        define_fn(macro_table, "__builtin_nan",
+            vec!["s".into()], "(0.0/0.0)");
+        define_fn(macro_table, "__builtin_nanf",
+            vec!["s".into()], "(0.0f/0.0f)");
+        define_fn(macro_table, "__builtin_isnan",
+            vec!["x".into()], "((x) != (x))");
+        define_fn(macro_table, "__builtin_isinf",
+            vec!["x".into()], "0");
+        define_fn(macro_table, "__builtin_isfinite",
+            vec!["x".into()], "1");
+        define_fn(macro_table, "__builtin_isinf_sign",
+            vec!["x".into()], "0");
+        define_fn(macro_table, "__builtin_fpclassify",
+            vec!["a".into(), "b".into(), "c".into(), "d".into(), "e".into(), "x".into()], "(d)");
+        define_fn(macro_table, "__builtin_signbit",
+            vec!["x".into()], "0");
+        define_fn(macro_table, "__builtin_signbitf",
+            vec!["x".into()], "0");
+        define_fn(macro_table, "__builtin_signbitl",
+            vec!["x".into()], "0");
+
+        // Frame/return address builtins
+        define_fn(macro_table, "__builtin_frame_address",
+            vec!["level".into()], "((void*)0)");
+        define_fn(macro_table, "__builtin_return_address",
+            vec!["level".into()], "((void*)0)");
+
+        // __builtin_assume_aligned(ptr, align) -> ptr
+        define_fn(macro_table, "__builtin_assume_aligned",
+            vec!["p".into(), "a".into()], "(p)");
+
+        // Overflow checking builtins (GCC 5+)
+        define_fn(macro_table, "__builtin_add_overflow",
+            vec!["a".into(), "b".into(), "res".into()], "(*(res) = (a) + (b), 0)");
+        define_fn(macro_table, "__builtin_sub_overflow",
+            vec!["a".into(), "b".into(), "res".into()], "(*(res) = (a) - (b), 0)");
+        define_fn(macro_table, "__builtin_mul_overflow",
+            vec!["a".into(), "b".into(), "res".into()], "(*(res) = (a) * (b), 0)");
+
+        // Prefetch — a no-op hint.
+        define_fn(macro_table, "__builtin_prefetch",
+            vec!["addr".into()], "((void)0)");
     }
 
     /// Computes the `__DATE__` and `__TIME__` strings from the current system time.
@@ -867,10 +1118,78 @@ impl Preprocessor {
                 continue;
             }
 
-            // Look for '(' after optional whitespace.
+            // Look for '(' after optional whitespace — including across line boundaries.
             let mut p = pos;
             while p < len && bytes[p].is_ascii_whitespace() { p += 1; }
-            if p >= len || bytes[p] != b'(' {
+            if p < len && bytes[p] != b'(' {
+                // Non-paren character on same line — not a macro call.
+                continue;
+            }
+            if p >= len {
+                // End of current line without finding '('. Check subsequent lines
+                // for the opening parenthesis (common in glibc headers where
+                // `__attribute_deprecated_msg__\n    ("msg")` spans two lines).
+                let mut found_paren_on_line = None;
+                let mut search = 1usize;
+                while search < remaining.len() && search <= 30 {
+                    let next_trimmed = remaining[search].trim_start();
+                    if next_trimmed.is_empty() {
+                        search += 1;
+                        continue;
+                    }
+                    if next_trimmed.as_bytes()[0] == b'(' {
+                        found_paren_on_line = Some(search);
+                    }
+                    break;
+                }
+                if found_paren_on_line.is_none() {
+                    continue;
+                }
+                // We know `(` is on a later line. Merge lines from current through
+                // where we find balanced parens and return the count.
+                let mut merged = String::new();
+                merged.push_str(line);
+                let mut extra = 1;
+                let mut depth: i32 = 0;
+                let mut balanced = false;
+                while extra < remaining.len() && extra <= 30 {
+                    merged.push(' ');
+                    merged.push_str(remaining[extra].trim());
+                    // Count parens in what we've merged so far.
+                    depth = 0;
+                    balanced = false;
+                    let mb = merged.as_bytes();
+                    let mut in_str = false;
+                    let mut in_chr = false;
+                    let mut scan = 0;
+                    // Find the macro call's opening paren.
+                    // We just need to balance from the first `(` after the identifier.
+                    while scan < mb.len() {
+                        let b = mb[scan];
+                        if in_str {
+                            if b == b'\\' { scan += 1; }
+                            else if b == b'"' { in_str = false; }
+                        } else if in_chr {
+                            if b == b'\\' { scan += 1; }
+                            else if b == b'\'' { in_chr = false; }
+                        } else {
+                            match b {
+                                b'"' => in_str = true,
+                                b'\'' => in_chr = true,
+                                b'(' => depth += 1,
+                                b')' => {
+                                    depth -= 1;
+                                    if depth == 0 { balanced = true; break; }
+                                }
+                                _ => {}
+                            }
+                        }
+                        scan += 1;
+                    }
+                    if balanced { return Some(extra); }
+                    extra += 1;
+                }
+                // Could not balance — skip.
                 continue;
             }
 

@@ -655,7 +655,7 @@ impl<'a> Riscv64InstructionSelector<'a> {
             Instruction::Load { result, ty, ptr } => {
                 self.select_load(*result, ty, *ptr, instrs);
             }
-            Instruction::Store { value, ptr } => {
+            Instruction::Store { value, ptr, .. } => {
                 self.select_store(*value, *ptr, instrs);
             }
             Instruction::GetElementPtr { result, base_ty, ptr, indices, .. } => {
@@ -1914,6 +1914,7 @@ mod tests {
                 spill_slot: None,
                 is_param: false,
                 crosses_call: false,
+                is_alloca: false,
             })
             .collect();
         AllocationResult {
@@ -1936,6 +1937,8 @@ mod tests {
             blocks: vec![block],
             entry_block: BlockId(0),
             is_definition: true,
+is_static: false,
+is_weak: false,
         }
     }
 
@@ -2202,10 +2205,7 @@ mod tests {
             (Value(1), PhysReg(10)), // a0
         ]);
         let func = make_function(
-            vec![Instruction::Store {
-                value: Value(0),
-                ptr: Value(1),
-            }],
+            vec![Instruction::Store { value: Value(0), ptr: Value(1), store_ty: None }],
             Terminator::Return { value: None },
         );
         let mut selector = Riscv64InstructionSelector::new(&alloc, &target);
@@ -2321,6 +2321,8 @@ mod tests {
             blocks: vec![block0, block1],
             entry_block: BlockId(0),
             is_definition: true,
+is_static: false,
+is_weak: false,
         };
 
         let mut selector = Riscv64InstructionSelector::new(&alloc, &target);
@@ -2359,6 +2361,8 @@ mod tests {
             blocks: vec![block0, block1, block2],
             entry_block: BlockId(0),
             is_definition: true,
+is_static: false,
+is_weak: false,
         };
 
         let mut selector = Riscv64InstructionSelector::new(&alloc, &target);
@@ -2519,6 +2523,8 @@ mod tests {
             blocks: vec![],
             entry_block: BlockId(0),
             is_definition: true,
+is_static: false,
+is_weak: false,
         };
         let mut selector = Riscv64InstructionSelector::new(&alloc, &target);
         let instrs = selector.select_function(&func);

@@ -313,7 +313,9 @@ impl X86_64Encoder {
     }
 
     fn xmm_enc_info(reg: PhysReg) -> (u8, bool) {
-        debug_assert!(is_xmm_reg(reg), "xmm_enc_info called with non-XMM register");
+        if !is_xmm_reg(reg) {
+            panic!("xmm_enc_info called with non-XMM register: PhysReg({})", reg.0);
+        }
         let enc = xmm_encoding(reg);
         (enc & 0x07, enc >= 8)
     }
@@ -614,8 +616,56 @@ impl X86_64Encoder {
             // --- Data Movement ---
             opcodes::MOV_RR => {
                 let dst = Self::expect_reg(&ops[0], "MOV_RR dst")?;
-                let src = Self::expect_reg(&ops[1], "MOV_RR src")?;
-                self.encode_alu_rr(0x89, dst, src);
+                // Handle the case where ISel emits MOV_RR with a non-register
+                // source operand — transparently redirect to the appropriate
+                // encoding for the actual operand type.
+                match &ops[1] {
+                    MachineOperand::Register(src) => {
+                        self.encode_alu_rr(0x89, dst, *src);
+                    }
+                    MachineOperand::Immediate(imm) => {
+                        // Redirect to MOV_RI encoding: mov reg, imm
+                        let imm = *imm;
+                        if imm >= 0 && imm <= 0x7FFFFFFF {
+                            let rex = Self::compute_rex_single(false, dst);
+                            self.emit_rex(&rex);
+                            self.emit_byte(0xB8 + reg_encoding(dst));
+                            self.emit_i32_le(imm as i32);
+                        } else if fits_in_i32(imm) {
+                            let rex = Self::compute_rex_single(true, dst);
+                            self.emit_rex(&rex); self.emit_byte(0xC7);
+                            self.emit_modrm_rr(0, reg_encoding(dst));
+                            self.emit_i32_le(imm as i32);
+                        } else {
+                            let rex = Self::compute_rex_single(true, dst);
+                            self.emit_rex(&rex);
+                            self.emit_byte(0xB8 + reg_encoding(dst));
+                            self.emit_u64_le(imm as u64);
+                        }
+                    }
+                    MachineOperand::Memory { base, offset, .. } => {
+                        // Memory operand → emit MOV reg, [base+offset]
+                        let base_reg = *base;
+                        let off = *offset;
+                        let rex = Self::compute_rex_gpr_mem(true, dst, base_reg);
+                        self.emit_rex(&rex);
+                        self.emit_byte(0x8B);
+                        self.emit_modrm_mem(reg_encoding(dst), base_reg, off);
+                    }
+                    MachineOperand::Symbol(sym) => {
+                        // Symbol → movabs reg, imm64 with relocation
+                        let rex = Self::compute_rex_single(true, dst);
+                        self.emit_rex(&rex);
+                        self.emit_byte(0xB8 + reg_encoding(dst));
+                        self.emit_relocation(sym, RelocationType::X86_64_64, 0);
+                        self.emit_u64_le(0);
+                    }
+                    MachineOperand::Label(_) => {
+                        return Err(CodeGenError::EncodingError(
+                            "MOV_RR: label operand not supported".into(),
+                        ));
+                    }
+                }
             }
             opcodes::MOV_RI => {
                 let dst = Self::expect_reg(&ops[0], "MOV_RI dst")?;
@@ -718,8 +768,22 @@ impl X86_64Encoder {
                 let src = Self::expect_reg(&ops[1], "MOVZX src")?;
                 let size = if ops.len() > 2 { Self::expect_imm(&ops[2], "MOVZX sz")? as u8 } else { 1 };
                 match size {
-                    1 => { let rex = Self::compute_rex_gpr(false, dst, src); self.emit_rex(&rex);
-                           self.emit_bytes(&[0x0F, 0xB6]); self.emit_modrm_rr(reg_encoding(dst), reg_encoding(src)); }
+                    1 => {
+                        // For byte source operand: encodings 4-7 without REX
+                        // map to AH/CH/DH/BH (high bytes). With REX prefix,
+                        // they map to SPL/BPL/SIL/DIL (low bytes). Force REX
+                        // when source encoding >= 4 to ensure correct byte
+                        // register interpretation (same issue as SETCC).
+                        let mut rex = Self::compute_rex_gpr(false, dst, src);
+                        if reg_encoding(src) >= 4 && !rex.w && !rex.r && !rex.x && !rex.b {
+                            // Force a bare REX prefix (0x40) to switch byte
+                            // register interpretation to the uniform low-byte set
+                            self.emit_byte(0x40);
+                        } else {
+                            self.emit_rex(&rex);
+                        }
+                        self.emit_bytes(&[0x0F, 0xB6]); self.emit_modrm_rr(reg_encoding(dst), reg_encoding(src));
+                    }
                     2 => { let rex = Self::compute_rex_gpr(false, dst, src); self.emit_rex(&rex);
                            self.emit_bytes(&[0x0F, 0xB7]); self.emit_modrm_rr(reg_encoding(dst), reg_encoding(src)); }
                     4 => { let rex = Self::compute_rex_gpr(false, dst, src); self.emit_rex(&rex);
@@ -779,8 +843,20 @@ impl X86_64Encoder {
                 let cc = Self::expect_imm(&ops[0], "SETCC cc")?;
                 let dst = Self::expect_reg(&ops[1], "SETCC dst")?;
                 let cc_byte = condcode_to_cc_byte(cc);
-                let rex = RexPrefix { w: false, r: false, x: false, b: needs_rex_extension(dst) };
-                self.emit_rex(&rex);
+                // SAFETY NOTE: Without a REX prefix, byte register encodings
+                // 4-7 map to AH/CH/DH/BH (high bytes of AX/CX/DX/BX), which
+                // would corrupt callee-saved registers like RBX. With a REX
+                // prefix (even 0x40), encodings 4-7 map to SPL/BPL/SIL/DIL
+                // (low bytes of RSP/RBP/RSI/RDI). We must force a REX prefix
+                // whenever the register encoding is >= 4 to ensure correct
+                // byte register addressing.
+                let needs_rex_b = needs_rex_extension(dst);
+                let force_rex = reg_encoding(dst) >= 4;
+                if needs_rex_b || force_rex {
+                    let rex_byte = 0x40u8
+                        | (if needs_rex_b { 0x01 } else { 0 });
+                    self.emit_byte(rex_byte);
+                }
                 self.emit_byte(0x0F); self.emit_byte(0x90 + cc_byte);
                 self.emit_modrm_rr(0, reg_encoding(dst));
             }
@@ -823,9 +899,40 @@ impl X86_64Encoder {
 
             // --- Stack ---
             opcodes::PUSH => {
-                let reg = Self::expect_reg(&ops[0], "PUSH")?;
-                if needs_rex_extension(reg) { self.emit_byte(0x41); }
-                self.emit_byte(0x50 + reg_encoding(reg));
+                match &ops[0] {
+                    MachineOperand::Register(reg) => {
+                        let reg = *reg;
+                        if needs_rex_extension(reg) { self.emit_byte(0x41); }
+                        self.emit_byte(0x50 + reg_encoding(reg));
+                    }
+                    MachineOperand::Memory { base, offset } => {
+                        // PUSH r/m64: FF /6
+                        let base = *base;
+                        let offset = *offset;
+                        let need_rex = needs_rex_extension(base);
+                        if need_rex { self.emit_byte(0x41); }
+                        self.emit_byte(0xFF);
+                        self.emit_modrm_mem(6, base, offset);
+                    }
+                    MachineOperand::Immediate(val) => {
+                        let val = *val;
+                        if val >= -128 && val <= 127 {
+                            // PUSH imm8: 6A ib
+                            self.emit_byte(0x6A);
+                            self.emit_byte(val as u8);
+                        } else {
+                            // PUSH imm32: 68 id
+                            self.emit_byte(0x68);
+                            let bytes = (val as u32).to_le_bytes();
+                            for b in &bytes { self.emit_byte(*b); }
+                        }
+                    }
+                    other => {
+                        return Err(CodeGenError::EncodingError(
+                            format!("unsupported operand for PUSH: {:?}", other),
+                        ));
+                    }
+                }
             }
             opcodes::POP => {
                 let reg = Self::expect_reg(&ops[0], "POP")?;
@@ -849,10 +956,16 @@ impl X86_64Encoder {
                 self.emit_modrm_mem(reg_encoding(dst), base, offset);
             }
             opcodes::LOAD32 => {
+                // Use MOVSXD (sign-extend 32→64) instead of plain MOV r32,m32.
+                // This ensures signed 32-bit values like `int x = -5;` are
+                // correctly represented in 64-bit registers, so subsequent
+                // 64-bit CMP/arithmetic instructions produce correct signed
+                // results.  MOVSXD preserves both signed and unsigned ordering
+                // when values are later compared as 64-bit quantities.
                 let dst = Self::expect_reg(&ops[0], "LOAD32")?;
                 let (base, offset) = Self::expect_mem(&ops[1], "LOAD32")?;
-                let rex = Self::compute_rex_gpr_mem(false, dst, base);
-                self.emit_rex(&rex); self.emit_byte(0x8B);
+                let rex = Self::compute_rex_gpr_mem(true, dst, base);
+                self.emit_rex(&rex); self.emit_byte(0x63);
                 self.emit_modrm_mem(reg_encoding(dst), base, offset);
             }
             opcodes::LOAD64 => {
@@ -901,8 +1014,78 @@ impl X86_64Encoder {
             opcodes::MULSD  => { let d = Self::expect_reg(&ops[0],"MULSD")?; let s = Self::expect_reg(&ops[1],"MULSD")?; self.encode_sse_rr(0xF2, 0x59, d, s); }
             opcodes::DIVSS  => { let d = Self::expect_reg(&ops[0],"DIVSS")?; let s = Self::expect_reg(&ops[1],"DIVSS")?; self.encode_sse_rr(0xF3, 0x5E, d, s); }
             opcodes::DIVSD  => { let d = Self::expect_reg(&ops[0],"DIVSD")?; let s = Self::expect_reg(&ops[1],"DIVSD")?; self.encode_sse_rr(0xF2, 0x5E, d, s); }
-            opcodes::MOVSS  => { let d = Self::expect_reg(&ops[0],"MOVSS")?; let s = Self::expect_reg(&ops[1],"MOVSS")?; self.encode_sse_rr(0xF3, 0x10, d, s); }
-            opcodes::MOVSD  => { let d = Self::expect_reg(&ops[0],"MOVSD")?; let s = Self::expect_reg(&ops[1],"MOVSD")?; self.encode_sse_rr(0xF2, 0x10, d, s); }
+            opcodes::MOVSS  => {
+                // MOVSS has three forms:
+                //   xmm, xmm -> F3 0F 10 /r
+                //   xmm, mem -> F3 0F 10 /r (modrm memory)
+                //   mem, xmm -> F3 0F 11 /r (modrm memory)
+                match (&ops[0], &ops[1]) {
+                    (MachineOperand::Register(d), MachineOperand::Register(s)) => {
+                        self.encode_sse_rr(0xF3, 0x10, *d, *s);
+                    }
+                    (MachineOperand::Register(d), MachineOperand::Memory { base, offset }) => {
+                        // MOVSS xmm, [base+offset]
+                        self.emit_byte(0xF3);
+                        let need_rex = needs_rex_extension(*d) || needs_rex_extension(*base);
+                        if need_rex {
+                            let rex = RexPrefix { w: false, r: needs_rex_extension(*d), x: false, b: needs_rex_extension(*base) };
+                            self.emit_rex(&rex);
+                        }
+                        self.emit_byte(0x0F);
+                        self.emit_byte(0x10);
+                        self.emit_modrm_mem(reg_encoding(*d), *base, *offset);
+                    }
+                    (MachineOperand::Memory { base, offset }, MachineOperand::Register(s)) => {
+                        // MOVSS [base+offset], xmm
+                        self.emit_byte(0xF3);
+                        let need_rex = needs_rex_extension(*s) || needs_rex_extension(*base);
+                        if need_rex {
+                            let rex = RexPrefix { w: false, r: needs_rex_extension(*s), x: false, b: needs_rex_extension(*base) };
+                            self.emit_rex(&rex);
+                        }
+                        self.emit_byte(0x0F);
+                        self.emit_byte(0x11);
+                        self.emit_modrm_mem(reg_encoding(*s), *base, *offset);
+                    }
+                    _ => return Err(CodeGenError::EncodingError("MOVSS: unsupported operand combination".to_string())),
+                }
+            }
+            opcodes::MOVSD  => {
+                // MOVSD has three forms (same structure as MOVSS but prefix F2):
+                //   xmm, xmm -> F2 0F 10 /r
+                //   xmm, mem -> F2 0F 10 /r (modrm memory)
+                //   mem, xmm -> F2 0F 11 /r (modrm memory)
+                match (&ops[0], &ops[1]) {
+                    (MachineOperand::Register(d), MachineOperand::Register(s)) => {
+                        self.encode_sse_rr(0xF2, 0x10, *d, *s);
+                    }
+                    (MachineOperand::Register(d), MachineOperand::Memory { base, offset }) => {
+                        // MOVSD xmm, [base+offset]
+                        self.emit_byte(0xF2);
+                        let need_rex = needs_rex_extension(*d) || needs_rex_extension(*base);
+                        if need_rex {
+                            let rex = RexPrefix { w: false, r: needs_rex_extension(*d), x: false, b: needs_rex_extension(*base) };
+                            self.emit_rex(&rex);
+                        }
+                        self.emit_byte(0x0F);
+                        self.emit_byte(0x10);
+                        self.emit_modrm_mem(reg_encoding(*d), *base, *offset);
+                    }
+                    (MachineOperand::Memory { base, offset }, MachineOperand::Register(s)) => {
+                        // MOVSD [base+offset], xmm
+                        self.emit_byte(0xF2);
+                        let need_rex = needs_rex_extension(*s) || needs_rex_extension(*base);
+                        if need_rex {
+                            let rex = RexPrefix { w: false, r: needs_rex_extension(*s), x: false, b: needs_rex_extension(*base) };
+                            self.emit_rex(&rex);
+                        }
+                        self.emit_byte(0x0F);
+                        self.emit_byte(0x11);
+                        self.emit_modrm_mem(reg_encoding(*s), *base, *offset);
+                    }
+                    _ => return Err(CodeGenError::EncodingError("MOVSD: unsupported operand combination".to_string())),
+                }
+            }
             opcodes::UCOMISS  => { let d = Self::expect_reg(&ops[0],"UCOMISS")?;  let s = Self::expect_reg(&ops[1],"UCOMISS")?;  self.encode_sse_rr(0x00, 0x2E, d, s); }
             opcodes::UCOMISD  => { let d = Self::expect_reg(&ops[0],"UCOMISD")?;  let s = Self::expect_reg(&ops[1],"UCOMISD")?;  self.encode_sse_rr(0x66, 0x2E, d, s); }
             opcodes::CVTSS2SD => { let d = Self::expect_reg(&ops[0],"CVTSS2SD")?; let s = Self::expect_reg(&ops[1],"CVTSS2SD")?; self.encode_sse_rr(0xF3, 0x5A, d, s); }

@@ -295,10 +295,13 @@ int main(void) {
     let binary_data = fs::read(output_path).expect("Failed to read output binary");
 
     // Check for R-type OP instructions (opcode 0x33 = 0110011).
-    let r_type_ops = find_instructions(&binary_data, |instr| extract_opcode(instr) == OPCODE_OP);
+    let r_type_ops = find_instructions(&binary_data, |instr| {
+        let opcode = extract_opcode(instr);
+        opcode == OPCODE_OP || opcode == OPCODE_OP_32
+    });
     assert!(
         !r_type_ops.is_empty(),
-        "Expected R-type ALU instructions (ADD/SUB/MUL/DIV) in the RISC-V binary"
+        "Expected R-type ALU instructions (ADD/SUB/ADDW/SUBW/MUL/DIV) in the RISC-V binary"
     );
 }
 
@@ -338,7 +341,7 @@ int main(void) {
         let opcode = extract_opcode(instr);
         let funct3 = extract_funct3(instr);
         // AND=funct3(111), OR=funct3(110), XOR=funct3(100), SLL=funct3(001), SRL/SRA=funct3(101)
-        opcode == OPCODE_OP
+        (opcode == OPCODE_OP || opcode == OPCODE_OP_32)
             && (funct3 == 0b111
                 || funct3 == 0b110
                 || funct3 == 0b100

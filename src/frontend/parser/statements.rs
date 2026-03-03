@@ -144,8 +144,11 @@ pub(super) fn parse_statement(parser: &mut Parser<'_>) -> Statement {
             }
 
             // Check if identifier is a typedef name → declaration.
+            // Disambiguation: if the typedef name is used as a variable
+            // (e.g., `list->head = ...` where `list` is both a typedef and
+            // a local variable), the next token reveals the usage.
             if let TokenValue::Identifier(id) = parser.current().value {
-                if parser.is_typedef_name(id) {
+                if parser.is_typedef_name(id) && !is_typedef_var_usage(parser) {
                     return parse_declaration_statement(parser);
                 }
             }
@@ -282,11 +285,14 @@ fn parse_block_item(parser: &mut Parser<'_>) -> BlockItem {
     }
 
     // Check for identifier-as-typedef-name starting a declaration.
+    // Disambiguation: if the typedef name is followed by an operator
+    // indicating variable usage (e.g., `->`, `.`, `=`), treat as statement.
     if kind == TokenKind::Identifier {
         if let TokenValue::Identifier(id) = parser.current().value {
-            // If it's a typedef name AND not followed by `:` (label), it's
-            // a declaration.
-            if parser.is_typedef_name(id) && parser.peek().kind != TokenKind::Colon {
+            if parser.is_typedef_name(id)
+                && parser.peek().kind != TokenKind::Colon
+                && !is_typedef_var_usage(parser)
+            {
                 let decl = parse_block_declaration(parser);
                 return BlockItem::Declaration(Box::new(decl));
             }
@@ -454,9 +460,10 @@ fn parse_for_init(parser: &mut Parser<'_>) -> Option<Box<ForInit>> {
     }
 
     // Check for typedef name starting a declaration.
+    // Disambiguation: if the typedef name is used as a variable, it's an expression.
     if kind == TokenKind::Identifier {
         if let TokenValue::Identifier(id) = parser.current().value {
-            if parser.is_typedef_name(id) {
+            if parser.is_typedef_name(id) && !is_typedef_var_usage(parser) {
                 let decl = parse_block_declaration(parser);
                 return Some(Box::new(ForInit::Declaration(Box::new(decl))));
             }
@@ -893,9 +900,13 @@ fn parse_extension_statement(parser: &mut Parser<'_>) -> Statement {
     }
 
     // Check for typedef name starting a declaration.
+    // Disambiguation: if the typedef name is used as a variable, treat as statement.
     if kind == TokenKind::Identifier {
         if let TokenValue::Identifier(id) = parser.current().value {
-            if parser.is_typedef_name(id) && parser.peek().kind != TokenKind::Colon {
+            if parser.is_typedef_name(id)
+                && parser.peek().kind != TokenKind::Colon
+                && !is_typedef_var_usage(parser)
+            {
                 let decl = parse_block_declaration(parser);
                 return Statement::Declaration(Box::new(decl));
             }
@@ -948,6 +959,36 @@ fn parse_declaration_statement(parser: &mut Parser<'_>) -> Statement {
 ///
 /// Note: Typedef names (identifiers) are NOT checked here — that check
 /// happens separately via `Parser::is_typedef_name()` in the caller.
+/// Returns `true` when the current token is a typedef name but it is being
+/// used as a *variable* (not as a type name in a declaration).
+///
+/// Checks the token immediately following the identifier for operators that
+/// can only follow a variable expression: `->`, `.`, `=`, `++`, `--`, `[`,
+/// and compound assignment operators. This disambiguates cases like
+/// `list->head = 0;` where `list` is both a typedef and a local variable.
+fn is_typedef_var_usage(parser: &Parser<'_>) -> bool {
+    let next = parser.peek().kind;
+    matches!(
+        next,
+        TokenKind::Arrow
+            | TokenKind::Dot
+            | TokenKind::Equal
+            | TokenKind::PlusEqual
+            | TokenKind::MinusEqual
+            | TokenKind::StarEqual
+            | TokenKind::SlashEqual
+            | TokenKind::PercentEqual
+            | TokenKind::AmpEqual
+            | TokenKind::PipeEqual
+            | TokenKind::CaretEqual
+            | TokenKind::LessLessEqual
+            | TokenKind::GreaterGreaterEqual
+            | TokenKind::PlusPlus
+            | TokenKind::MinusMinus
+            | TokenKind::LeftBracket
+    )
+}
+
 fn is_declaration_start(parser: &Parser<'_>, kind: TokenKind) -> bool {
     // Type specifier keywords.
     if kind.is_type_specifier() {
@@ -979,6 +1020,11 @@ fn is_declaration_start(parser: &Parser<'_>, kind: TokenKind) -> bool {
         return true;
     }
 
+    // C11 _Alignas alignment specifier can start a declaration.
+    if kind == TokenKind::Alignas {
+        return true;
+    }
+
     // GCC __attribute__ can appear before a declaration.
     if kind == TokenKind::GccAttribute {
         return true;
@@ -992,6 +1038,36 @@ fn is_declaration_start(parser: &Parser<'_>, kind: TokenKind) -> bool {
     // Also try the types module's comprehensive check.
     // This handles typedef names as well as all type specifier keywords.
     if types::is_type_specifier_start(parser) {
+        // Disambiguation (Fix 118): When the current token is a typedef name
+        // used as a variable (e.g., `list->head = ...` where `list` is both
+        // a typedef AND a local variable), the next token reveals whether
+        // this is a declaration or an expression statement. Operators like
+        // `->`, `.`, `=`, `++`, `--`, `[`, `(` can only appear after a
+        // variable, not after a type name in a declaration.
+        if kind == TokenKind::Identifier {
+            let next = parser.peek().kind;
+            if matches!(
+                next,
+                TokenKind::Arrow
+                    | TokenKind::Dot
+                    | TokenKind::Equal
+                    | TokenKind::PlusEqual
+                    | TokenKind::MinusEqual
+                    | TokenKind::StarEqual
+                    | TokenKind::SlashEqual
+                    | TokenKind::PercentEqual
+                    | TokenKind::AmpEqual
+                    | TokenKind::PipeEqual
+                    | TokenKind::CaretEqual
+                    | TokenKind::LessLessEqual
+                    | TokenKind::GreaterGreaterEqual
+                    | TokenKind::PlusPlus
+                    | TokenKind::MinusMinus
+                    | TokenKind::LeftBracket
+            ) {
+                return false;
+            }
+        }
         return true;
     }
 

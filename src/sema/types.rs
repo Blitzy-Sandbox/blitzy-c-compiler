@@ -601,7 +601,26 @@ impl CType {
     /// Returns `true` if this is an integer type (including `_Bool`).
     #[inline]
     pub fn is_integer(&self) -> bool {
-        matches!(self.canonical(), CType::Integer(_))
+        matches!(self.canonical(), CType::Integer(_) | CType::Enum(_))
+    }
+
+    /// Returns `true` if this is an enum type.
+    /// In C, enums are integer types with underlying type `int`.
+    #[inline]
+    pub fn is_enum(&self) -> bool {
+        matches!(self.canonical(), CType::Enum(_))
+    }
+
+    /// Returns `true` if this is a char type (char, signed char, or unsigned char).
+    /// Used for string literal initialization compatibility checks.
+    #[inline]
+    pub fn is_char_type(&self) -> bool {
+        matches!(
+            self.canonical(),
+            CType::Integer(IntegerKind::Char)
+                | CType::Integer(IntegerKind::SignedChar)
+                | CType::Integer(IntegerKind::UnsignedChar)
+        )
     }
 
     /// Returns `true` if this is a floating-point type.
@@ -793,8 +812,9 @@ impl CType {
     /// - Struct/union: compatible only if they refer to the same definition
     ///   (tag-based identity, not structural equality)
     pub fn is_compatible(&self, other: &CType) -> bool {
-        let a = self.unqualified();
-        let b = other.unqualified();
+        // Strip both qualifiers and typedefs/typeof for structural comparison.
+        let a = self.unqualified().canonical().unqualified();
+        let b = other.unqualified().canonical().unqualified();
 
         // Error types are compatible with everything to prevent cascading errors.
         if a.is_error() || b.is_error() {
@@ -851,9 +871,41 @@ impl CType {
                 // Struct/union identity: same tag and same union-ness.
                 // In a real compiler, identity would be by pointer to definition,
                 // but for this representation we use tag comparison.
-                as_.is_union == bs_.is_union && as_.tag == bs_.tag && as_.tag.is_some()
+                if as_.is_union != bs_.is_union {
+                    return false;
+                }
+                // Tagged structs: identity by tag name.
+                if as_.tag.is_some() && as_.tag == bs_.tag {
+                    return true;
+                }
+                // Anonymous structs (common with typedef): compare structurally.
+                // Two anonymous structs are compatible if they have the same
+                // number of fields with pairwise compatible types. This handles
+                // `typedef struct { ... } code;` where both operands originate
+                // from the same typedef.
+                if as_.tag.is_none() && bs_.tag.is_none() {
+                    if as_.fields.len() == bs_.fields.len() {
+                        return as_.fields.iter().zip(bs_.fields.iter()).all(
+                            |(am, bm)| am.ty.is_compatible(&bm.ty)
+                        );
+                    }
+                }
+                false
             }
-            (CType::Enum(ae), CType::Enum(be)) => ae.tag == be.tag && ae.tag.is_some(),
+            (CType::Enum(ae), CType::Enum(be)) => {
+                // Tagged enums: identity by tag name.
+                if ae.tag.is_some() && ae.tag == be.tag {
+                    return true;
+                }
+                // Anonymous enums (common with typedef): both have the same
+                // underlying int type and are produced from the same typedef
+                // resolution. Treat as compatible since in C, two uses of the
+                // same typedef produce identical types.
+                if ae.tag.is_none() && be.tag.is_none() {
+                    return true;
+                }
+                false
+            }
             // Enum is compatible with int (underlying type).
             (CType::Enum(_), CType::Integer(IntegerKind::Int))
             | (CType::Integer(IntegerKind::Int), CType::Enum(_)) => true,

@@ -507,6 +507,11 @@ pub enum Instruction {
     Store {
         value: Value,
         ptr: Value,
+        /// Optional store type hint. When present, the code generator should
+        /// use this type's width for the memory write (e.g., 32-bit store for
+        /// I32 vs 64-bit store for I64/Pointer). When absent, the code
+        /// generator uses its default width (typically 64-bit on x86-64).
+        store_ty: Option<IrType>,
     },
     /// Element pointer computation: `result = getelementptr base_ty, ptr, indices...`.
     ///
@@ -665,7 +670,7 @@ impl Instruction {
                 count.iter().copied().collect()
             }
             Instruction::Load { ptr, .. } => vec![*ptr],
-            Instruction::Store { value, ptr } => vec![*value, *ptr],
+            Instruction::Store { value, ptr, .. } => vec![*value, *ptr],
             Instruction::GetElementPtr { ptr, indices, .. } => {
                 let mut ops = vec![*ptr];
                 ops.extend(indices.iter().copied());
@@ -720,7 +725,7 @@ impl Instruction {
                 count.iter_mut().collect()
             }
             Instruction::Load { ptr, .. } => vec![ptr],
-            Instruction::Store { value, ptr } => vec![value, ptr],
+            Instruction::Store { value, ptr, .. } => vec![value, ptr],
             Instruction::GetElementPtr { ptr, indices, .. } => {
                 let mut ops = vec![ptr];
                 ops.extend(indices.iter_mut());
@@ -920,7 +925,7 @@ impl fmt::Display for Instruction {
             Instruction::Load { result, ty, ptr } => {
                 write!(f, "{} = load {}, {}* {}", result, ty, ty, ptr)
             }
-            Instruction::Store { value, ptr } => {
+            Instruction::Store { value, ptr, .. } => {
                 write!(f, "store {}, {}", value, ptr)
             }
             Instruction::GetElementPtr {
@@ -1362,10 +1367,7 @@ mod tests {
 
     #[test]
     fn test_store_result_and_side_effects() {
-        let inst = Instruction::Store {
-            value: Value(3),
-            ptr: Value(4),
-        };
+        let inst = Instruction::Store { value: Value(3), ptr: Value(4), store_ty: None };
         assert_eq!(inst.result(), None);
         assert!(inst.has_side_effects());
         assert!(inst.is_memory_operation());
@@ -1452,10 +1454,7 @@ mod tests {
                 rhs: Value(2),
                 ty: IrType::I32,
             },
-            Instruction::Store {
-                value: Value(0),
-                ptr: Value(1),
-            },
+            Instruction::Store { value: Value(0), ptr: Value(1), store_ty: None },
             Instruction::Nop,
         ];
         for inst in &instructions {
@@ -1595,10 +1594,7 @@ mod tests {
 
     #[test]
     fn test_uses_value_store() {
-        let inst = Instruction::Store {
-            value: Value(5),
-            ptr: Value(6),
-        };
+        let inst = Instruction::Store { value: Value(5), ptr: Value(6), store_ty: None };
         assert!(inst.uses_value(Value(5)));
         assert!(inst.uses_value(Value(6)));
         assert!(!inst.uses_value(Value(7)));
@@ -1636,10 +1632,7 @@ mod tests {
 
     #[test]
     fn test_replace_use_store() {
-        let mut inst = Instruction::Store {
-            value: Value(5),
-            ptr: Value(6),
-        };
+        let mut inst = Instruction::Store { value: Value(5), ptr: Value(6), store_ty: None };
         inst.replace_use(Value(5), Value(50));
         assert_eq!(inst.operands(), vec![Value(50), Value(6)]);
     }
@@ -1687,10 +1680,7 @@ mod tests {
 
     #[test]
     fn test_result_type_store() {
-        let inst = Instruction::Store {
-            value: Value(1),
-            ptr: Value(2),
-        };
+        let inst = Instruction::Store { value: Value(1), ptr: Value(2), store_ty: None };
         assert_eq!(inst.result_type(), None);
     }
 
@@ -1761,10 +1751,7 @@ mod tests {
 
     #[test]
     fn test_display_store() {
-        let inst = Instruction::Store {
-            value: Value(3),
-            ptr: Value(4),
-        };
+        let inst = Instruction::Store { value: Value(3), ptr: Value(4), store_ty: None };
         assert_eq!(format!("{}", inst), "store %3, %4");
     }
 
@@ -2030,10 +2017,7 @@ mod tests {
 
     #[test]
     fn test_operands_mut_store() {
-        let mut inst = Instruction::Store {
-            value: Value(1),
-            ptr: Value(2),
-        };
+        let mut inst = Instruction::Store { value: Value(1), ptr: Value(2), store_ty: None };
         let ops = inst.operands_mut();
         assert_eq!(ops.len(), 2);
     }

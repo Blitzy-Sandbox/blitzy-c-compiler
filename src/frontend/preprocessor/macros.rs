@@ -457,6 +457,80 @@ impl MacroTable {
                             guard.insert(ident.to_string());
                             let expanded = self.expand_text(&replacement_text, guard);
                             guard.remove(ident);
+
+                            // C11 §6.10.3.4: After object-like macro expansion
+                            // and rescan, if the result ends with a token that
+                            // names a function-like macro, and the next token in
+                            // the original input is `(`, we must continue to
+                            // expand that macro invocation. This handles patterns
+                            // like `#define setobj2t setobj` where `setobj` is
+                            // a function-like macro.
+                            let trimmed = expanded.trim_end();
+                            let tail_ident = {
+                                let tb = trimmed.as_bytes();
+                                let mut e = tb.len();
+                                while e > 0 && is_ident_continue(tb[e - 1]) {
+                                    e -= 1;
+                                }
+                                if e < tb.len() && is_ident_start(tb[e]) {
+                                    Some(&trimmed[e..])
+                                } else {
+                                    None
+                                }
+                            };
+                            if let Some(tail_name) = tail_ident {
+                                if let Some(tail_def) = self.macros.get(tail_name) {
+                                    if matches!(&tail_def.kind, MacroKind::FunctionLike { .. })
+                                        && !guard.contains(tail_name)
+                                    {
+                                        // Check if original input continues with `(`
+                                        let mut peek = i;
+                                        while peek < len
+                                            && (bytes[peek] == b' '
+                                                || bytes[peek] == b'\t')
+                                        {
+                                            peek += 1;
+                                        }
+                                        if peek < len && bytes[peek] == b'(' {
+                                            if let MacroKind::FunctionLike {
+                                                params,
+                                                is_variadic,
+                                            } = &tail_def.kind
+                                            {
+                                                match parse_arguments(input, peek) {
+                                                    Ok((args, end_pos)) => {
+                                                        // Emit prefix (everything before the tail macro name)
+                                                        let prefix_end =
+                                                            expanded.len() - (trimmed.len() - {
+                                                                let tb2 = trimmed.as_bytes();
+                                                                let mut e2 = tb2.len();
+                                                                while e2 > 0 && is_ident_continue(tb2[e2 - 1]) {
+                                                                    e2 -= 1;
+                                                                }
+                                                                e2
+                                                            });
+                                                        result.push_str(&expanded[..prefix_end]);
+                                                        i = end_pos;
+                                                        let tail_def_clone = tail_def.clone();
+                                                        let fn_expanded =
+                                                            self.expand_function_macro(
+                                                                &tail_def_clone,
+                                                                tail_name,
+                                                                params,
+                                                                *is_variadic,
+                                                                &args,
+                                                                guard,
+                                                            );
+                                                        result.push_str(&fn_expanded);
+                                                        continue;
+                                                    }
+                                                    Err(_) => {}
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                             result.push_str(&expanded);
                         }
                         MacroKind::FunctionLike { params, is_variadic } => {
@@ -701,7 +775,37 @@ fn parse_function_like_definition(name: &str, rest: &str) -> Result<MacroDefinit
                 while i < len && is_ident_continue(bytes[i]) {
                     i += 1;
                 }
-                params.push(rest[start..i].to_string());
+                let param_name = rest[start..i].to_string();
+
+                // GNU extension: `name...` — the named parameter captures
+                // all variadic arguments and is used in place of __VA_ARGS__
+                // in the macro body.  Example:
+                //   #define __struct_group(TAG, NAME, ATTRS, MEMBERS...) ...
+                // Here `MEMBERS` acts as `__VA_ARGS__`.
+                if i + 2 < len
+                    && bytes[i] == b'.'
+                    && bytes[i + 1] == b'.'
+                    && bytes[i + 2] == b'.'
+                {
+                    is_variadic = true;
+                    // Store the named variadic param so the body can
+                    // reference it.  We push it as a regular param; during
+                    // expansion the last param will be treated as variadic.
+                    params.push(param_name);
+                    i += 3;
+                    while i < len && bytes[i].is_ascii_whitespace() {
+                        i += 1;
+                    }
+                    if i >= len || bytes[i] != b')' {
+                        return Err(
+                            "expected ')' after '...' in macro parameter list".to_string(),
+                        );
+                    }
+                    i += 1;
+                    break;
+                }
+
+                params.push(param_name);
             } else {
                 return Err(format!(
                     "expected parameter name, found '{}'",
@@ -783,7 +887,7 @@ fn parse_function_like_definition(name: &str, rest: &str) -> Result<MacroDefinit
 /// - `__VA_ARGS__` → [`MacroToken::VaArgs`] (variadic only)
 /// - Parameter names → [`MacroToken::Param(index)`] (function-like only)
 /// - Everything else → [`MacroToken::Text(...)`] (accumulated text fragments)
-fn parse_replacement_tokens(
+pub(crate) fn parse_replacement_tokens(
     text: &str,
     params: &[String],
     is_variadic: bool,

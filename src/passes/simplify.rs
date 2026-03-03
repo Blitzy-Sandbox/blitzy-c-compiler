@@ -171,24 +171,35 @@ fn is_const_all_ones(c: &Constant) -> bool {
 /// that require fresh `Value` identifiers.
 fn compute_next_value(function: &Function) -> u32 {
     let mut max_val: u32 = 0;
+    let undef_id = Value::undef().0; // u32::MAX — sentinel, skip it
     for block in &function.blocks {
-        max_val = max_val.max(block.id.0);
+        if block.id.0 != undef_id {
+            max_val = max_val.max(block.id.0);
+        }
         for phi in &block.phi_nodes {
-            max_val = max_val.max(phi.result.0);
+            if phi.result.0 != undef_id {
+                max_val = max_val.max(phi.result.0);
+            }
             for (v, _) in &phi.incoming {
-                max_val = max_val.max(v.0);
+                if v.0 != undef_id {
+                    max_val = max_val.max(v.0);
+                }
             }
         }
         for inst in &block.instructions {
             if let Some(v) = inst.result() {
-                max_val = max_val.max(v.0);
+                if v.0 != undef_id {
+                    max_val = max_val.max(v.0);
+                }
             }
             for op in inst.operands() {
-                max_val = max_val.max(op.0);
+                if op.0 != undef_id {
+                    max_val = max_val.max(op.0);
+                }
             }
         }
     }
-    max_val.saturating_add(1)
+    max_val.wrapping_add(1)
 }
 
 // ---------------------------------------------------------------------------
@@ -248,6 +259,13 @@ impl FunctionPass for SimplifyPass {
         // Counter for allocating fresh Value IDs (used by strength reduction).
         let mut next_value = compute_next_value(function);
 
+        // Build a set of parameter value IDs. The IR builder emits placeholder
+        // Const instructions for function parameters (with value = parameter
+        // index). These must NOT be treated as foldable constants — they
+        // represent runtime values passed by the caller via ABI registers.
+        let param_set: std::collections::HashSet<Value> =
+            function.param_values.iter().copied().collect();
+
         // Forward pass through all blocks and instructions.
         for block_idx in 0..function.blocks.len() {
             // Take ownership of the instruction list to allow in-place rebuilding.
@@ -261,9 +279,13 @@ impl FunctionPass for SimplifyPass {
                     inst.replace_use(old_val, new_val);
                 }
 
-                // Register constants from Const instructions for downstream lookups.
+                // Register constants from Const instructions for downstream
+                // lookups, but SKIP parameter placeholder constants — their
+                // integer values are parameter indices, not runtime constants.
                 if let Instruction::Const { result, ref value } = inst {
-                    constants.insert(result, value.clone());
+                    if !param_set.contains(&result) {
+                        constants.insert(result, value.clone());
+                    }
                 }
 
                 // Attempt simplification of this instruction.
@@ -539,7 +561,7 @@ fn try_simplify_instruction(
                     if let Some(iv) = get_int_value(c) {
                         if let Some(log2) = is_power_of_two(iv) {
                             let shift_val = Value(*next_value);
-                            *next_value += 1;
+                            *next_value = next_value.wrapping_add(1);
                             let const_inst = Instruction::Const {
                                 result: shift_val,
                                 value: Constant::Integer {
@@ -587,7 +609,7 @@ fn try_simplify_instruction(
                         if let Some(_log2) = is_power_of_two(iv) {
                             let mask_value = iv - 1;
                             let mask_val = Value(*next_value);
-                            *next_value += 1;
+                            *next_value = next_value.wrapping_add(1);
                             let const_inst = Instruction::Const {
                                 result: mask_val,
                                 value: Constant::Integer {
@@ -814,7 +836,7 @@ fn make_shift_left_replacement(
     next_value: &mut u32,
 ) -> SimplifyResult {
     let shift_val = Value(*next_value);
-    *next_value += 1;
+    *next_value = next_value.wrapping_add(1);
     let const_inst = Instruction::Const {
         result: shift_val,
         value: Constant::Integer {
@@ -857,6 +879,8 @@ mod tests {
             blocks: vec![block],
             entry_block: BlockId(0),
             is_definition: true,
+is_static: false,
+is_weak: false,
         }
     }
 
@@ -1511,6 +1535,8 @@ mod tests {
             blocks: vec![block],
             entry_block: BlockId(0),
             is_definition: true,
+is_static: false,
+is_weak: false,
         };
 
         let mut pass = SimplifyPass::new();

@@ -1462,6 +1462,7 @@ mod tests {
             visibility: SymbolVisibility::Default,
             output_section_index: 1,
             is_definition: true,
+            source_object: None,
         }];
 
         let target = TargetConfig::x86_64();
@@ -1504,6 +1505,7 @@ mod tests {
             visibility: SymbolVisibility::Default,
             output_section_index: 2,
             is_definition: true,
+            source_object: None,
         }];
 
         let target = TargetConfig::i686();

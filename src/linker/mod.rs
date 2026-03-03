@@ -576,6 +576,10 @@ fn codegen_symbol_to_linker(
         binding,
         symbol_type,
         visibility,
+        // Keep the 0-based ObjectCode section index here. The linker works
+        // with 0-based merged-section indices internally. The +1 mapping to
+        // ELF section header indices (where 0 = null section) happens during
+        // ELF symtab generation in generate_symtab().
         section_index: sym.section_index as u16,
         value: sym.offset,
         size: sym.size,
@@ -691,13 +695,38 @@ fn link_relocatable(
     let section_order = default_section_order();
     let merged = sections::merge_sections(all_sections, &section_order);
 
-    // Build symbol table from all input objects.
+    // Build a mapping from (object_index, original_section_index) →
+    // merged ELF section index (1-based, since section 0 is the null header).
+    let mut section_index_map: std::collections::HashMap<(usize, usize), u16> =
+        std::collections::HashMap::new();
+    for (merged_idx, sec) in merged.iter().enumerate() {
+        let elf_section_idx = (merged_idx + 1) as u16; // +1 for null section
+        for mapping in &sec.input_mappings {
+            section_index_map.insert(
+                (mapping.object_index, mapping.original_index),
+                elf_section_idx,
+            );
+        }
+    }
+
+    // Build symbol table from all input objects, remapping section indices
+    // from codegen 0-based to ELF 1-based via the merged section mapping.
     let mut resolver = symbols::SymbolResolver::new();
     for (obj_idx, obj) in input.objects.iter().enumerate() {
         let syms: Vec<symbols::Symbol> = obj
             .symbols
             .iter()
-            .map(|s| codegen_symbol_to_linker(s, obj_idx))
+            .map(|s| {
+                let mut sym = codegen_symbol_to_linker(s, obj_idx);
+                if sym.is_definition && sym.section_index < elf::SHN_ABS {
+                    if let Some(&elf_idx) =
+                        section_index_map.get(&(obj_idx, sym.section_index as usize))
+                    {
+                        sym.section_index = elf_idx;
+                    }
+                }
+                sym
+            })
             .collect();
         resolver.add_object_symbols(obj_idx, &syms);
     }
@@ -710,9 +739,17 @@ fn link_relocatable(
 
     // Add merged sections.
     for sec in &merged {
+        // For SHT_NOBITS (.bss) sections, the merged data is empty but
+        // mem_size tracks the actual virtual size. Set data to a zero-filled
+        // vector so the ELF writer's data.len() reports the correct sh_size.
+        let section_data = if sec.section_type == elf::SHT_NOBITS && sec.data.is_empty() && sec.mem_size > 0 {
+            vec![0u8; sec.mem_size as usize]
+        } else {
+            sec.data.clone()
+        };
         writer.add_section(elf::OutputSection {
             name: sec.name.clone(),
-            data: sec.data.clone(),
+            data: section_data,
             header: elf::OutputSectionHeader {
                 sh_type: sec.section_type,
                 sh_flags: sec.flags,
@@ -722,15 +759,146 @@ fn link_relocatable(
                 sh_link: 0,
                 sh_info: 0,
             },
+            file_offset: None,
         });
     }
 
-    // Add strtab and symtab sections. The symtab's sh_link must point to
-    // the strtab section index so that readelf/objdump can resolve symbol names.
+    // ---------------------------------------------------------------
+    // Build relocation sections (.rela.*) for the relocatable output.
+    // ---------------------------------------------------------------
+    // Build a symbol name → symtab index map. The symtab order is:
+    //   [0] = null symbol
+    //   [1..=local_count] = local symbols
+    //   [local_count+1..] = global symbols
+    // We need to map symbol names to their indices for relocation entries.
+    let sym_name_to_idx: std::collections::HashMap<String, u32> = {
+        let mut map = std::collections::HashMap::new();
+        let mut idx: u32 = 1; // 0 is null symbol
+        // CRITICAL: Must mirror generate_symtab order exactly.
+        // generate_symtab emits: [null, locals (insertion order), globals (alphabetically sorted)]
+        // First pass: locals in insertion order
+        for (_obj_idx, obj) in input.objects.iter().enumerate() {
+            for s in &obj.symbols {
+                if s.binding == codegen::SymbolBinding::Local && !s.name.is_empty() {
+                    map.entry(s.name.clone()).or_insert(idx);
+                    idx += 1;
+                }
+            }
+        }
+        // Second pass: collect all global symbol names, then sort alphabetically
+        // to match generate_symtab's alphabetical ordering of globals.
+        let mut global_names: Vec<String> = Vec::new();
+        for obj in input.objects.iter() {
+            for s in &obj.symbols {
+                if s.binding != codegen::SymbolBinding::Local && !s.name.is_empty() {
+                    if !global_names.contains(&s.name) {
+                        global_names.push(s.name.clone());
+                    }
+                }
+            }
+        }
+        global_names.sort();
+        for name in global_names {
+            map.entry(name).or_insert_with(|| {
+                let i = idx;
+                idx += 1;
+                i
+            });
+        }
+        map
+    };
+
+    // Build a (object_index, codegen_section_index) → merged_offset mapping
+    // so we can adjust relocation offsets within merged sections.
+    let mut offset_map: std::collections::HashMap<(usize, usize), u64> =
+        std::collections::HashMap::new();
+    for sec in &merged {
+        for mapping in &sec.input_mappings {
+            offset_map.insert(
+                (mapping.object_index, mapping.original_index),
+                mapping.output_offset,
+            );
+        }
+    }
+
+    // Group relocations by their target merged section name.
+    let mut relocs_by_section: std::collections::HashMap<String, Vec<u8>> =
+        std::collections::HashMap::new();
+    let mut rela_section_targets: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new(); // rela name → target section ELF index
+
+    for (obj_idx, obj) in input.objects.iter().enumerate() {
+        for reloc in &obj.relocations {
+            // Find which merged section this relocation targets.
+            if let Some(&elf_sec_idx) = section_index_map.get(&(obj_idx, reloc.section_index)) {
+                let merged_idx = (elf_sec_idx as usize) - 1; // back to 0-based merged index
+                if merged_idx < merged.len() {
+                    let sec_name = &merged[merged_idx].name;
+                    let rela_name = format!(".rela{}", sec_name);
+
+                    // Adjust offset: add the input section's offset within the merged section.
+                    let base_offset = offset_map
+                        .get(&(obj_idx, reloc.section_index))
+                        .copied()
+                        .unwrap_or(0);
+                    let adjusted_offset = reloc.offset + base_offset;
+
+                    // Look up symbol index.
+                    let sym_idx = sym_name_to_idx.get(&reloc.symbol).copied().unwrap_or(0);
+
+                    let elf_reloc_type = reloc_type_to_elf(&reloc.reloc_type);
+
+                    let entry = relocs_by_section.entry(rela_name.clone()).or_insert_with(Vec::new);
+                    rela_section_targets.entry(rela_name).or_insert(elf_sec_idx as usize);
+
+                    if is_64bit {
+                        elf::write_u64_le(entry, adjusted_offset);
+                        elf::write_u64_le(entry, elf::elf64_r_info(sym_idx, elf_reloc_type));
+                        elf::write_i64_le(entry, reloc.addend);
+                    } else {
+                        elf::write_u32_le(entry, adjusted_offset as u32);
+                        elf::write_u32_le(entry, elf::elf32_r_info(sym_idx, elf_reloc_type));
+                    }
+                }
+            }
+        }
+    }
+
+    // Count how many rela sections we'll add (needed for strtab/symtab index).
+    let rela_section_count = relocs_by_section.len();
+
+    // Section ordering: content sections (already added), then rela sections,
+    // then strtab, then symtab.
     let symtab_entsize = if is_64bit { 24u64 } else { 16u64 };
-    // The strtab section index in the ELF file is: 1 (null section)
-    // + number of merged content sections + 0 (this is the next section).
-    let strtab_section_idx = 1 + merged.len(); // +1 for the implicit null section
+    let rela_entsize = if is_64bit { 24u64 } else { 8u64 };
+    // strtab index = 1 (null) + merged_content + rela_count
+    let strtab_section_idx = 1 + merged.len() + rela_section_count;
+    // symtab index = strtab + 1
+    let symtab_section_idx = strtab_section_idx + 1;
+
+    // Add relocation sections (.rela.*) BEFORE strtab/symtab.
+    let mut rela_names_sorted: Vec<String> = relocs_by_section.keys().cloned().collect();
+    rela_names_sorted.sort();
+    for rela_name in &rela_names_sorted {
+        let rela_data = relocs_by_section.get(rela_name).unwrap();
+        let target_elf_idx = rela_section_targets.get(rela_name).copied().unwrap_or(1);
+        writer.add_section(elf::OutputSection {
+            name: rela_name.clone(),
+            data: rela_data.clone(),
+            header: elf::OutputSectionHeader {
+                sh_type: elf::SHT_RELA,
+                sh_flags: 0,
+                sh_addr: 0,
+                sh_addralign: if is_64bit { 8 } else { 4 },
+                sh_entsize: rela_entsize,
+                sh_link: symtab_section_idx as u32,  // points to .symtab
+                sh_info: target_elf_idx as u32,       // section being relocated
+            },
+            file_offset: None,
+        });
+    }
+
+    // Add strtab.
     writer.add_section(elf::OutputSection {
         name: String::from(".strtab"),
         data: strtab_data,
@@ -743,7 +911,9 @@ fn link_relocatable(
             sh_link: 0,
             sh_info: 0,
         },
+        file_offset: None,
     });
+
     // sh_link = strtab section index; sh_info = first non-local symbol index
     let first_global = 1 + resolver.local_symbol_count();
     writer.add_section(elf::OutputSection {
@@ -758,6 +928,7 @@ fn link_relocatable(
             sh_link: strtab_section_idx as u32,
             sh_info: first_global as u32,
         },
+        file_offset: None,
     });
 
     // Add debug sections if present.
@@ -774,6 +945,128 @@ fn link_relocatable(
 
 /// Generate a minimal `_start` function and a `_start` symbol for the target
 /// architecture.  This replaces system CRT objects (`crt1.o`, `crti.o`,
+/// Machine code for a minimal builtin printf/puts implementation (x86-64).
+/// Compiled from freestanding C using write(2) syscall directly — zero libc
+/// dependency. Handles: %d, %i, %u, %s, %c, %x, %p, %ld, %lu, %%, and literal text.
+#[rustfmt::skip]
+const BUILTIN_PRINTF_X86_64: [u8; 1516] = [
+    0xf3,0x0f,0x1e,0xfa,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x55,0x53,0x48,0x89,0x74,0x24,0xd0,0x48,
+    0x89,0x54,0x24,0xd8,0x48,0x89,0x4c,0x24,0xe0,0x4c,0x89,0x44,0x24,0xe8,0x4c,0x89,0x4c,0x24,0xf0,0xc7,
+    0x44,0x24,0xb0,0x08,0x00,0x00,0x00,0x48,0x8d,0x44,0x24,0x38,0x48,0x89,0x44,0x24,0xb8,0x48,0x8d,0x44,
+    0x24,0xc8,0x48,0x89,0x44,0x24,0xc0,0x0f,0xb6,0x07,0x84,0xc0,0x0f,0x84,0x36,0x05,0x00,0x00,0x49,0x89,
+    0xfa,0x41,0xb9,0x00,0x00,0x00,0x00,0xbb,0x01,0x00,0x00,0x00,0x41,0xbc,0x01,0x00,0x00,0x00,0x41,0xbd,
+    0x17,0x00,0x00,0x00,0xbd,0x00,0x00,0x00,0x00,0xe9,0x32,0x01,0x00,0x00,0x41,0x0f,0xb6,0x02,0x84,0xc0,
+    0x74,0x33,0x4d,0x89,0xd0,0x3c,0x25,0x74,0x2c,0x49,0x83,0xc0,0x01,0x41,0x0f,0xb6,0x00,0x84,0xc0,0x74,
+    0x04,0x3c,0x25,0x75,0xf0,0x4c,0x89,0xc2,0x4c,0x29,0xd2,0x41,0x89,0xd6,0x85,0xd2,0x0f,0x8f,0xd0,0x04,
+    0x00,0x00,0x45,0x01,0xf1,0x4d,0x89,0xc2,0xe9,0xeb,0x00,0x00,0x00,0x4d,0x89,0xd0,0x41,0xbe,0x00,0x00,
+    0x00,0x00,0xeb,0xea,0x49,0x83,0xc2,0x02,0x41,0x89,0xd8,0xe9,0xfa,0x00,0x00,0x00,0x8b,0x44,0x24,0xb0,
+    0x83,0xf8,0x2f,0x77,0x40,0x89,0xc2,0x48,0x03,0x54,0x24,0xc0,0x83,0xc0,0x08,0x89,0x44,0x24,0xb0,0x48,
+    0x8b,0x02,0x48,0x85,0xc0,0x78,0x3a,0x48,0x89,0xc1,0xc6,0x44,0x24,0xaf,0x00,0x0f,0x85,0x59,0x01,0x00,
+    0x00,0xc6,0x44,0x24,0xae,0x30,0x41,0x89,0xd8,0x48,0x8d,0x74,0x24,0xae,0x49,0x63,0xd0,0x89,0xd8,0x4c,
+    0x89,0xe7,0x0f,0x05,0xe9,0x84,0x00,0x00,0x00,0x48,0x8b,0x54,0x24,0xb8,0x48,0x8d,0x42,0x08,0x48,0x89,
+    0x44,0x24,0xb8,0xeb,0xbe,0x48,0xf7,0xd8,0x48,0x89,0xc1,0xc6,0x44,0x24,0xaf,0x00,0x41,0x89,0xde,0x48,
+    0x8d,0x7c,0x24,0xae,0xbe,0x17,0x00,0x00,0x00,0x49,0xbb,0xcd,0xcc,0xcc,0xcc,0xcc,0xcc,0xcc,0xcc,0x41,
+    0x89,0xf0,0x83,0xee,0x01,0x48,0x89,0xc8,0x49,0xf7,0xe3,0x48,0xc1,0xea,0x03,0x4c,0x8d,0x3c,0x92,0x4d,
+    0x01,0xff,0x48,0x89,0xc8,0x4c,0x29,0xf8,0x83,0xc0,0x30,0x88,0x07,0x48,0x89,0xc8,0x48,0x89,0xd1,0x48,
+    0x83,0xef,0x01,0x48,0x83,0xf8,0x09,0x77,0xce,0x45,0x85,0xf6,0x74,0x0c,0x41,0x8d,0x70,0xfe,0x48,0x63,
+    0xc6,0xc6,0x44,0x04,0x98,0x2d,0x45,0x89,0xe8,0x41,0x29,0xf0,0x45,0x85,0xc0,0x0f,0x8f,0xc4,0x00,0x00,
+    0x00,0x45,0x01,0xc1,0x49,0x83,0xc2,0x01,0x41,0x0f,0xb6,0x02,0x84,0xc0,0x0f,0x84,0xe6,0x03,0x00,0x00,
+    0x3c,0x25,0x0f,0x85,0xc6,0xfe,0xff,0xff,0x41,0x80,0x7a,0x01,0x6c,0x0f,0x84,0x01,0xff,0xff,0xff,0x49,
+    0x83,0xc2,0x01,0x41,0x89,0xe8,0x41,0x0f,0xb6,0x02,0x3c,0x64,0x0f,0x84,0xfa,0xfe,0xff,0xff,0x3c,0x69,
+    0x0f,0x84,0xf2,0xfe,0xff,0xff,0x3c,0x75,0x0f,0x84,0x88,0x00,0x00,0x00,0x3c,0x73,0x0f,0x84,0x38,0x01,
+    0x00,0x00,0x3c,0x63,0x0f,0x84,0xa3,0x01,0x00,0x00,0x3c,0x25,0x0f,0x84,0xe5,0x01,0x00,0x00,0x3c,0x78,
+    0x0f,0x84,0xff,0x01,0x00,0x00,0x3c,0x70,0x0f,0x84,0x95,0x02,0x00,0x00,0xc6,0x44,0x24,0x97,0x25,0xba,
+    0x01,0x00,0x00,0x00,0x48,0x8d,0x74,0x24,0x97,0xb8,0x01,0x00,0x00,0x00,0x48,0x89,0xd7,0x0f,0x05,0x45,
+    0x85,0xc0,0x0f,0x85,0x3d,0x03,0x00,0x00,0x41,0x0f,0xb6,0x02,0x88,0x44,0x24,0x97,0xba,0x01,0x00,0x00,
+    0x00,0x48,0x8d,0x74,0x24,0x97,0xb8,0x01,0x00,0x00,0x00,0x48,0x89,0xd7,0x0f,0x05,0x47,0x8d,0x4c,0x08,
+    0x02,0xe9,0x4a,0xff,0xff,0xff,0x41,0xbe,0x00,0x00,0x00,0x00,0xe9,0xd6,0xfe,0xff,0xff,0x48,0x63,0xf6,
+    0x48,0x8d,0x74,0x34,0x98,0xe9,0x9c,0xfe,0xff,0xff,0x8b,0x44,0x24,0xb0,0x83,0xf8,0x2f,0x77,0x3c,0x89,
+    0xc2,0x48,0x03,0x54,0x24,0xc0,0x83,0xc0,0x08,0x89,0x44,0x24,0xb0,0x48,0x8b,0x0a,0xc6,0x44,0x24,0xaf,
+    0x00,0x48,0x85,0xc9,0x75,0x31,0xc6,0x44,0x24,0xae,0x30,0x41,0xb8,0x01,0x00,0x00,0x00,0x48,0x8d,0x74,
+    0x24,0xae,0x49,0x63,0xd0,0xb8,0x01,0x00,0x00,0x00,0xbf,0x01,0x00,0x00,0x00,0x0f,0x05,0xeb,0x5e,0x48,
+    0x8b,0x54,0x24,0xb8,0x48,0x8d,0x42,0x08,0x48,0x89,0x44,0x24,0xb8,0xeb,0xc2,0xbe,0x16,0x00,0x00,0x00,
+    0x48,0xbf,0xcd,0xcc,0xcc,0xcc,0xcc,0xcc,0xcc,0xcc,0x48,0x89,0xc8,0x48,0xf7,0xe7,0x48,0xc1,0xea,0x03,
+    0x4c,0x8d,0x04,0x92,0x4d,0x01,0xc0,0x48,0x89,0xc8,0x4c,0x29,0xc0,0x83,0xc0,0x30,0x88,0x44,0x34,0x98,
+    0x48,0x89,0xc8,0x48,0x89,0xd1,0x48,0x89,0xf2,0x48,0x83,0xee,0x01,0x48,0x83,0xf8,0x09,0x77,0xcf,0x41,
+    0xb8,0x17,0x00,0x00,0x00,0x41,0x29,0xd0,0x45,0x85,0xc0,0x7f,0x08,0x45,0x01,0xc1,0xe9,0x87,0xfe,0xff,
+    0xff,0x48,0x63,0xd2,0x48,0x8d,0x74,0x14,0x98,0xe9,0x7c,0xff,0xff,0xff,0x8b,0x44,0x24,0xb0,0x83,0xf8,
+    0x2f,0x77,0x41,0x89,0xc2,0x48,0x03,0x54,0x24,0xc0,0x83,0xc0,0x08,0x89,0x44,0x24,0xb0,0x48,0x8b,0x32,
+    0x48,0x85,0xf6,0x0f,0x84,0x57,0xfe,0xff,0xff,0x80,0x3e,0x00,0x74,0x43,0xb8,0x01,0x00,0x00,0x00,0x48,
+    0x89,0xc2,0x48,0x83,0xc0,0x01,0x80,0x7c,0x06,0xff,0x00,0x75,0xf2,0x41,0x89,0xd0,0x85,0xd2,0x7f,0x18,
+    0x45,0x01,0xc1,0xe9,0x30,0xfe,0xff,0xff,0x48,0x8b,0x54,0x24,0xb8,0x48,0x8d,0x42,0x08,0x48,0x89,0x44,
+    0x24,0xb8,0xeb,0xbd,0x48,0x63,0xd2,0xb8,0x01,0x00,0x00,0x00,0xbf,0x01,0x00,0x00,0x00,0x0f,0x05,0xeb,
+    0xd7,0x41,0xb8,0x00,0x00,0x00,0x00,0xeb,0xcf,0x8b,0x44,0x24,0xb0,0x83,0xf8,0x2f,0x77,0x31,0x89,0xc2,
+    0x48,0x03,0x54,0x24,0xc0,0x83,0xc0,0x08,0x89,0x44,0x24,0xb0,0x8b,0x02,0x88,0x44,0x24,0x97,0xba,0x01,
+    0x00,0x00,0x00,0x48,0x8d,0x74,0x24,0x97,0xb8,0x01,0x00,0x00,0x00,0x48,0x89,0xd7,0x0f,0x05,0x41,0x83,
+    0xc1,0x01,0xe9,0xcd,0xfd,0xff,0xff,0x48,0x8b,0x54,0x24,0xb8,0x48,0x8d,0x42,0x08,0x48,0x89,0x44,0x24,
+    0xb8,0xeb,0xcd,0xc6,0x44,0x24,0x97,0x25,0xba,0x01,0x00,0x00,0x00,0x48,0x8d,0x74,0x24,0x97,0xb8,0x01,
+    0x00,0x00,0x00,0x48,0x89,0xd7,0x0f,0x05,0x41,0x83,0xc1,0x01,0xe9,0x9b,0xfd,0xff,0xff,0x8b,0x44,0x24,
+    0xb0,0x83,0xf8,0x2f,0x77,0x3c,0x89,0xc2,0x48,0x03,0x54,0x24,0xc0,0x83,0xc0,0x08,0x89,0x44,0x24,0xb0,
+    0x48,0x8b,0x02,0xc6,0x44,0x24,0xaf,0x00,0x48,0x85,0xc0,0x75,0x31,0xc6,0x44,0x24,0xae,0x30,0x41,0xb8,
+    0x01,0x00,0x00,0x00,0x48,0x8d,0x74,0x24,0xae,0x49,0x63,0xd0,0xb8,0x01,0x00,0x00,0x00,0xbf,0x01,0x00,
+    0x00,0x00,0x0f,0x05,0xeb,0x47,0x48,0x8b,0x54,0x24,0xb8,0x48,0x8d,0x42,0x08,0x48,0x89,0x44,0x24,0xb8,
+    0xeb,0xc2,0xbe,0x16,0x00,0x00,0x00,0xeb,0x03,0x48,0x89,0xd6,0x89,0xc1,0x83,0xe1,0x0f,0x8d,0x79,0x30,
+    0x8d,0x51,0x57,0x83,0xf9,0x09,0x0f,0x4e,0xd7,0x88,0x54,0x34,0x98,0x48,0x8d,0x56,0xff,0x48,0xc1,0xe8,
+    0x04,0x75,0xde,0x41,0xb8,0x17,0x00,0x00,0x00,0x41,0x29,0xf0,0x45,0x85,0xc0,0x7f,0x08,0x45,0x01,0xc1,
+    0xe9,0x07,0xfd,0xff,0xff,0x48,0x63,0xf6,0x48,0x8d,0x74,0x34,0x98,0xeb,0x96,0x8b,0x44,0x24,0xb0,0x83,
+    0xf8,0x2f,0x77,0x67,0x89,0xc2,0x48,0x03,0x54,0x24,0xc0,0x83,0xc0,0x08,0x89,0x44,0x24,0xb0,0x4c,0x8b,
+    0x02,0xc6,0x44,0x24,0x97,0x30,0x41,0xbe,0x01,0x00,0x00,0x00,0xba,0x01,0x00,0x00,0x00,0x48,0x8d,0x74,
+    0x24,0x97,0x44,0x89,0xf0,0x48,0x89,0xd7,0x0f,0x05,0xc6,0x44,0x24,0x97,0x78,0x44,0x89,0xf0,0x0f,0x05,
+    0x41,0x83,0xc1,0x02,0xc6,0x44,0x24,0xaf,0x00,0x4d,0x85,0xc0,0x75,0x31,0xc6,0x44,0x24,0xae,0x30,0x41,
+    0xb8,0x01,0x00,0x00,0x00,0x48,0x8d,0x74,0x24,0xae,0x49,0x63,0xd0,0xb8,0x01,0x00,0x00,0x00,0xbf,0x01,
+    0x00,0x00,0x00,0x0f,0x05,0xeb,0x48,0x48,0x8b,0x54,0x24,0xb8,0x48,0x8d,0x42,0x08,0x48,0x89,0x44,0x24,
+    0xb8,0xeb,0x97,0xb9,0x16,0x00,0x00,0x00,0xeb,0x03,0x48,0x89,0xc1,0x44,0x89,0xc2,0x83,0xe2,0x0f,0x8d,
+    0x72,0x30,0x8d,0x42,0x57,0x83,0xfa,0x09,0x0f,0x4e,0xc6,0x88,0x44,0x0c,0x98,0x48,0x8d,0x41,0xff,0x49,
+    0xc1,0xe8,0x04,0x75,0xdd,0x41,0xb8,0x17,0x00,0x00,0x00,0x41,0x29,0xc8,0x45,0x85,0xc0,0x7f,0x08,0x45,
+    0x01,0xc1,0xe9,0x3d,0xfc,0xff,0xff,0x48,0x63,0xc9,0x48,0x8d,0x74,0x0c,0x98,0xeb,0x95,0xc6,0x44,0x24,
+    0x97,0x6c,0xb8,0x01,0x00,0x00,0x00,0x0f,0x05,0xe9,0xb2,0xfc,0xff,0xff,0x48,0x63,0xd2,0x89,0xd8,0x4c,
+    0x89,0xe7,0x4c,0x89,0xd6,0x0f,0x05,0xe9,0x1e,0xfb,0xff,0xff,0x41,0xb9,0x00,0x00,0x00,0x00,0x44,0x89,
+    0xc8,0x5b,0x5d,0x41,0x5c,0x41,0x5d,0x41,0x5e,0x41,0x5f,0xc3,0xf3,0x0f,0x1e,0xfa,0x48,0x89,0xfe,0x80,
+    0x3f,0x00,0x74,0x40,0xba,0x01,0x00,0x00,0x00,0x48,0x89,0xd0,0x48,0x83,0xc2,0x01,0x80,0x7c,0x16,0xff,
+    0x00,0x75,0xf2,0x41,0x89,0xc0,0x41,0xb9,0x01,0x00,0x00,0x00,0xbf,0x01,0x00,0x00,0x00,0x49,0x63,0xd0,
+    0x44,0x89,0xc8,0x0f,0x05,0xc6,0x44,0x24,0xff,0x0a,0x48,0x8d,0x74,0x24,0xff,0x44,0x89,0xc8,0x48,0x89,
+    0xfa,0x0f,0x05,0x41,0x8d,0x40,0x01,0xc3,0x41,0xb8,0x00,0x00,0x00,0x00,0xeb,0xce,
+];
+const BUILTIN_PUTS_OFFSET_X86_64: u64 = 0x598;
+
+/// Generate a builtin printf/puts implementation for the given architecture.
+/// Returns (code_bytes, relocations, symbols) like generate_builtin_start.
+fn generate_builtin_printf(
+    arch: crate::driver::target::Architecture,
+) -> Option<(Vec<u8>, Vec<codegen::Relocation>, Vec<codegen::Symbol>)> {
+    use crate::driver::target::Architecture;
+    match arch {
+        Architecture::X86_64 => {
+            let code = BUILTIN_PRINTF_X86_64.to_vec();
+            let total_size = code.len() as u64;
+            let syms = vec![
+                codegen::Symbol {
+                    name: String::from("printf"),
+                    offset: 0,
+                    size: BUILTIN_PUTS_OFFSET_X86_64,
+                    binding: codegen::SymbolBinding::Global,
+                    symbol_type: codegen::SymbolType::Function,
+                    section_index: 0,
+                    visibility: codegen::SymbolVisibility::Default,
+                    is_definition: true,
+                },
+                codegen::Symbol {
+                    name: String::from("puts"),
+                    offset: BUILTIN_PUTS_OFFSET_X86_64,
+                    size: total_size - BUILTIN_PUTS_OFFSET_X86_64,
+                    binding: codegen::SymbolBinding::Global,
+                    symbol_type: codegen::SymbolType::Function,
+                    section_index: 0,
+                    visibility: codegen::SymbolVisibility::Default,
+                    is_definition: true,
+                },
+            ];
+            Some((code, Vec::new(), syms))
+        }
+        _ => None,
+    }
+}
+
 /// `crtn.o`) with a compact stub that calls `main` and exits via syscall,
 /// enabling standalone executables that need no libc.
 ///
@@ -967,24 +1260,52 @@ fn link_static_executable(
     is_64bit: bool,
     machine: u16,
 ) -> Result<Vec<u8>, LinkerError> {
-    let use_system_crt = !config.libraries.is_empty();
+    // Determine whether to link system CRT objects (crt1.o, crti.o, crtn.o).
+    //
+    // Two separate decisions are made:
+    //  1. **Full system CRT** (crt1.o + crti.o + crtn.o + libc): used when
+    //     the user explicitly requests libraries via `-l` flags.
+    //  2. **Partial CRT** (crti.o + crtn.o only): used when the program
+    //     defines `main()` but no libraries are requested.  This gives us
+    //     the `.init` / `.fini` sections that standard toolchains expect,
+    //     while still using our lightweight built-in `_start` stub (which
+    //     doesn't depend on libc's `__libc_start_main`).
+    let has_main = input.objects.iter().any(|obj| {
+        obj.symbols.iter().any(|s| {
+            s.name == "main"
+                && s.binding == codegen::SymbolBinding::Global
+        })
+    });
+    let use_full_system_crt = !config.libraries.is_empty();
+    let use_partial_crt = !use_full_system_crt && has_main;
 
-    // Step 1: Find CRT objects for this architecture (only when using libc).
-    let crt = if use_system_crt {
-        find_crt_objects(config)?
+    // Step 1: Find CRT objects for this architecture.
+    let crt = if use_full_system_crt || use_partial_crt {
+        match find_crt_objects(config) {
+            Ok(mut c) => {
+                // Partial CRT: drop crt1.o (it needs __libc_start_main from
+                // libc) — our builtin _start will call main() directly.
+                if use_partial_crt {
+                    c.crt1 = None;
+                }
+                c
+            }
+            Err(_) => CrtObjects { crt1: None, crti: None, crtn: None },
+        }
     } else {
         CrtObjects { crt1: None, crti: None, crtn: None }
     };
 
     // Step 2: Resolve libraries specified via -l flags.
-    let libraries = if use_system_crt {
+    let libraries = if use_full_system_crt {
         resolve_libraries(config)?
     } else {
         Vec::new()
     };
 
-    // Step 2b: Generate built-in _start stub if not using system CRT.
-    let builtin_start = if !use_system_crt {
+    // Step 2b: Generate built-in _start stub if not using full system CRT
+    // (i.e. no libc, so we need our own _start that calls main() directly).
+    let builtin_start = if !use_full_system_crt {
         Some(generate_builtin_start(config.target.arch))
     } else {
         None
@@ -1145,7 +1466,42 @@ fn link_static_executable(
         }
     }
 
-    // Step 6: Process library archives to resolve undefined symbols.
+    // Step 5b: Inject builtin printf/puts BEFORE archive processing.
+    // This ensures our minimal write(2)-based printf/puts are defined
+    // before the linker tries to extract glibc's printf from libc.a,
+    // which would pull in hundreds of transitive dependencies.
+    let builtin_printf_obj_idx: Option<usize> = {
+        let undef = resolver.undefined_symbols();
+        let needs_printf = undef.iter().any(|s| *s == "printf" || *s == "puts");
+        if needs_printf {
+            if let Some((text, _relocs, syms)) = generate_builtin_printf(config.target.arch) {
+                let idx = object_count;
+                all_sections.push(sections::InputSection {
+                    name: String::from(".text"),
+                    data: text,
+                    section_type: elf::SHT_PROGBITS,
+                    flags: elf::SHF_ALLOC | elf::SHF_EXECINSTR,
+                    alignment: 16,
+                    mem_size: BUILTIN_PRINTF_X86_64.len() as u64,
+                    object_index: idx,
+                    original_index: 0,
+                });
+                let linker_syms: Vec<symbols::Symbol> = syms
+                    .iter()
+                    .map(|s| codegen_symbol_to_linker(s, idx))
+                    .collect();
+                resolver.add_object_symbols(idx, &linker_syms);
+                object_count += 1;
+                Some(idx)
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    };
+
+    // Step 6: Process library archives to resolve remaining undefined symbols.
     let mut archives: Vec<archive::Archive> = Vec::new();
     for lib in &libraries {
         match archive::Archive::parse(lib.data.clone()) {
@@ -1269,8 +1625,47 @@ fn link_static_executable(
 
     // Step 11: Apply relocations — patch machine code with final addresses.
     let resolved_symbols = resolver.all_resolved();
-    let resolved_vec: Vec<symbols::ResolvedSymbol> =
+    let mut resolved_vec: Vec<symbols::ResolvedSymbol> =
         resolved_symbols.into_iter().cloned().collect();
+
+    // Add LOCAL symbols (e.g., string constants like .str.0, static functions)
+    // to the resolved vector so that relocations referencing them can be resolved.
+    // Local symbols are not processed by resolve() but still need addresses.
+    //
+    // CRITICAL: We must NOT skip duplicates for local symbols.  Multiple
+    // objects can define identically-named local (static) symbols, and each
+    // object's relocations must resolve to its OWN definition.  We tag each
+    // local entry with `source_object` so the relocation lookup can prefer
+    // the correct per-object definition.
+    for (obj_idx, obj) in input.objects.iter().enumerate() {
+        let global_obj_idx = user_object_base + obj_idx;
+        for sym in &obj.symbols {
+            if sym.binding == codegen::SymbolBinding::Local && !sym.name.is_empty() {
+                // Compute final address for this local symbol
+                let sec_idx = sym.section_index;
+                if let Some(&(merged_idx, output_offset)) =
+                    reloc_section_map.get(&(global_obj_idx, sec_idx))
+                {
+                    let addr = if merged_idx < section_addresses.len() {
+                        section_addresses[merged_idx] + output_offset + sym.offset
+                    } else {
+                        output_offset + sym.offset
+                    };
+                    resolved_vec.push(symbols::ResolvedSymbol {
+                        name: sym.name.clone(),
+                        address: addr,
+                        size: sym.size,
+                        binding: symbols::SymbolBinding::Local,
+                        symbol_type: symbols::SymbolType::Object,
+                        visibility: symbols::SymbolVisibility::Default,
+                        output_section_index: merged_idx,
+                        is_definition: true,
+                        source_object: Some(global_obj_idx),
+                    });
+                }
+            }
+        }
+    }
 
     let mut section_data: Vec<Vec<u8>> = merged.iter().map(|s| s.data.clone()).collect();
 
@@ -1332,12 +1727,28 @@ fn link_static_executable(
     }
 
     // Process codegen object relocations.
+    //
+    // For each relocation, we first look for a LOCAL symbol from the SAME
+    // source object (matching source_object == global_obj_idx).  This
+    // ensures `static` functions / variables resolve to the defining
+    // object's own copy, not an identically-named local from another
+    // translation unit.  If no same-object local is found, fall back to
+    // global name lookup (the previous behaviour).
     for (obj_idx, obj) in input.objects.iter().enumerate() {
         let global_obj_idx = user_object_base + obj_idx;
         for reloc in &obj.relocations {
+            // Prefer same-object local symbol, then any symbol by name.
             let sym_idx = resolved_vec
                 .iter()
-                .position(|rs| rs.name == reloc.symbol)
+                .position(|rs| {
+                    rs.name == reloc.symbol
+                        && rs.source_object == Some(global_obj_idx)
+                })
+                .or_else(|| {
+                    resolved_vec
+                        .iter()
+                        .position(|rs| rs.name == reloc.symbol)
+                })
                 .unwrap_or(0) as u32;
 
             // Map the codegen section index to the merged section index and
@@ -1797,9 +2208,17 @@ fn build_elf_output(
             elf::SHT_HASH => 4,
             _ => 0,
         };
+        // For SHT_NOBITS (.bss) sections, the merged data is empty but
+        // mem_size tracks the actual virtual size. Set data to a zero-filled
+        // vector so the ELF writer's data.len() reports the correct sh_size.
+        let section_data = if sec.section_type == elf::SHT_NOBITS && sec.data.is_empty() && sec.mem_size > 0 {
+            vec![0u8; sec.mem_size as usize]
+        } else {
+            sec.data.clone()
+        };
         writer.add_section(elf::OutputSection {
             name: sec.name.clone(),
-            data: sec.data.clone(),
+            data: section_data,
             header: elf::OutputSectionHeader {
                 sh_type: sec.section_type,
                 sh_flags: sec.flags,
@@ -1809,6 +2228,7 @@ fn build_elf_output(
                 sh_link: 0,
                 sh_info: 0,
             },
+            file_offset: Some(sec.file_offset),
         });
     }
 
@@ -1825,6 +2245,7 @@ fn build_elf_output(
             sh_link: 0,
             sh_info: 0,
         },
+        file_offset: None,
     });
 
     // Add symbol table section.
@@ -1845,6 +2266,7 @@ fn build_elf_output(
             sh_link: strtab_section_index,
             sh_info: 0,
         },
+        file_offset: None,
     });
 
     // Add DWARF debug sections if present.
@@ -1878,6 +2300,7 @@ fn add_debug_sections_to_writer(writer: &mut elf::ElfWriter, dbg: &DebugSections
             sh_link: 0,
             sh_info: 0,
         },
+        file_offset: None,
     };
 
     if !dbg.debug_info.is_empty() {
@@ -1903,6 +2326,7 @@ fn add_debug_sections_to_writer(writer: &mut elf::ElfWriter, dbg: &DebugSections
                 sh_link: 0,
                 sh_info: 0,
             },
+            file_offset: None,
         });
     }
     if !dbg.debug_aranges.is_empty() {

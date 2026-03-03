@@ -185,24 +185,94 @@ impl X86_64CodeGen {
             // === Phase 2: Register Allocation ===
             // Compute live intervals on IR and assign physical registers.
             let mut live_intervals = regalloc::compute_live_intervals(function);
+
+            // Pre-assign ABI registers to parameter value intervals so the
+            // allocator reserves them for the duration of parameter liveness.
+            // Without this, the allocator may assign other values to ABI
+            // registers that are still logically in use by parameters (the
+            // isel maps param values directly to ABI registers via
+            // lower_params). This prevents the classic parallel-copy
+            // clobber problem at -O1/-O2 where mem2reg eliminates param
+            // stack slots.
+            {
+                let param_types: Vec<&crate::ir::types::IrType> =
+                    function.params.iter().map(|(_, ty)| ty).collect();
+                let owned_types: Vec<crate::ir::types::IrType> =
+                    param_types.iter().map(|t| (*t).clone()).collect();
+                let layout = abi::compute_argument_locations(&owned_types);
+
+                // Compute the minimum end point that all ABI-register
+                // param intervals must reach. Stack-passed parameters
+                // are loaded by `lower_params` in machine code BEFORE
+                // any IR instructions execute. The allocator assigns
+                // physical registers to those stack-param vregs. If an
+                // ABI-register param interval expires too early, its
+                // register can be reused for a stack-param vreg, and the
+                // machine code load clobbers the ABI register before the
+                // IR-level Store saves it. Fix: extend all ABI param
+                // intervals to at least cover the last stack-param
+                // interval so the ABI registers stay reserved.
+                let mut stack_param_max_end: u32 = 0;
+                for (pi, param_val) in function.param_values.iter().enumerate() {
+                    if let Some(loc) = layout.locations.get(pi) {
+                        if loc.register.is_none() && loc.stack_offset.is_some() {
+                            // This is a stack-passed param — find its
+                            // interval end.
+                            for iv in live_intervals.iter() {
+                                if iv.value == *param_val {
+                                    stack_param_max_end =
+                                        stack_param_max_end.max(iv.end);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                for (pi, param_val) in function.param_values.iter().enumerate() {
+                    if let Some(loc) = layout.locations.get(pi) {
+                        if let Some(abi_reg) = loc.register {
+                            // Find the interval for this param value and
+                            // pre-assign the ABI register, extending its
+                            // end past all stack-param intervals.
+                            for iv in live_intervals.iter_mut() {
+                                if iv.value == *param_val {
+                                    iv.assigned_reg = Some(abi_reg);
+                                    if stack_param_max_end > iv.end {
+                                        iv.end = stack_param_max_end;
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             let alloc_result = regalloc::linear_scan_allocate(
                 &mut live_intervals,
                 &reg_info,
             );
             let value_to_reg = regalloc::build_value_to_reg_map(&alloc_result);
-
-            // Debug: print mappings
-            for (v, r) in &value_to_reg {
-            }
-            for (vreg, v) in &vreg_to_value {
-            }
+            let value_to_class = regalloc::build_value_to_class_map(&alloc_result);
 
             // Apply register assignments: vreg → Value → PhysReg
             self.apply_register_assignments_v2(
                 &mut machine_instrs,
                 &vreg_to_value,
                 &value_to_reg,
+                &value_to_class,
             )?;
+
+            // === Phase 2b: Post-allocation operand fixup ===
+            // Fix the classic two-address clobber: when the register
+            // allocator assigns the destination of a `MOV dst, lhs; OP
+            // dst, rhs` pair to the same register as `rhs`, the MOV
+            // overwrites `rhs` before the OP reads it. For commutative
+            // operations we swap operands so the MOV becomes a harmless
+            // self-move (nop). For non-commutative operations (SUB) we
+            // insert a temporary register save/restore.
+            fix_two_address_clobbers(&mut machine_instrs);
 
             // === Phase 3: Prologue/Epilogue Generation ===
             // Compute stack frame layout from locals, spill slots, and callee-saved regs.
@@ -274,7 +344,9 @@ impl X86_64CodeGen {
                 section_index: text_section_idx,
                 offset: func_start as u64,
                 size: func_code.len() as u64,
-                binding: if function_is_global(function) {
+                binding: if function.is_weak {
+                    SymbolBinding::Weak
+                } else if function_is_global(function) {
                     SymbolBinding::Global
                 } else {
                     SymbolBinding::Local
@@ -308,7 +380,7 @@ impl X86_64CodeGen {
                     section_index: 0, // .text section (0-based into ObjectCode.sections)
                     offset: thunk_offset as u64,
                     size: thunk.code.len() as u64,
-                    binding: SymbolBinding::Local,
+                    binding: SymbolBinding::Global, // Must be global for linker resolution
                     symbol_type: SymbolType::Function,
                     visibility: SymbolVisibility::Hidden,
                     is_definition: true,
@@ -399,9 +471,14 @@ impl X86_64CodeGen {
         });
 
         // sections[3]: .bss — zero-initialized data (no file content).
+        // We store `bss_size` zero bytes in the data vector so that
+        // `data.len()` correctly reports the virtual memory size. The
+        // linker emits this as SHT_NOBITS so no file content is written,
+        // but the size is used for section header `sh_size` and segment
+        // memory layout.
         object.add_section(Section {
             name: ".bss".to_string(),
-            data: Vec::new(),
+            data: vec![0u8; bss_size as usize],
             section_type: SectionType::Bss,
             alignment: 8,
             flags: SectionFlags {
@@ -410,6 +487,19 @@ impl X86_64CodeGen {
                 allocatable: true,
             },
         });
+
+        // Filter out undefined symbols that have no relocations referencing them.
+        // When system headers like <stdio.h> are included, they declare many
+        // functions (printf, scanf, fopen, etc.) but only the ones actually called
+        // in the user's code should appear as undefined references in the object file.
+        // Unreferenced extern declarations are harmless and should be omitted to
+        // avoid spurious "undefined reference" errors during linking.
+        let referenced_names: std::collections::HashSet<&str> =
+            relocations.iter().map(|r| r.symbol.as_str()).collect();
+        let symbols: Vec<Symbol> = symbols
+            .into_iter()
+            .filter(|s| s.is_definition || referenced_names.contains(s.name.as_str()))
+            .collect();
 
         // Attach symbols and relocations.
         for sym in symbols {
@@ -493,44 +583,102 @@ impl X86_64CodeGen {
         instrs: &mut Vec<MachineInstr>,
         vreg_to_value: &HashMap<u32, Value>,
         value_to_reg: &HashMap<Value, PhysReg>,
+        value_to_class: &HashMap<Value, regalloc::RegClass>,
     ) -> Result<(), CodeGenError> {
         // For unmapped vregs we cycle through caller-saved scratch registers
         // to avoid collapsing multiple distinct vregs onto the same physical
         // register (the old RAX-only fallback caused division and shift bugs).
-        let fallback_pool: [PhysReg; 4] = [
-            PhysReg(0),  // RAX
-            PhysReg(1),  // RCX
-            PhysReg(2),  // RDX
-            PhysReg(8),  // R8
+        //
+        // CRITICAL: the same vreg ID must ALWAYS resolve to the same physical
+        // register across all instructions (e.g., a LEA destination vreg and
+        // a subsequent STORE source vreg must use the same phys reg). We
+        // track assigned fallbacks in a HashMap to ensure consistency.
+        // IMPORTANT: The fallback pool must NOT include argument registers
+        // (RDI/RSI/RDX/RCX/R8/R9) to avoid clobbering during call-argument
+        // setup.  R10 and R11 are caller-saved, non-argument scratch regs.
+        let int_fallback_pool: [PhysReg; 3] = [
+            PhysReg(0),   // RAX
+            PhysReg(10),  // R10
+            PhysReg(11),  // R11
         ];
-        let mut fallback_idx: usize = 0;
-
-        let resolve = |reg: &mut PhysReg, fb_idx: &mut usize| {
-            if reg.0 >= 32 {
-                // Virtual register: look up which IR Value it represents,
-                // then which physical register that Value was assigned.
-                let vreg_id = reg.0 as u32;
-                if let Some(&value) = vreg_to_value.get(&vreg_id) {
-                    if let Some(&phys) = value_to_reg.get(&value) {
-                        *reg = phys;
-                        return;
-                    }
-                }
-                // Fallback: round-robin through scratch registers to
-                // avoid collapsing distinct vregs onto the same phys reg.
-                *reg = fallback_pool[*fb_idx % fallback_pool.len()];
-                *fb_idx += 1;
-            }
-        };
+        // XMM scratch pool for float values that weren't assigned a register
+        // (spilled or temporary). Without this, spilled float vregs would get
+        // GPR fallbacks and cause panics in SSE instruction encoding (ADDSD,
+        // SUBSD, MULSD, etc. require XMM operands).
+        let float_fallback_pool: [PhysReg; 3] = [
+            XMM0,   // PhysReg(16)
+            XMM1,   // PhysReg(17)
+            XMM2,   // PhysReg(18)
+        ];
+        let mut int_fallback_idx: usize = 0;
+        let mut float_fallback_idx: usize = 0;
+        let mut vreg_fallback_map: HashMap<u32, PhysReg> = HashMap::new();
 
         for instr in instrs.iter_mut() {
             for operand in instr.operands.iter_mut() {
                 match operand {
                     MachineOperand::Register(ref mut reg) => {
-                        resolve(reg, &mut fallback_idx);
+                        if reg.0 >= 32 {
+                            let vreg_id = reg.0 as u32;
+                            if let Some(&value) = vreg_to_value.get(&vreg_id) {
+                                if let Some(&phys) = value_to_reg.get(&value) {
+                                    *reg = phys;
+                                    continue;
+                                }
+                                // Value exists but was spilled — check class
+                                // for correct fallback pool.
+                                if let Some(&phys) = vreg_fallback_map.get(&vreg_id) {
+                                    *reg = phys;
+                                } else {
+                                    let is_float = value_to_class.get(&value)
+                                        .map(|c| *c == regalloc::RegClass::Float)
+                                        .unwrap_or(false);
+                                    let phys = if is_float {
+                                        let p = float_fallback_pool[float_fallback_idx % float_fallback_pool.len()];
+                                        float_fallback_idx += 1;
+                                        p
+                                    } else {
+                                        let p = int_fallback_pool[int_fallback_idx % int_fallback_pool.len()];
+                                        int_fallback_idx += 1;
+                                        p
+                                    };
+                                    vreg_fallback_map.insert(vreg_id, phys);
+                                    *reg = phys;
+                                }
+                            } else {
+                                // vreg not in vreg_to_value at all — temp scratch.
+                                // Use GPR fallback (temps are always integer-class
+                                // scratch registers in the current isel).
+                                if let Some(&phys) = vreg_fallback_map.get(&vreg_id) {
+                                    *reg = phys;
+                                } else {
+                                    let phys = int_fallback_pool[int_fallback_idx % int_fallback_pool.len()];
+                                    vreg_fallback_map.insert(vreg_id, phys);
+                                    *reg = phys;
+                                    int_fallback_idx += 1;
+                                }
+                            }
+                        }
                     }
                     MachineOperand::Memory { ref mut base, .. } => {
-                        resolve(base, &mut fallback_idx);
+                        // Memory base registers are always GPR (integer).
+                        if base.0 >= 32 {
+                            let vreg_id = base.0 as u32;
+                            if let Some(&value) = vreg_to_value.get(&vreg_id) {
+                                if let Some(&phys) = value_to_reg.get(&value) {
+                                    *base = phys;
+                                    continue;
+                                }
+                            }
+                            if let Some(&phys) = vreg_fallback_map.get(&vreg_id) {
+                                *base = phys;
+                            } else {
+                                let phys = int_fallback_pool[int_fallback_idx % int_fallback_pool.len()];
+                                vreg_fallback_map.insert(vreg_id, phys);
+                                *base = phys;
+                                int_fallback_idx += 1;
+                            }
+                        }
                     }
                     MachineOperand::Immediate(_)
                     | MachineOperand::Symbol(_)
@@ -778,6 +926,106 @@ impl CodeGen for X86_64CodeGen {
 // Helper functions (module-private)
 // ===========================================================================
 
+/// Fix two-address operand clobbers after register allocation.
+///
+/// The x86 instruction selector emits two-address sequences like:
+///
+/// ```text
+/// MOV_RR  dst, lhs   // copy lhs to dst
+/// ADD_RR  dst, rhs   // dst += rhs
+/// ```
+///
+/// If the register allocator assigns `dst` to the same physical register as
+/// `rhs`, the `MOV` overwrites `rhs` before the `ADD` reads it. For
+/// commutative operations (ADD, IMUL, AND, OR, XOR) we swap the operands
+/// so the MOV becomes `MOV dst, rhs` (a self-move / nop) and the OP
+/// becomes `OP dst, lhs`. For non-commutative operations (SUB) we swap
+/// operands and negate: `lhs - rhs` where `dst == rhs` becomes
+/// `rhs - lhs` → need a temp, but we can just reverse the MOV and OP
+/// to `MOV dst, rhs` (nop), then emit `SUB lhs, dst` and `XCHG` —
+/// actually for SUB we use a different strategy: we swap the MOV source
+/// to `rhs` (nop) and use reverse-subtract by `MOV tmp, lhs; SUB tmp, rhs;
+/// MOV dst, tmp`. For simplicity, for non-commutative ops where dst==rhs,
+/// we swap the MOV to copy rhs (nop), negate the sub via `NEG dst; ADD dst, lhs`.
+fn fix_two_address_clobbers(instrs: &mut Vec<MachineInstr>) {
+    use crate::codegen::MachineOperand;
+    use crate::codegen::x86_64::isel::opcodes;
+
+    // Set of commutative two-address opcodes.
+    let commutative: std::collections::HashSet<u32> = [
+        opcodes::ADD_RR,
+        opcodes::IMUL_RR,
+        opcodes::AND_RR,
+        opcodes::OR_RR,
+        opcodes::XOR_RR,
+    ].iter().copied().collect();
+
+    let non_commutative: std::collections::HashSet<u32> = [
+        opcodes::SUB_RR,
+    ].iter().copied().collect();
+
+    let mut i = 0;
+    while i + 1 < instrs.len() {
+        let mov_opcode = instrs[i].opcode;
+        let op_opcode = instrs[i + 1].opcode;
+
+        // Pattern: MOV_RR [dst, lhs]  followed by  OP_RR [dst, rhs]
+        if mov_opcode == opcodes::MOV_RR
+            && instrs[i].operands.len() == 2
+            && instrs[i + 1].operands.len() == 2
+        {
+            let mov_dst = &instrs[i].operands[0];
+            let mov_src = &instrs[i].operands[1]; // = lhs
+            let op_dst = &instrs[i + 1].operands[0];
+            let op_src = &instrs[i + 1].operands[1]; // = rhs
+
+            // Verify mov_dst == op_dst (same destination register).
+            if let (
+                MachineOperand::Register(md),
+                MachineOperand::Register(od),
+                MachineOperand::Register(rhs_reg),
+            ) = (mov_dst, op_dst, op_src) {
+                if md == od && md == rhs_reg {
+                    // dst == rhs — the MOV would clobber rhs.
+                    if commutative.contains(&op_opcode) {
+                        // Swap: MOV dst, rhs (nop); OP dst, lhs
+                        let lhs_operand = mov_src.clone();
+                        instrs[i].operands[1] = MachineOperand::Register(*rhs_reg);
+                        instrs[i + 1].operands[1] = lhs_operand;
+                    } else if non_commutative.contains(&op_opcode) {
+                        // SUB: dst = lhs - rhs, but dst == rhs.
+                        // Strategy: MOV dst, rhs (nop), then we need
+                        // dst = lhs - dst. We can't do reverse-sub directly
+                        // on x86, so: save lhs to tmp, emit SUB.
+                        // Simpler: keep MOV + SUB as-is but swap:
+                        //   MOV dst, rhs (nop)
+                        //   NEG dst        (dst = -rhs)
+                        //   ADD dst, lhs   (dst = lhs - rhs)
+                        let lhs_operand = mov_src.clone();
+                        let dst_operand = MachineOperand::Register(*md);
+
+                        // Replace MOV source with rhs (self-move / nop)
+                        instrs[i].operands[1] = MachineOperand::Register(*rhs_reg);
+
+                        // Replace SUB with NEG dst
+                        instrs[i + 1].opcode = opcodes::NEG_R;
+                        instrs[i + 1].operands = vec![dst_operand.clone()];
+
+                        // Insert ADD dst, lhs after the NEG
+                        let add_instr = MachineInstr::with_operands(
+                            opcodes::ADD_RR,
+                            vec![dst_operand, lhs_operand],
+                        );
+                        instrs.insert(i + 2, add_instr);
+                    }
+                }
+            }
+        }
+
+        i += 1;
+    }
+}
+
 /// Determine whether an IR [`Function`] contains any call instructions.
 ///
 /// This is used to determine whether the function is a leaf (no calls),
@@ -800,10 +1048,9 @@ fn function_has_calls(func: &Function) -> bool {
 /// we treat all defined functions as globally visible. Static functions
 /// would need additional metadata propagation from the semantic analysis
 /// phase.
-fn function_is_global(_func: &Function) -> bool {
-    // All function definitions are treated as global by default.
-    // The frontend would need to annotate static functions for local binding.
-    true
+fn function_is_global(func: &Function) -> bool {
+    // A function declared with `static` has internal linkage (local binding).
+    !func.is_static
 }
 
 /// Estimate the total size of local variables for a function by scanning
@@ -816,7 +1063,7 @@ fn function_locals_size(func: &Function, target: &TargetConfig) -> u32 {
     for block in &func.blocks {
         for inst in &block.instructions {
             if let crate::ir::Instruction::Alloca { ty, count, .. } = inst {
-                let elem_size = ty.size(target) as u32;
+                let raw = ty.size(target) as u32;
                 let num_elems = match count {
                     Some(_) => {
                         // Dynamic count — estimate 1 for frame sizing.
@@ -825,7 +1072,13 @@ fn function_locals_size(func: &Function, target: &TargetConfig) -> u32 {
                     }
                     None => 1,
                 };
-                total += elem_size * num_elems;
+                // The instruction selector (select_alloca) aligns each
+                // alloca to an 8-byte boundary:
+                //     self.stack_offset += (elem_size + 7) & !7;
+                // We must use the same alignment here so the computed
+                // locals size matches the actual stack layout.
+                let aligned = (raw * num_elems + 7) & !7;
+                total += aligned;
             }
         }
     }
@@ -938,6 +1191,8 @@ mod tests {
             blocks: vec![BasicBlock::new(BlockId(0), "entry".to_string())],
             entry_block: BlockId(0),
             is_definition: true,
+            is_static: false,
+            is_weak: false,
         }
     }
 
@@ -951,6 +1206,8 @@ mod tests {
             blocks: Vec::new(),
             entry_block: BlockId(0),
             is_definition: false,
+            is_static: false,
+            is_weak: false,
         }
     }
 
@@ -1001,6 +1258,10 @@ mod tests {
 
     #[test]
     fn test_module_with_extern_only() {
+        // An extern-only declaration without any call to it should NOT produce
+        // a symbol in the .o file (unreferenced extern declarations are pruned
+        // to avoid spurious "undefined reference" errors when system headers
+        // declare many functions). This test verifies that behavior.
         let backend = X86_64CodeGen::new();
         let mut module = empty_module();
         module.functions.push(extern_function("printf"));
@@ -1008,9 +1269,9 @@ mod tests {
         let result = backend.generate(&module, &target);
         assert!(result.is_ok());
         let obj = result.unwrap();
-        // Extern function should produce a symbol with NoType binding.
+        // Unreferenced extern should be pruned — no symbol emitted.
         let printf_sym = obj.symbols.iter().find(|s| s.name == "printf");
-        assert!(printf_sym.is_some(), "printf symbol should be present");
+        assert!(printf_sym.is_none(), "unreferenced extern should be pruned");
     }
 
     #[test]

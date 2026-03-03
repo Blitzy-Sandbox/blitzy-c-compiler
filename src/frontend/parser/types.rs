@@ -46,6 +46,7 @@
 //!
 //! This module contains zero `unsafe` blocks. All operations use safe Rust.
 
+use super::expressions::is_type_start_token;
 use super::ast::{
     AbstractDeclarator, ArraySize, DeclSpecifiers, DirectAbstractDeclarator, Expression,
     ParamDeclaration, ParamList, Pointer, StorageClass,
@@ -239,6 +240,7 @@ pub(super) fn parse_type_name(parser: &mut Parser<'_>) -> TypeName {
             type_specifier: type_spec,
             function_specifiers: Vec::new(),
             attributes,
+            alignment: None,
             span,
         },
         abstract_declarator,
@@ -649,6 +651,23 @@ pub(super) fn parse_type_specifiers(parser: &mut Parser<'_>) -> TypeSpecifier {
                 state.count += 1;
             }
 
+            // --- Type qualifiers interleaved with type specifiers ---
+            // C11 §6.7 allows declaration-specifiers in any order, so
+            // qualifiers like `const`, `volatile`, `restrict` can appear
+            // between type specifiers (e.g. `unsigned const char`).
+            // We skip them here so the type specifier parsing continues.
+            TokenKind::Const | TokenKind::Volatile | TokenKind::Restrict => {
+                parser.advance();
+            }
+            TokenKind::Atomic => {
+                // _Atomic without parens is a qualifier — skip it.
+                if parser.peek().kind != TokenKind::LeftParen {
+                    parser.advance();
+                } else {
+                    break;
+                }
+            }
+
             // Any other token is not a type specifier — stop.
             _ => break,
         }
@@ -782,6 +801,12 @@ fn parse_struct_or_union_body(
             continue;
         }
 
+        // Skip GCC __extension__ keyword (common before anonymous unions
+        // in system headers like `__extension__ union { ... };`).
+        while parser.check(TokenKind::GccExtension) {
+            parser.advance();
+        }
+
         // Parse type specifiers and qualifiers for the member.
         let mut qualifiers = parse_type_qualifiers(parser);
         let type_spec = parse_type_specifiers(parser);
@@ -806,6 +831,7 @@ fn parse_struct_or_union_body(
             type_specifier: type_spec,
             function_specifiers: Vec::new(),
             attributes: Vec::new(),
+            alignment: None,
             span: parser.span_from(member_start),
         };
 
@@ -945,12 +971,81 @@ fn parse_direct_declarator_suffixes(
 /// Parses a simple constant expression (for bit-field widths and array sizes).
 ///
 /// This is a simplified expression parser that handles integer literals,
-/// identifiers, sizeof, parenthesized expressions, and basic arithmetic.
-/// Full expression parsing would create a circular dependency with
-/// expressions.rs, so we handle common cases directly.
+/// identifiers, sizeof, parenthesized expressions (including cast
+/// expressions), and basic arithmetic with proper binary operator handling
+/// after ANY primary expression. Supports ternary (`?:`) for preprocessor-
+/// expanded macros that use conditional constant expressions.
 fn parse_constant_expression_simple(parser: &mut Parser<'_>) -> Expression {
     let start = parser.current_span();
 
+    // Step 1: Parse the primary/unary atom.
+    let atom = parse_const_expr_atom(parser, start);
+
+    // Step 2: Handle binary operators after the atom. This loop applies
+    // regardless of whether the atom was an integer literal, identifier,
+    // parenthesized expression, sizeof, or unary expression.
+    let mut result = atom;
+    loop {
+        let op = match parser.current().kind {
+            TokenKind::Pipe => super::ast::BinaryOp::BitwiseOr,
+            TokenKind::Amp => super::ast::BinaryOp::BitwiseAnd,
+            TokenKind::Caret => super::ast::BinaryOp::BitwiseXor,
+            TokenKind::Plus => super::ast::BinaryOp::Add,
+            TokenKind::Minus => super::ast::BinaryOp::Sub,
+            TokenKind::Star => super::ast::BinaryOp::Mul,
+            TokenKind::Slash => super::ast::BinaryOp::Div,
+            TokenKind::Percent => super::ast::BinaryOp::Mod,
+            TokenKind::LessLess => super::ast::BinaryOp::ShiftLeft,
+            TokenKind::GreaterGreater => super::ast::BinaryOp::ShiftRight,
+            TokenKind::Less => super::ast::BinaryOp::Less,
+            TokenKind::LessEqual => super::ast::BinaryOp::LessEqual,
+            TokenKind::Greater => super::ast::BinaryOp::Greater,
+            TokenKind::GreaterEqual => super::ast::BinaryOp::GreaterEqual,
+            TokenKind::EqualEqual => super::ast::BinaryOp::Equal,
+            TokenKind::BangEqual => super::ast::BinaryOp::NotEqual,
+            TokenKind::AmpAmp => super::ast::BinaryOp::LogicalAnd,
+            TokenKind::PipePipe => super::ast::BinaryOp::LogicalOr,
+            _ => break,
+        };
+        parser.advance();
+        let rhs = {
+            let rhs_start = parser.current_span();
+            parse_const_expr_atom(parser, rhs_start)
+        };
+        let span = parser.span_from(start);
+        result = Expression::Binary {
+            op,
+            left: Box::new(result),
+            right: Box::new(rhs),
+            span,
+        };
+    }
+
+    // Step 3: Handle ternary `? :` for conditional constant expressions.
+    if parser.current().kind == TokenKind::Question {
+        parser.advance(); // consume `?`
+        let then_expr = parse_constant_expression_simple(parser);
+        let _ = parser.expect(TokenKind::Colon);
+        let else_expr = parse_constant_expression_simple(parser);
+        let span = parser.span_from(start);
+        result = Expression::Ternary {
+            condition: Box::new(result),
+            then_expr: Box::new(then_expr),
+            else_expr: Box::new(else_expr),
+            span,
+        };
+    }
+
+    result
+}
+
+/// Parses a single primary or unary atom for `parse_constant_expression_simple`.
+///
+/// This handles integer literals, identifiers, parenthesized expressions
+/// (including type casts like `(int)x`), unary operators, `sizeof`, and
+/// `_Alignof`. It does NOT handle binary operators — those are handled in the
+/// caller's loop.
+fn parse_const_expr_atom(parser: &mut Parser<'_>, start: crate::common::source_map::SourceSpan) -> Expression {
     match parser.current().kind {
         TokenKind::IntegerLiteral => {
             if let TokenValue::Integer { value, suffix: _, base: _ } = parser.current().value {
@@ -969,12 +1064,55 @@ fn parse_constant_expression_simple(parser: &mut Parser<'_>) -> Expression {
                 }
             }
         }
+        TokenKind::CharLiteral => {
+            if let TokenValue::Char(ch) = parser.current().value {
+                parser.advance();
+                let span = parser.span_from(start);
+                // Character literals have integer value in constant expressions.
+                Expression::IntegerLiteral {
+                    value: ch as u128,
+                    suffix: super::ast::IntSuffix::None,
+                    base: super::ast::NumericBase::Decimal,
+                    span,
+                }
+            } else {
+                parser.advance();
+                Expression::Error {
+                    span: parser.span_from(start),
+                }
+            }
+        }
         TokenKind::Identifier => {
             if let TokenValue::Identifier(id) = parser.current().value {
                 parser.advance();
-                Expression::Identifier {
-                    name: id,
-                    span: parser.span_from(start),
+                let span = parser.span_from(start);
+                // Handle function-call-like identifier: `ident(args)` for
+                // compiler builtins such as `__builtin_offsetof(type, member)`.
+                if parser.current().kind == TokenKind::LeftParen {
+                    parser.advance(); // consume `(`
+                    let mut depth = 1u32;
+                    while depth > 0 && !parser.is_at_end() {
+                        match parser.current().kind {
+                            TokenKind::LeftParen => depth += 1,
+                            TokenKind::RightParen => depth -= 1,
+                            _ => {}
+                        }
+                        if depth > 0 {
+                            parser.advance();
+                        }
+                    }
+                    if depth == 0 {
+                        parser.advance(); // consume final `)`
+                    }
+                    // Return a placeholder zero — we cannot evaluate builtins here.
+                    Expression::IntegerLiteral {
+                        value: 0,
+                        suffix: super::ast::IntSuffix::None,
+                        base: super::ast::NumericBase::Decimal,
+                        span: parser.span_from(start),
+                    }
+                } else {
+                    Expression::Identifier { name: id, span }
                 }
             } else {
                 parser.advance();
@@ -985,17 +1123,150 @@ fn parse_constant_expression_simple(parser: &mut Parser<'_>) -> Expression {
         }
         TokenKind::LeftParen => {
             parser.advance(); // consume `(`
-            let expr = parse_constant_expression_simple(parser);
+
+            // Check if this is a cast expression: `(type_name) expr`
+            if is_type_start_token(parser, parser.current()) {
+                let type_name = parse_type_name(parser);
+                let _ = parser.expect(TokenKind::RightParen);
+                // Parse the operand — it's the cast target.
+                let cast_start = parser.current_span();
+                let operand = parse_const_expr_atom(parser, cast_start);
+                let span = parser.span_from(start);
+                Expression::Cast {
+                    type_name: Box::new(type_name),
+                    operand: Box::new(operand),
+                    span,
+                }
+            } else {
+                // Regular parenthesized expression.
+                let expr = parse_constant_expression_simple(parser);
+                let _ = parser.expect(TokenKind::RightParen);
+                let span = parser.span_from(start);
+                Expression::Paren {
+                    inner: Box::new(expr),
+                    span,
+                }
+            }
+        }
+        // Handle sizeof expressions: `sizeof(type)` or `sizeof expr`
+        TokenKind::Sizeof => {
+            parser.advance(); // consume `sizeof`
+            if parser.current().kind == TokenKind::LeftParen {
+                // Peek: is next token a type name?
+                if is_type_start_token(parser, parser.peek()) {
+                    parser.advance(); // consume `(`
+                    let type_name = parse_type_name(parser);
+                    let _ = parser.expect(TokenKind::RightParen);
+                    let span = parser.span_from(start);
+                    Expression::SizeofType {
+                        type_name: Box::new(type_name),
+                        span,
+                    }
+                } else {
+                    // sizeof(expr) — parse as sizeof of a parenthesized expression.
+                    // Consume `(` and parse the inner expression, then `)`.
+                    parser.advance(); // consume `(`
+                    let inner = parse_constant_expression_simple(parser);
+                    let _ = parser.expect(TokenKind::RightParen);
+                    let span = parser.span_from(start);
+                    Expression::SizeofExpr {
+                        expr: Box::new(Expression::Paren {
+                            inner: Box::new(inner),
+                            span: span.clone(),
+                        }),
+                        span,
+                    }
+                }
+            } else {
+                // sizeof expr (without parens)
+                let inner_start = parser.current_span();
+                let operand = parse_const_expr_atom(parser, inner_start);
+                let span = parser.span_from(start);
+                Expression::SizeofExpr {
+                    expr: Box::new(operand),
+                    span,
+                }
+            }
+        }
+        // Handle _Alignof(type_name)
+        TokenKind::Alignof => {
+            parser.advance(); // consume `_Alignof`
+            let _ = parser.expect(TokenKind::LeftParen);
+            let type_name = parse_type_name(parser);
             let _ = parser.expect(TokenKind::RightParen);
             let span = parser.span_from(start);
-            Expression::Paren {
-                inner: Box::new(expr),
+            Expression::Alignof {
+                type_name: Box::new(type_name),
                 span,
             }
         }
+        // Handle unary minus (e.g., `-1` in enum definitions)
+        TokenKind::Minus => {
+            parser.advance(); // consume `-`
+            let inner_start = parser.current_span();
+            let operand = parse_const_expr_atom(parser, inner_start);
+            let span = parser.span_from(start);
+            Expression::UnaryPrefix {
+                op: super::ast::UnaryOp::Negate,
+                operand: Box::new(operand),
+                span,
+            }
+        }
+        // Handle unary plus
+        TokenKind::Plus => {
+            parser.advance(); // consume `+`
+            let inner_start = parser.current_span();
+            let operand = parse_const_expr_atom(parser, inner_start);
+            let span = parser.span_from(start);
+            Expression::UnaryPrefix {
+                op: super::ast::UnaryOp::Plus,
+                operand: Box::new(operand),
+                span,
+            }
+        }
+        // Handle bitwise NOT (~)
+        TokenKind::Tilde => {
+            parser.advance(); // consume `~`
+            let inner_start = parser.current_span();
+            let operand = parse_const_expr_atom(parser, inner_start);
+            let span = parser.span_from(start);
+            Expression::UnaryPrefix {
+                op: super::ast::UnaryOp::BitwiseNot,
+                operand: Box::new(operand),
+                span,
+            }
+        }
+        // Handle logical NOT (!)
+        TokenKind::Bang => {
+            parser.advance(); // consume `!`
+            let inner_start = parser.current_span();
+            let operand = parse_const_expr_atom(parser, inner_start);
+            let span = parser.span_from(start);
+            Expression::UnaryPrefix {
+                op: super::ast::UnaryOp::LogicalNot,
+                operand: Box::new(operand),
+                span,
+            }
+        }
+        // Handle string literals in sizeof context (e.g., `sizeof("hello")`)
+        TokenKind::StringLiteral => {
+            if let TokenValue::Str(s) = parser.current().value.clone() {
+                parser.advance();
+                let span = parser.span_from(start);
+                Expression::StringLiteral {
+                    value: s,
+                    prefix: super::ast::StringPrefix::None,
+                    span,
+                }
+            } else {
+                parser.advance();
+                Expression::Error {
+                    span: parser.span_from(start),
+                }
+            }
+        }
         _ => {
-            // For more complex expressions, we consume tokens until we hit
-            // a stopping point and return an error expression.
+            // Unrecognized token — return error expression.
             Expression::Error {
                 span: parser.span_from(start),
             }
@@ -1590,6 +1861,7 @@ fn parse_parameter_type_list(parser: &mut Parser<'_>) -> ParamList {
             type_specifier: type_spec,
             function_specifiers: func_specs,
             attributes: Vec::new(),
+            alignment: None,
             span: parser.span_from(param_start),
         };
 

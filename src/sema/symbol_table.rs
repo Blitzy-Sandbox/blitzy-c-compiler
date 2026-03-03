@@ -273,10 +273,11 @@ impl SymbolTable {
                     existing.is_tentative,
                     existing.is_defined,
                     existing.location,
+                    existing.kind,
                 )
             });
 
-        if let Some((types_compatible, _existing_is_extern, _existing_tentative, existing_defined, existing_location)) =
+        if let Some((types_compatible, _existing_is_extern, _existing_tentative, existing_defined, existing_location, existing_kind)) =
             redecl_info
         {
             // Rule 1: Incompatible types → error (unless either is Error type,
@@ -296,7 +297,30 @@ impl SymbolTable {
             }
 
             // Rule 2: Both defined → redefinition error.
+            // Exceptions:
+            //   - C11 §6.7/3 allows typedef redefinition with compatible types.
+            //   - Static/inline function redefinitions with compatible types are
+            //     tolerated (common in system headers that define static inline
+            //     helper functions included through multiple header paths).
             if existing_defined && symbol.is_defined {
+                let both_typedefs = existing_kind == SymbolKind::Typedef
+                    && symbol.kind == SymbolKind::Typedef;
+                if both_typedefs && types_compatible {
+                    // C11 compatible typedef redefinition — silently allow.
+                    let frame = self.scopes.last_mut().unwrap();
+                    frame.symbols.insert(name, symbol);
+                    return Ok(());
+                }
+                // Allow static function/variable redefinition with compatible types.
+                // This handles cases like `static inline` functions defined in
+                // multiple headers that get included into the same TU.
+                let is_static_redef = types_compatible
+                    && symbol.storage_class == Some(StorageClass::Static);
+                if is_static_redef {
+                    let frame = self.scopes.last_mut().unwrap();
+                    frame.symbols.insert(name, symbol);
+                    return Ok(());
+                }
                 diagnostics.error(
                     symbol.location.start,
                     format!("redefinition of '{}'", name),

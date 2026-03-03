@@ -899,7 +899,10 @@ pub fn compute_stack_frame(
     // can be used by leaf functions without adjusting RSP, using RSP-relative
     // addressing. This eliminates the need for a frame pointer and prologue.
     let total_unaligned = callee_save_bytes + body_size;
-    let use_red_zone = !has_calls && total_unaligned <= 128 && callee_saved.is_empty();
+    // Red zone requires: leaf function, small frame, no callee saves,
+    // AND no locals/spills that would use RBP-relative addressing (since
+    // red zone skips the frame pointer setup entirely).
+    let use_red_zone = !has_calls && total_unaligned <= 128 && callee_saved.is_empty() && body_size == 0;
 
     // Compute aligned frame size for the sub rsp instruction.
     // After push rbp (8 bytes) the stack is 16-byte aligned (because the
@@ -1455,11 +1458,19 @@ mod tests {
 
     #[test]
     fn test_red_zone_optimization() {
-        // Leaf function, small frame, no callee-saved
-        let frame = compute_stack_frame(16, 0, &[], false);
+        // Red zone applies only to leaf functions with NO body locals
+        // (body_size == 0), because our instruction selection always
+        // uses RBP-relative addressing for allocas, which requires
+        // a prologue (push rbp; mov rbp, rsp).
+        let frame = compute_stack_frame(0, 0, &[], false);
         assert!(frame.use_red_zone);
         assert_eq!(frame.frame_size, 0);
         assert!(!frame.uses_frame_pointer);
+
+        // body_size > 0 should disable red zone (needs RBP for allocas)
+        let frame2 = compute_stack_frame(16, 0, &[], false);
+        assert!(!frame2.use_red_zone);
+        assert!(frame2.uses_frame_pointer);
     }
 
     #[test]
@@ -1514,7 +1525,9 @@ mod tests {
 
     #[test]
     fn test_prologue_red_zone() {
-        let frame = compute_stack_frame(16, 0, &[], false);
+        // Red zone requires body_size == 0 (no local variables) because
+        // our isel uses RBP-relative addressing for locals.
+        let frame = compute_stack_frame(0, 0, &[], false);
         assert!(frame.use_red_zone);
         let prologue = generate_prologue(&frame);
         assert!(prologue.is_empty());
@@ -1547,7 +1560,9 @@ mod tests {
 
     #[test]
     fn test_epilogue_red_zone() {
-        let frame = compute_stack_frame(16, 0, &[], false);
+        // Red zone requires body_size == 0 (no local variables) because
+        // our isel uses RBP-relative addressing for locals.
+        let frame = compute_stack_frame(0, 0, &[], false);
         assert!(frame.use_red_zone);
         let epilogue = generate_epilogue(&frame);
         // Red zone epilogue: just ret

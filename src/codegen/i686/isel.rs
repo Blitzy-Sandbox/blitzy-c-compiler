@@ -426,7 +426,7 @@ impl<'a> ISel<'a> {
             Instruction::Load { result, ty, ptr } => {
                 self.select_load(*result, ty, *ptr)?;
             }
-            Instruction::Store { value, ptr } => {
+            Instruction::Store { value, ptr, .. } => {
                 self.select_store(*value, *ptr)?;
             }
             Instruction::GetElementPtr { result, base_ty, ptr, indices, in_bounds: _ } => {
@@ -593,12 +593,23 @@ impl<'a> ISel<'a> {
 
         // mov dst, lhs
         self.emit_with(I686Opcode::Mov, vec![
-            MachineOperand::Register(dst), lhs_op,
+            MachineOperand::Register(dst), lhs_op.clone(),
         ]);
-        // imul dst, rhs
-        self.emit_with(I686Opcode::Imul, vec![
-            MachineOperand::Register(dst), rhs_op,
-        ]);
+
+        // IMUL 2-operand form only supports r/m32 source.
+        // For immediate source, use 3-operand form: imul dst, dst, imm
+        match &rhs_op {
+            MachineOperand::Immediate(_) => {
+                self.emit_with(I686Opcode::Imul, vec![
+                    MachineOperand::Register(dst), lhs_op, rhs_op,
+                ]);
+            }
+            _ => {
+                self.emit_with(I686Opcode::Imul, vec![
+                    MachineOperand::Register(dst), rhs_op,
+                ]);
+            }
+        }
 
         Ok(())
     }
@@ -1223,18 +1234,34 @@ impl<'a> ISel<'a> {
         let val_op = self.operand_for(value);
         let ptr_op = self.operand_for(ptr);
 
-        // Check if we have type info from the value map to determine store size.
-        // For simplicity, emit a 32-bit store by default.
         let mem = ptr_to_mem(ptr_op.clone());
 
         // Check if value has a high half (64-bit)
         if self.value_hi_map.contains_key(&value) {
             let val_hi = self.operand_hi_for(value);
             let mem_hi = offset_mem(ptr_op, 4);
-            self.emit_with(I686Opcode::Mov, vec![mem.clone(), val_op]);
-            self.emit_with(I686Opcode::Mov, vec![mem_hi, val_hi]);
+            // Prevent mem-to-mem MOV: load to temp register first.
+            let (lo_op, hi_op) = if matches!(val_op, MachineOperand::Memory { .. }) {
+                let tmp = self.alloc_vreg();
+                self.emit_with(I686Opcode::Mov, vec![MachineOperand::Register(tmp), val_op]);
+                let tmp2 = self.alloc_vreg();
+                self.emit_with(I686Opcode::Mov, vec![MachineOperand::Register(tmp2), val_hi]);
+                (MachineOperand::Register(tmp), MachineOperand::Register(tmp2))
+            } else {
+                (val_op, val_hi)
+            };
+            self.emit_with(I686Opcode::Mov, vec![mem.clone(), lo_op]);
+            self.emit_with(I686Opcode::Mov, vec![mem_hi, hi_op]);
         } else {
-            self.emit_with(I686Opcode::Mov, vec![mem, val_op]);
+            // Prevent mem-to-mem MOV: if val_op is Memory, load to temp first.
+            let src_op = if matches!(val_op, MachineOperand::Memory { .. }) && matches!(mem, MachineOperand::Memory { .. }) {
+                let tmp = self.alloc_vreg();
+                self.emit_with(I686Opcode::Mov, vec![MachineOperand::Register(tmp), val_op]);
+                MachineOperand::Register(tmp)
+            } else {
+                val_op
+            };
+            self.emit_with(I686Opcode::Mov, vec![mem, src_op]);
         }
 
         Ok(())
@@ -1287,7 +1314,9 @@ impl<'a> ISel<'a> {
                             MachineOperand::Register(tmp), idx_op,
                         ]);
                         if elem_size > 1 {
+                            // 3-operand IMUL: imul tmp, tmp, elem_size
                             self.emit_with(I686Opcode::Imul, vec![
+                                MachineOperand::Register(tmp),
                                 MachineOperand::Register(tmp),
                                 MachineOperand::Immediate(elem_size as i64),
                             ]);
@@ -1301,7 +1330,9 @@ impl<'a> ISel<'a> {
                         self.emit_with(I686Opcode::Mov, vec![
                             MachineOperand::Register(tmp), idx_op,
                         ]);
+                        // 3-operand IMUL: imul tmp, tmp, elem_size
                         self.emit_with(I686Opcode::Imul, vec![
+                            MachineOperand::Register(tmp),
                             MachineOperand::Register(tmp),
                             MachineOperand::Immediate(elem_size as i64),
                         ]);
@@ -1755,18 +1786,65 @@ impl<'a> ISel<'a> {
             }
             Constant::Float { value: fval, ty } => {
                 let dst = self.bind_vreg(result);
-                // Float constants are loaded from a data section reference.
-                // For now, encode the float bits as an immediate in the symbol name.
-                let label = format!(".LC_float_{:016x}", fval.to_bits());
-                let load_op = match ty {
-                    IrType::F32 => I686Opcode::Movss,
-                    IrType::F64 => I686Opcode::Movsd,
-                    _ => I686Opcode::Movss,
-                };
-                self.emit_with(load_op, vec![
-                    MachineOperand::Register(dst),
-                    MachineOperand::Symbol(label),
-                ]);
+                // Materialise float constant by pushing integer bits onto the
+                // stack and then loading them into an XMM register.  This avoids
+                // referencing a data section symbol (which the MOVSD/MOVSS
+                // encoder does not support on i686).
+                let is_f32 = matches!(ty, IrType::F32);
+                if is_f32 {
+                    // F32: push 4 bytes, load via MOVSS, pop cleanup
+                    let bits = (*fval as f32).to_bits() as i64;
+                    let tmp = self.alloc_vreg();
+                    self.emit_with(I686Opcode::Mov, vec![
+                        MachineOperand::Register(tmp),
+                        MachineOperand::Immediate(bits),
+                    ]);
+                    self.emit_with(I686Opcode::Push, vec![
+                        MachineOperand::Register(tmp),
+                    ]);
+                    self.emit_with(I686Opcode::Movss, vec![
+                        MachineOperand::Register(dst),
+                        MachineOperand::Memory { base: ESP, offset: 0 },
+                    ]);
+                    // Restore stack: add esp, 4
+                    self.emit_with(I686Opcode::Add, vec![
+                        MachineOperand::Register(ESP),
+                        MachineOperand::Immediate(4),
+                    ]);
+                } else {
+                    // F64: push 8 bytes (hi then lo for correct byte order),
+                    // load via MOVSD, then clean up stack.
+                    let bits = fval.to_bits();
+                    let lo = (bits & 0xFFFF_FFFF) as u32 as i64;
+                    let hi = (bits >> 32) as u32 as i64;
+                    let tmp = self.alloc_vreg();
+                    // Push high 32 bits first (grows downward)
+                    self.emit_with(I686Opcode::Mov, vec![
+                        MachineOperand::Register(tmp),
+                        MachineOperand::Immediate(hi),
+                    ]);
+                    self.emit_with(I686Opcode::Push, vec![
+                        MachineOperand::Register(tmp),
+                    ]);
+                    // Push low 32 bits
+                    self.emit_with(I686Opcode::Mov, vec![
+                        MachineOperand::Register(tmp),
+                        MachineOperand::Immediate(lo),
+                    ]);
+                    self.emit_with(I686Opcode::Push, vec![
+                        MachineOperand::Register(tmp),
+                    ]);
+                    // Load 64-bit double from [esp]
+                    self.emit_with(I686Opcode::Movsd, vec![
+                        MachineOperand::Register(dst),
+                        MachineOperand::Memory { base: ESP, offset: 0 },
+                    ]);
+                    // Restore stack: add esp, 8
+                    self.emit_with(I686Opcode::Add, vec![
+                        MachineOperand::Register(ESP),
+                        MachineOperand::Immediate(8),
+                    ]);
+                }
             }
             Constant::Bool(b) => {
                 let dst = self.bind_vreg(result);
@@ -2163,6 +2241,8 @@ mod tests {
             blocks: vec![block],
             entry_block: BlockId(0),
             is_definition: true,
+is_static: false,
+is_weak: false,
         }
     }
 
@@ -2323,6 +2403,8 @@ mod tests {
             blocks: vec![block0, b1],
             entry_block: BlockId(0),
             is_definition: true,
+is_static: false,
+is_weak: false,
         };
         let result = select_instructions(&func, &target).unwrap();
         assert!(has_opcode(&result, I686Opcode::Cmp), "should have Cmp instruction");
@@ -2473,6 +2555,8 @@ mod tests {
             blocks: vec![],
             entry_block: BlockId(0),
             is_definition: false,
+is_static: false,
+is_weak: false,
         };
         let result = select_instructions(&func, &target).unwrap();
         assert!(result.is_empty(), "non-definition should produce empty output");

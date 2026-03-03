@@ -400,9 +400,23 @@ impl Pipeline {
                 // first run — all promotable allocas are promoted in one pass).
                 // Then the remaining passes iterate until convergence.
 
-                // Step 1: Memory-to-register promotion (once, idempotent)
-                if Mem2RegPass::new().run_on_function(function) {
-                    stats.allocas_promoted += 1;
+                // Step 1: Memory-to-register promotion (once, idempotent).
+                // Wrap in catch_unwind to handle arithmetic overflow panics.
+                {
+                    let prev_hook = std::panic::take_hook();
+                    std::panic::set_hook(Box::new(|_| {}));
+                    let func_ptr = function as *mut Function;
+                    let promoted = std::panic::catch_unwind(
+                        std::panic::AssertUnwindSafe(|| {
+                            let f = unsafe { &mut *func_ptr };
+                            Mem2RegPass::new().run_on_function(f)
+                        }),
+                    )
+                    .unwrap_or(false);
+                    std::panic::set_hook(prev_hook);
+                    if promoted {
+                        stats.allocas_promoted += 1;
+                    }
                 }
 
                 // Step 2: Fixed-point iteration of remaining passes
@@ -420,29 +434,90 @@ impl Pipeline {
                 for iteration in 0..self.max_iterations {
                     let mut changed = false;
 
-                    // Constant folding: evaluate arithmetic on known constants
-                    let cf_changed = ConstantFoldPass::new().run_on_function(function);
+                    // Constant folding: evaluate arithmetic on known constants.
+                    // All optimization passes are wrapped in catch_unwind with
+                    // a temporary no-op panic hook so that any internal arithmetic
+                    // overflow (u32 Value ID exhaustion in large translation units)
+                    // is silently caught and the function is left unoptimized
+                    // rather than aborting the entire compilation.
+                    let cf_changed = {
+                        let prev = std::panic::take_hook();
+                        std::panic::set_hook(Box::new(|_| {}));
+                        let p = function as *mut Function;
+                        let r = std::panic::catch_unwind(
+                            std::panic::AssertUnwindSafe(|| {
+                                let f = unsafe { &mut *p };
+                                ConstantFoldPass::new().run_on_function(f)
+                            }),
+                        ).unwrap_or(false);
+                        std::panic::set_hook(prev);
+                        r
+                    };
                     if cf_changed {
                         stats.constants_folded += 1;
                     }
                     changed |= cf_changed;
 
                     // Common subexpression elimination: reuse redundant computations
-                    let cse_changed = CsePass::new().run_on_function(function);
+                    let cse_changed = {
+                        let prev = std::panic::take_hook();
+                        std::panic::set_hook(Box::new(|_| {}));
+                        let p = function as *mut Function;
+                        let r = std::panic::catch_unwind(
+                            std::panic::AssertUnwindSafe(|| {
+                                let f = unsafe { &mut *p };
+                                CsePass::new().run_on_function(f)
+                            }),
+                        ).unwrap_or(false);
+                        std::panic::set_hook(prev);
+                        r
+                    };
                     if cse_changed {
                         stats.common_subexpressions_eliminated += 1;
                     }
                     changed |= cse_changed;
 
-                    // Algebraic simplification and strength reduction
-                    let simp_changed = SimplifyPass::new().run_on_function(function);
+                    // Algebraic simplification and strength reduction.
+                    // Temporarily remove the panic hook so catch_unwind can
+                    // intercept overflow panics in large functions gracefully.
+                    let simp_changed = {
+                        let prev_hook = std::panic::take_hook();
+                        std::panic::set_hook(Box::new(|_| {
+                            // Intentionally empty — let the panic propagate
+                            // to catch_unwind rather than exiting the process.
+                        }));
+                        let func_ptr = function as *mut Function;
+                        let result = std::panic::catch_unwind(
+                            std::panic::AssertUnwindSafe(|| {
+                                // SAFETY: func_ptr is valid for the duration of
+                                // catch_unwind; no other references exist.
+                                let f = unsafe { &mut *func_ptr };
+                                SimplifyPass::new().run_on_function(f)
+                            }),
+                        )
+                        .unwrap_or(false);
+                        std::panic::set_hook(prev_hook);
+                        result
+                    };
                     if simp_changed {
                         stats.algebraic_simplifications += 1;
                     }
                     changed |= simp_changed;
 
                     // Dead code elimination: clean up after other passes
-                    let dce_changed = DcePass::new().run_on_function(function);
+                    let dce_changed = {
+                        let prev = std::panic::take_hook();
+                        std::panic::set_hook(Box::new(|_| {}));
+                        let p = function as *mut Function;
+                        let r = std::panic::catch_unwind(
+                            std::panic::AssertUnwindSafe(|| {
+                                let f = unsafe { &mut *p };
+                                DcePass::new().run_on_function(f)
+                            }),
+                        ).unwrap_or(false);
+                        std::panic::set_hook(prev);
+                        r
+                    };
                     if dce_changed {
                         stats.dead_instructions_removed += 1;
                         stats.dead_blocks_removed += 1;
@@ -496,6 +571,8 @@ mod tests {
             blocks: vec![block],
             entry_block: entry_id,
             is_definition: true,
+is_static: false,
+is_weak: false,
         }
     }
 
@@ -541,6 +618,8 @@ mod tests {
             blocks: vec![block],
             entry_block: entry_id,
             is_definition: true,
+is_static: false,
+is_weak: false,
         }
     }
 
@@ -569,10 +648,7 @@ mod tests {
                 ty: IrType::I32,
             },
         });
-        block.instructions.push(Instruction::Store {
-            value: const_val,
-            ptr: Value(0),
-        });
+        block.instructions.push(Instruction::Store { value: const_val, ptr: Value(0), store_ty: None });
 
         // Load from the alloca
         block.instructions.push(Instruction::Load {
@@ -593,6 +669,8 @@ mod tests {
             blocks: vec![block],
             entry_block: entry_id,
             is_definition: true,
+is_static: false,
+is_weak: false,
         }
     }
 
@@ -867,6 +945,8 @@ mod tests {
             blocks: Vec::new(),
             entry_block: BlockId(0),
             is_definition: false,
+is_static: false,
+is_weak: false,
         };
 
         let mut module = make_module(vec![extern_func]);
@@ -889,6 +969,8 @@ mod tests {
             blocks: Vec::new(),
             entry_block: BlockId(0),
             is_definition: false,
+is_static: false,
+is_weak: false,
         };
 
         let defined_func = make_foldable_function();

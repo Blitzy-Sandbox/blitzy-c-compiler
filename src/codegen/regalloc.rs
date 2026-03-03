@@ -226,6 +226,15 @@ pub struct LiveInterval {
     /// Call-crossing intervals prefer callee-saved registers because
     /// caller-saved registers would be clobbered by the call.
     pub crosses_call: bool,
+
+    /// Whether this interval corresponds to an Alloca instruction result.
+    ///
+    /// The instruction selector maps alloca values to RBP-relative Memory
+    /// operands, so they never need physical registers.  Marking them here
+    /// lets the allocator assign only caller-saved registers (or spill),
+    /// preserving the callee-saved pool for values that genuinely need to
+    /// survive across function calls.
+    pub is_alloca: bool,
 }
 
 impl fmt::Display for LiveInterval {
@@ -454,8 +463,8 @@ pub fn compute_live_intervals(function: &Function) -> Vec<LiveInterval> {
     // -----------------------------------------------------------------------
     // Step 3: Compute definition and use points for every SSA value
     // -----------------------------------------------------------------------
-    // Maps Value → (definition_index, register_class, is_param).
-    let mut value_def: HashMap<Value, (u32, RegClass, bool)> =
+    // Maps Value → (definition_index, register_class, is_param, is_alloca).
+    let mut value_def: HashMap<Value, (u32, RegClass, bool, bool)> =
         HashMap::with_capacity(global_index as usize);
     // Maps Value → last use instruction index (exclusive end = last_use + 1).
     let mut value_last_use: HashMap<Value, u32> = HashMap::with_capacity(global_index as usize);
@@ -484,7 +493,7 @@ pub fn compute_live_intervals(function: &Function) -> Vec<LiveInterval> {
         for phi in phi_nodes {
             // The phi result is defined at this index.
             let rc = classify_type(&phi.ty);
-            value_def.entry(phi.result).or_insert((phi_idx, rc, false));
+            value_def.entry(phi.result).or_insert((phi_idx, rc, false, false));
 
             // Phi incoming values are logically used at the end of their
             // respective predecessor blocks (the value flows along the edge).
@@ -524,7 +533,8 @@ pub fn compute_live_intervals(function: &Function) -> Vec<LiveInterval> {
                 if matches!(instr, Instruction::Alloca { .. }) && is_entry {
                     param_alloca_count += 1;
                 }
-                value_def.entry(result).or_insert((instr_idx, rc, is_param_val));
+                let is_alloca = matches!(instr, Instruction::Alloca { .. });
+                value_def.entry(result).or_insert((instr_idx, rc, is_param_val, is_alloca));
             }
 
             // Record uses for all operands.
@@ -561,18 +571,137 @@ pub fn compute_live_intervals(function: &Function) -> Vec<LiveInterval> {
     }
 
     // -----------------------------------------------------------------------
+    // Step 3b: Extend live intervals across loop back-edges
+    // -----------------------------------------------------------------------
+    // After trivial phi simplification in mem2reg, values used in loop
+    // headers may lose their loop-carried liveness because the phi was
+    // removed.  For correctness, any value that is live at a loop header
+    // must remain live across the entire loop body (up to the back-edge
+    // source's terminator).
+    //
+    // Algorithm:
+    //   1. Identify back-edges: successors with a lower RPO index than
+    //      the current block.
+    //   2. For each back-edge (source → header), collect all values used
+    //      in the header block.
+    //   3. For values defined before the header, extend their last-use
+    //      to cover the source block's terminator.
+    {
+        // Build RPO index map for O(1) lookups.
+        let rpo_index: HashMap<BlockId, usize> = rpo.iter().enumerate()
+            .map(|(i, &bid)| (bid, i))
+            .collect();
+
+        // Collect loop back-edges: (source_block, header_block)
+        let mut back_edges: Vec<(BlockId, BlockId)> = Vec::new();
+        for &block_id in &rpo {
+            let idx = block_id.0 as usize;
+            if idx >= function.blocks.len() { continue; }
+            if let Some(ref term) = function.blocks[idx].terminator {
+                let succs: Vec<BlockId> = match term {
+                    crate::ir::Terminator::Branch { target } => vec![*target],
+                    crate::ir::Terminator::CondBranch { true_block, false_block, .. } => {
+                        vec![*true_block, *false_block]
+                    }
+                    crate::ir::Terminator::Switch { default, cases, .. } => {
+                        let mut s = vec![*default];
+                        for &(_, t) in cases { s.push(t); }
+                        s
+                    }
+                    _ => Vec::new(),
+                };
+                for succ in succs {
+                    if let (Some(&src_rpo), Some(&dst_rpo)) = (rpo_index.get(&block_id), rpo_index.get(&succ)) {
+                        if dst_rpo <= src_rpo {
+                            back_edges.push((block_id, succ));
+                        }
+                    }
+                }
+            }
+        }
+
+        // For each back-edge, extend live ranges of values used in the
+        // header block (and its successors within the loop).
+        for &(source_block, header_block) in &back_edges {
+            let source_layout = match block_layout.get(&source_block) {
+                Some(l) => *l,
+                None => continue,
+            };
+            let header_layout = match block_layout.get(&header_block) {
+                Some(l) => *l,
+                None => continue,
+            };
+            let header_idx = header_block.0 as usize;
+            if header_idx >= function.blocks.len() { continue; }
+            let header = &function.blocks[header_idx];
+            let back_edge_point = source_layout.term_index + 1;
+
+            // Collect all values used in the header block.
+            let mut header_uses: HashSet<Value> = HashSet::new();
+            for phi in &header.phi_nodes {
+                // Phi incoming values are already handled above
+                for &(val, _) in &phi.incoming {
+                    header_uses.insert(val);
+                }
+            }
+            for inst in &header.instructions {
+                for op in inst.operands() {
+                    header_uses.insert(op);
+                }
+            }
+            if let Some(ref term) = header.terminator {
+                for op in terminator_operands(term) {
+                    header_uses.insert(op);
+                }
+            }
+
+            // Extend intervals for values defined before the header
+            // that are used in the header.
+            for val in &header_uses {
+                if let Some(&(def_idx, _, _, _)) = value_def.get(val) {
+                    if def_idx < header_layout.phi_start {
+                        // Value defined before the loop header — extend
+                        // its live range to cover the back-edge source.
+                        value_last_use
+                            .entry(*val)
+                            .and_modify(|e| *e = (*e).max(back_edge_point))
+                            .or_insert(back_edge_point);
+                    }
+                }
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // Step 4: Build LiveInterval structs from def/use data
     // -----------------------------------------------------------------------
     let mut intervals: Vec<LiveInterval> = Vec::with_capacity(value_def.len());
 
-    for (value, &(start, reg_class, is_param)) in value_def.iter() {
-        // End is the exclusive end point. If the value has no uses, the
-        // interval has minimum length 1 (just the definition).
-        let end = value_last_use
-            .get(value)
-            .copied()
-            .unwrap_or(start + 1)
-            .max(start + 1);
+    for (value, &(start, reg_class, is_param, is_alloca)) in value_def.iter() {
+        // Alloca results are mapped to RBP-relative Memory operands by the
+        // instruction selector and never occupy a physical register at
+        // runtime.  In functions that contain Call instructions, long-lived
+        // alloca intervals would cross those calls and consume callee-saved
+        // registers — starving genuine call-crossing values (like function
+        // return results) that actually need callee-saved registers to
+        // survive across subsequent calls.
+        //
+        // Fix: in functions WITH calls, give alloca intervals a point-sized
+        // range (start, start+1) so they are allocated momentarily (keeping
+        // the allocator state consistent) but freed immediately.  In
+        // functions WITHOUT calls (leaf functions), alloca intervals never
+        // cross calls anyway, so leave them at their natural length to
+        // avoid perturbing the allocation order of other intervals.
+        let has_calls = !call_indices.is_empty();
+        let end = if is_alloca && has_calls {
+            start + 1
+        } else {
+            value_last_use
+                .get(value)
+                .copied()
+                .unwrap_or(start + 1)
+                .max(start + 1)
+        };
 
         // An interval crosses a call if any Call instruction falls strictly
         // within the open interval (start, end).
@@ -589,6 +718,7 @@ pub fn compute_live_intervals(function: &Function) -> Vec<LiveInterval> {
             spill_slot: None,
             is_param,
             crosses_call,
+            is_alloca,
         });
     }
 
@@ -615,6 +745,7 @@ pub fn compute_live_intervals(function: &Function) -> Vec<LiveInterval> {
 fn select_register(
     reg_class: RegClass,
     crosses_call: bool,
+    _is_alloca: bool,
     free_regs: &HashSet<PhysReg>,
     reg_info: &RegisterInfo,
 ) -> Option<PhysReg> {
@@ -625,7 +756,9 @@ fn select_register(
         .copied()
         .collect();
 
-    if crosses_call {
+    let want_callee_saved = crosses_call;
+
+    if want_callee_saved {
         // Prefer callee-saved first (they survive the call).
         for &reg in all_regs {
             if free_regs.contains(&reg) && callee_saved.contains(&reg) {
@@ -727,16 +860,35 @@ pub fn linear_scan_allocate(
         }
         active = new_active;
 
+        // ----- Handle pre-assigned intervals (e.g. ABI parameter regs) -----
+        // If the interval already has a register assigned (by the caller
+        // marking ABI parameter registers), honour that assignment: remove
+        // the register from the free set and add to active without going
+        // through the normal allocation/spill logic.
+        if let Some(fixed_reg) = intervals[i].assigned_reg {
+            match intervals[i].reg_class {
+                RegClass::Integer => { free_int.remove(&fixed_reg); }
+                RegClass::Float => { free_float.remove(&fixed_reg); }
+            }
+            if reg_info.is_callee_saved(fixed_reg) {
+                used_callee_saved.insert(fixed_reg);
+            }
+            let pos = active.partition_point(|&idx| intervals[idx].end <= intervals[i].end);
+            active.insert(pos, i);
+            continue;
+        }
+
         // ----- Try to allocate a register -----
         let rc = intervals[i].reg_class;
         let crosses_call = intervals[i].crosses_call;
+        let is_alloca = intervals[i].is_alloca;
 
         let free_set = match rc {
             RegClass::Integer => &free_int,
             RegClass::Float => &free_float,
         };
 
-        if let Some(reg) = select_register(rc, crosses_call, free_set, reg_info) {
+        if let Some(reg) = select_register(rc, crosses_call, is_alloca, free_set, reg_info) {
             // Successfully allocated.
             intervals[i].assigned_reg = Some(reg);
             match rc {
@@ -744,7 +896,6 @@ pub fn linear_scan_allocate(
                 RegClass::Float => { free_float.remove(&reg); }
             }
 
-            // Track callee-saved usage.
             if reg_info.is_callee_saved(reg) {
                 used_callee_saved.insert(reg);
             }
@@ -772,7 +923,6 @@ pub fn linear_scan_allocate(
                     // Assign the freed register to the current interval.
                     intervals[i].assigned_reg = Some(freed_reg);
 
-                    // Track callee-saved usage for the newly assigned register.
                     if reg_info.is_callee_saved(freed_reg) {
                         used_callee_saved.insert(freed_reg);
                     }
@@ -882,6 +1032,21 @@ pub fn build_value_to_reg_map(alloc_result: &AllocationResult) -> HashMap<Value,
     map
 }
 
+/// Builds a mapping from IR Values to their register class as determined by
+/// the register allocator's live interval analysis.
+///
+/// This is needed by the register assignment phase to determine whether an
+/// unmapped (spilled or temporary) vreg should fall back to a GPR or an XMM
+/// scratch register. Without this, all unmapped vregs default to GPRs, which
+/// causes panics when SSE instructions (ADDSD, SUBSD, etc.) receive GPR operands.
+pub fn build_value_to_class_map(alloc_result: &AllocationResult) -> HashMap<Value, RegClass> {
+    let mut map = HashMap::with_capacity(alloc_result.intervals.len());
+    for interval in alloc_result.intervals.iter() {
+        map.insert(interval.value, interval.reg_class);
+    }
+    map
+}
+
 // ===========================================================================
 // Unit tests
 // ===========================================================================
@@ -982,6 +1147,8 @@ mod tests {
             blocks: vec![entry],
             entry_block: entry_id,
             is_definition: true,
+is_static: false,
+is_weak: false,
         }
     }
 
@@ -1059,6 +1226,8 @@ mod tests {
             blocks: vec![entry, then_block, else_block, merge_block],
             entry_block: entry_id,
             is_definition: true,
+is_static: false,
+is_weak: false,
         }
     }
 
@@ -1101,6 +1270,8 @@ mod tests {
             blocks: vec![entry],
             entry_block: entry_id,
             is_definition: true,
+is_static: false,
+is_weak: false,
         }
     }
 
@@ -1192,6 +1363,8 @@ mod tests {
             blocks: vec![],
             entry_block: BlockId(0),
             is_definition: true,
+is_static: false,
+is_weak: false,
         };
         let intervals = compute_live_intervals(&func);
         assert!(intervals.is_empty());
@@ -1289,6 +1462,7 @@ mod tests {
                 spill_slot: None,
                 is_param: false,
                 crosses_call: false,
+                    is_alloca: false,
             },
             LiveInterval {
                 value: Value(1),
@@ -1299,6 +1473,7 @@ mod tests {
                 spill_slot: None,
                 is_param: false,
                 crosses_call: false,
+                    is_alloca: false,
             },
         ];
 
@@ -1330,6 +1505,7 @@ mod tests {
                 spill_slot: None,
                 is_param: false,
                 crosses_call: false,
+                    is_alloca: false,
             },
             LiveInterval {
                 value: Value(1),
@@ -1340,6 +1516,7 @@ mod tests {
                 spill_slot: None,
                 is_param: false,
                 crosses_call: false,
+                    is_alloca: false,
             },
         ];
 
@@ -1365,6 +1542,7 @@ mod tests {
                 spill_slot: None,
                 is_param: false,
                 crosses_call: false,
+                    is_alloca: false,
             },
             LiveInterval {
                 value: Value(1),
@@ -1375,6 +1553,7 @@ mod tests {
                 spill_slot: None,
                 is_param: false,
                 crosses_call: false,
+                    is_alloca: false,
             },
         ];
 
@@ -1409,6 +1588,7 @@ mod tests {
             spill_slot: None,
             is_param: false,
             crosses_call: true, // crosses a call
+                    is_alloca: false,
         }];
 
         let result = linear_scan_allocate(&mut intervals, &ri);
@@ -1433,6 +1613,7 @@ mod tests {
             spill_slot: None,
             is_param: false,
             crosses_call: false, // does not cross a call
+                    is_alloca: false,
         }];
 
         let result = linear_scan_allocate(&mut intervals, &ri);
@@ -1464,6 +1645,7 @@ mod tests {
                 spill_slot: None,
                 is_param: false,
                 crosses_call: false,
+                    is_alloca: false,
             },
             LiveInterval {
                 value: Value(1),
@@ -1474,6 +1656,7 @@ mod tests {
                 spill_slot: None,
                 is_param: false,
                 crosses_call: false,
+                    is_alloca: false,
             },
             LiveInterval {
                 value: Value(2),
@@ -1484,6 +1667,7 @@ mod tests {
                 spill_slot: None,
                 is_param: false,
                 crosses_call: false,
+                    is_alloca: false,
             },
         ];
 
@@ -1510,6 +1694,7 @@ mod tests {
             spill_slot: None,
             is_param: false,
             crosses_call: false,
+                    is_alloca: false,
         }];
 
         let result = linear_scan_allocate(&mut intervals, &ri);
@@ -1537,6 +1722,7 @@ mod tests {
                 spill_slot: None,
                 is_param: false,
                 crosses_call: false,
+                    is_alloca: false,
             },
             LiveInterval {
                 value: Value(1),
@@ -1547,6 +1733,7 @@ mod tests {
                 spill_slot: None,
                 is_param: false,
                 crosses_call: false,
+                    is_alloca: false,
             },
             LiveInterval {
                 value: Value(2),
@@ -1557,6 +1744,7 @@ mod tests {
                 spill_slot: None,
                 is_param: false,
                 crosses_call: false,
+                    is_alloca: false,
             },
         ];
 
@@ -1588,6 +1776,7 @@ mod tests {
                 spill_slot: None,
                 is_param: false,
                 crosses_call: false,
+                    is_alloca: false,
             },
             LiveInterval {
                 value: Value(1),
@@ -1598,6 +1787,7 @@ mod tests {
                 spill_slot: None,
                 is_param: false,
                 crosses_call: false,
+                    is_alloca: false,
             },
         ];
 
@@ -1663,6 +1853,7 @@ mod tests {
                     spill_slot: None,
                     is_param: false,
                     crosses_call: false,
+                    is_alloca: false,
                 },
                 LiveInterval {
                     value: Value(1),
@@ -1673,6 +1864,7 @@ mod tests {
                     spill_slot: None,
                     is_param: false,
                     crosses_call: false,
+                    is_alloca: false,
                 },
             ],
             num_spill_slots: 0,
@@ -1699,6 +1891,7 @@ mod tests {
                     spill_slot: None,
                     is_param: false,
                     crosses_call: false,
+                    is_alloca: false,
                 },
                 LiveInterval {
                     value: Value(1),
@@ -1709,6 +1902,7 @@ mod tests {
                     spill_slot: Some(0),
                     is_param: false,
                     crosses_call: false,
+                    is_alloca: false,
                 },
             ],
             num_spill_slots: 1,
@@ -1737,6 +1931,7 @@ mod tests {
             spill_slot: None,
             is_param: false,
             crosses_call: false,
+                    is_alloca: false,
         };
         let s = format!("{}", iv);
         assert!(s.contains("%5"));
@@ -1755,6 +1950,7 @@ mod tests {
             spill_slot: Some(0),
             is_param: false,
             crosses_call: false,
+                    is_alloca: false,
         };
         let s = format!("{}", iv);
         assert!(s.contains("%8"));
@@ -1773,6 +1969,7 @@ mod tests {
             spill_slot: None,
             is_param: false,
             crosses_call: false,
+                    is_alloca: false,
         };
         let s = format!("{}", iv);
         assert!(s.contains("unassigned"));
@@ -1856,6 +2053,8 @@ mod tests {
             blocks: vec![entry],
             entry_block: entry_id,
             is_definition: true,
+is_static: false,
+is_weak: false,
         };
 
         let intervals = compute_live_intervals(&func);
@@ -1885,6 +2084,8 @@ mod tests {
             blocks: vec![entry],
             entry_block: entry_id,
             is_definition: true,
+is_static: false,
+is_weak: false,
         };
 
         let intervals = compute_live_intervals(&func);
@@ -1912,6 +2113,7 @@ mod tests {
                 spill_slot: None,
                 is_param: false,
                 crosses_call: false,
+                    is_alloca: false,
             },
             LiveInterval {
                 value: Value(1),
@@ -1922,6 +2124,7 @@ mod tests {
                 spill_slot: None,
                 is_param: false,
                 crosses_call: false,
+                    is_alloca: false,
             },
         ];
 
@@ -1965,6 +2168,8 @@ mod tests {
             blocks: vec![entry],
             entry_block: entry_id,
             is_definition: true,
+is_static: false,
+is_weak: false,
         };
 
         let intervals = compute_live_intervals(&func);

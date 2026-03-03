@@ -340,15 +340,10 @@ fn validate_file_scope_storage(
             Err(())
         }
         Some(StorageClass::ThreadLocal) => {
-            // `_Thread_local` alone at file scope is an error. When
-            // `check_conflicting_specifiers` validates `_Thread_local` with a
-            // companion (`static`/`extern`), it returns the companion — so
-            // receiving `ThreadLocal` here means it appeared alone.
-            diagnostics.error(
-                span.start,
-                "'_Thread_local' at file scope requires 'static' or 'extern'",
-            );
-            Err(())
+            // `_Thread_local` alone at file scope per C11 §6.7.1¶3 is
+            // valid — it implies external linkage with thread storage
+            // duration. Treat as external linkage, thread-local.
+            Ok((Linkage::External, StorageDuration::Thread))
         }
     }
 }
@@ -855,14 +850,16 @@ mod tests {
     }
 
     #[test]
-    fn file_scope_thread_local_alone_is_error() {
+    fn file_scope_thread_local_alone_is_valid() {
+        // Per C11 §6.7.1¶3, `_Thread_local` alone at file scope is valid
+        // and implies external linkage with thread storage duration.
         let mut diag = emitter();
         let result = validate_storage_class(
             Some(StorageClass::ThreadLocal), ScopeKind::File, false,
             &mut diag, dummy_span(),
         );
-        assert!(result.is_err());
-        assert!(diag.has_errors());
+        assert_eq!(result, Ok((Linkage::External, StorageDuration::Thread)));
+        assert!(!diag.has_errors());
     }
 
     // ── Block Scope: Variable Declarations ───────────────────────────────

@@ -648,17 +648,33 @@ fn encode_imul(
         buf.push(0xF7);
         buf.push(encode_modrm(0b11, 5, r));
     } else if operands.len() == 2 {
-        // imul r32, r/m32: 0F AF
         let d = extract_reg(&operands[0])?;
-        buf.push(0x0F);
-        buf.push(0xAF);
         match &operands[1] {
             MachineOperand::Register(src) => {
+                // imul r32, r/m32: 0F AF
+                buf.push(0x0F);
+                buf.push(0xAF);
                 let s = phys_reg_to_encoding(*src);
                 buf.push(encode_modrm(0b11, d, s));
             }
             MachineOperand::Memory { base, offset } => {
+                // imul r32, r/m32: 0F AF
+                buf.push(0x0F);
+                buf.push(0xAF);
                 encode_memory_operand(buf, d, phys_reg_to_encoding(*base), *offset);
+            }
+            MachineOperand::Immediate(imm) => {
+                // Promote to 3-operand form: imul r32, r32, imm (dst is both src and dst)
+                let imm_val = *imm as i32;
+                if fits_in_imm8(imm_val) {
+                    buf.push(0x6B);
+                    buf.push(encode_modrm(0b11, d, d));
+                    emit_imm8(buf, imm_val as i8);
+                } else {
+                    buf.push(0x69);
+                    buf.push(encode_modrm(0b11, d, d));
+                    emit_imm32(buf, imm_val);
+                }
             }
             _ => {
                 return Err(CodeGenError::EncodingError("invalid IMUL source operand".into()));
@@ -750,7 +766,9 @@ fn encode_mov_full(
             });
         }
         _ => {
-            return Err(CodeGenError::EncodingError("invalid MOV operand combination".into()));
+            return Err(CodeGenError::EncodingError(
+                format!("invalid MOV operand combination: dst={:?}, src={:?}", operands[0], operands[1])
+            ));
         }
     }
     Ok(())

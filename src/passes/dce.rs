@@ -154,14 +154,46 @@ impl DcePass {
                 // Look up the block by its ID index in the blocks vector.
                 let idx = block_id.0 as usize;
                 if idx < function.blocks.len() {
-                    for &succ in &function.blocks[idx].successors {
+                    let block = &function.blocks[idx];
+                    // Use BOTH the successors list AND the terminator's
+                    // target blocks for reachability. The successors list
+                    // may not be populated by all IR construction paths
+                    // (e.g., after mem2reg or constant_fold modify the CFG
+                    // without updating predecessors/successors metadata).
+                    // The terminator is always the authoritative source of
+                    // control flow edges.
+                    for &succ in &block.successors {
                         worklist.push_back(succ);
+                    }
+                    // Also extract targets from the terminator itself.
+                    if let Some(ref term) = block.terminator {
+                        for target in Self::terminator_targets(term) {
+                            worklist.push_back(target);
+                        }
                     }
                 }
             }
         }
 
         reachable
+    }
+
+    /// Extracts all target block IDs from a terminator instruction.
+    fn terminator_targets(term: &Terminator) -> Vec<BlockId> {
+        match term {
+            Terminator::Branch { target } => vec![*target],
+            Terminator::CondBranch { true_block, false_block, .. } => {
+                vec![*true_block, *false_block]
+            }
+            Terminator::Switch { default, cases, .. } => {
+                let mut targets = vec![*default];
+                for &(_, tgt) in cases {
+                    targets.push(tgt);
+                }
+                targets
+            }
+            Terminator::Return { .. } | Terminator::Unreachable => vec![],
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -419,6 +451,8 @@ mod tests {
             blocks,
             entry_block: entry,
             is_definition: true,
+is_static: false,
+is_weak: false,
         }
     }
 
@@ -704,10 +738,7 @@ mod tests {
                     ty: IrType::I64,
                 },
             });
-            block.instructions.push(Instruction::Store {
-                value: v_val,
-                ptr: v_ptr,
-            });
+            block.instructions.push(Instruction::Store { value: v_val, ptr: v_ptr, store_ty: None });
             block
         }];
 
@@ -1138,10 +1169,7 @@ mod tests {
                     ty: IrType::I64,
                 },
             });
-            block.instructions.push(Instruction::Store {
-                value: v_store_val,
-                ptr: v_store_ptr,
-            });
+            block.instructions.push(Instruction::Store { value: v_store_val, ptr: v_store_ptr, store_ty: None });
             block
         }];
 
@@ -1175,6 +1203,8 @@ mod tests {
             blocks: vec![],
             entry_block: BlockId(0),
             is_definition: true,
+is_static: false,
+is_weak: false,
         };
 
         let mut pass = DcePass::new();
@@ -1234,10 +1264,7 @@ mod tests {
                     ty: IrType::I64,
                 },
             });
-            block.instructions.push(Instruction::Store {
-                value: v_a,
-                ptr: v_ptr,
-            });
+            block.instructions.push(Instruction::Store { value: v_a, ptr: v_ptr, store_ty: None });
             block
         }];
 

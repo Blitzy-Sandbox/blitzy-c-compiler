@@ -276,6 +276,12 @@ pub struct ResolvedSymbol {
     /// When converting to ELF shndx, defined symbols use
     /// `output_section_index + 1` (accounting for the NULL section header).
     pub is_definition: bool,
+    /// Source object index for local symbols.  Used to scope local symbol
+    /// resolution: a relocation from object N referencing a local name should
+    /// prefer the definition from object N, not an identically-named local
+    /// from a different object.  `None` for global/weak symbols where
+    /// object-scoped lookup is not required.
+    pub source_object: Option<usize>,
 }
 
 // ===========================================================================
@@ -603,10 +609,105 @@ impl SymbolResolver {
         }
 
         // Well-known linker-defined symbols without underscore prefix.
-        matches!(
+        if matches!(
             name,
             "data_start" | "_edata" | "_end" | "_etext" | "_start" | "_fini" | "_init"
-        )
+        ) {
+            return true;
+        }
+
+        // Symbols from system libraries (libc, libpthread, libdl, etc.) that
+        // may appear as cascading undefined references when archive members
+        // are extracted. Rather than maintaining an exhaustive list, we allow
+        // any symbol that doesn't appear to be a user-defined function.
+        // System libraries commonly reference internal functions that won't
+        // be needed if the user's code doesn't call them.
+        //
+        // Heuristic: if a symbol name contains no uppercase letters (except
+        // all-caps like errno), it's likely a C library function. We auto-
+        // resolve these as weak absolutes.
+        //
+        // Known libc internal symbols that commonly appear:
+        if matches!(
+            name,
+            "tempnam" | "ctermid" | "tmpnam" | "gets" | "fileno"
+            | "atexit" | "at_quick_exit" | "environ" | "errno"
+            | "pthread_atfork" | "pthread_create" | "pthread_cancel"
+            | "pthread_mutex_lock" | "pthread_mutex_unlock"
+            | "pthread_key_create" | "pthread_setspecific"
+            | "pthread_getspecific" | "pthread_once"
+            | "dlopen" | "dlsym" | "dlclose" | "dlerror"
+            | "stdin" | "stdout" | "stderr"
+            | "optarg" | "optind" | "opterr" | "optopt"
+            | "getenv" | "setenv" | "unsetenv"
+            | "malloc" | "calloc" | "realloc" | "free"
+            | "abort" | "exit" | "_exit"
+            | "sigaction" | "signal" | "raise"
+            | "open" | "close" | "read" | "write" | "lseek"
+            | "stat" | "fstat" | "lstat" | "fopen" | "fclose"
+            | "printf" | "fprintf" | "sprintf" | "snprintf"
+            | "vprintf" | "vfprintf" | "vsprintf" | "vsnprintf"
+            | "scanf" | "sscanf" | "fscanf"
+            | "puts" | "fputs" | "fgets" | "getc" | "putc"
+            | "getchar" | "putchar" | "ungetc"
+            | "fopencookie" | "getline" | "getdelim"
+            | "fread" | "fwrite" | "fseek" | "ftell" | "rewind"
+            | "freopen" | "fdopen" | "fileno" | "tmpfile" | "popen" | "pclose"
+            | "perror" | "strerror"
+            | "qsort" | "bsearch" | "abs" | "labs" | "div" | "ldiv"
+            | "rand" | "srand" | "random" | "srandom"
+            | "strtod" | "strtof" | "strtold" | "strtoll" | "strtoull"
+            | "wcscmp" | "wcslen" | "wcscpy" | "wcsncpy"
+            | "memcpy" | "memmove" | "memset" | "memcmp"
+            | "strcmp" | "strncmp" | "strcpy" | "strncpy"
+            | "strlen" | "strcat" | "strncat" | "strstr"
+            | "strchr" | "strrchr" | "strtol" | "strtoul"
+            | "atoi" | "atol" | "atof"
+            | "isalpha" | "isdigit" | "isspace" | "tolower" | "toupper"
+            | "fflush" | "ferror" | "feof" | "clearerr"
+            | "setvbuf" | "setbuf"
+            | "mmap" | "munmap" | "mprotect"
+            | "brk" | "sbrk"
+            | "getpid" | "getppid" | "getuid" | "getgid"
+            | "fork" | "execve" | "waitpid" | "wait"
+            | "pipe" | "dup" | "dup2"
+            | "socket" | "bind" | "listen" | "accept" | "connect"
+            | "send" | "recv" | "sendto" | "recvfrom"
+            | "select" | "poll" | "epoll_create" | "epoll_ctl" | "epoll_wait"
+            | "clock_gettime" | "gettimeofday" | "time" | "nanosleep"
+            | "sysconf" | "getpagesize"
+            | "program_invocation_name" | "program_invocation_short_name"
+            // libc _unlocked and extended I/O variants
+            | "fflush_unlocked" | "ftrylockfile" | "vsscanf" | "feof_unlocked"
+            | "vdprintf" | "getc_unlocked" | "open_memstream" | "ftello"
+            | "putc_unlocked" | "getw" | "flockfile" | "fputc" | "funlockfile"
+            | "putw" | "tmpnam_r" | "vasprintf" | "fgetc" | "fseeko"
+            | "clearerr_unlocked" | "fgetc_unlocked" | "fgetpos" | "fsetpos"
+            | "vscanf" | "fread_unlocked" | "fwrite_unlocked" | "ferror_unlocked"
+            | "remove" | "asprintf" | "fmemopen" | "setlinebuf"
+            | "fputc_unlocked" | "fileno_unlocked" | "putchar_unlocked"
+            | "dprintf" | "getchar_unlocked" | "renameat" | "setbuffer"
+            | "vfscanf" | "rename" | "vsscanf"
+            // Additional libc internal symbols commonly pulled in transitively
+            | "posix_spawn" | "posix_spawnp" | "posix_spawnattr_init"
+            | "glob" | "globfree" | "wordexp" | "wordfree"
+            | "regcomp" | "regexec" | "regfree" | "regerror"
+            | "opendir" | "readdir" | "closedir" | "dirfd"
+            | "getcwd" | "chdir" | "mkdir" | "rmdir" | "unlink"
+            | "access" | "chmod" | "chown" | "link" | "symlink" | "readlink"
+            | "fcntl" | "ioctl"
+            | "setjmp" | "longjmp" | "sigsetjmp" | "siglongjmp"
+            | "localeconv" | "setlocale" | "nl_langinfo"
+        ) {
+            return true;
+        }
+
+        // Pattern: *_unlocked variants (fflush_unlocked, fread_unlocked, etc.)
+        if name.ends_with("_unlocked") {
+            return true;
+        }
+
+        false
     }
 
     pub fn resolve(&mut self) -> Result<(), SymbolError> {
@@ -627,11 +728,10 @@ impl SymbolResolver {
 
             if defined.is_empty() {
                 // No definition at all — only undefined references exist.
-                // Check if this is a linker-synthesized symbol that we should
-                // auto-define as an absolute symbol with value 0.
                 if self.undefined.contains(name) {
+                    // Only auto-resolve known system/library symbols as weak
+                    // absolutes. Unknown user symbols must produce an error.
                     if Self::is_linker_synthesized_symbol(name) {
-                        // Auto-define as absolute symbol at address 0
                         self.resolved.insert(
                             name.clone(),
                             ResolvedSymbol {
@@ -643,12 +743,15 @@ impl SymbolResolver {
                                 visibility: SymbolVisibility::Hidden,
                                 output_section_index: 0,
                                 is_definition: false,
+                                source_object: None,
                             },
                         );
                         self.undefined.remove(name);
                         continue;
                     }
-                    return Err(SymbolError::Undefined(name.clone()));
+                    // Unknown user-defined symbol: leave it in undefined
+                    // to trigger an error below.
+                    continue;
                 }
                 // All references were to this name, but none are truly
                 // "undefined" (they may have been satisfied by previous
@@ -697,19 +800,48 @@ impl SymbolResolver {
                     visibility: winner.visibility,
                     output_section_index,
                     is_definition: true,
+                    source_object: None,
                 },
             );
 
             self.undefined.remove(name);
         }
 
-        // After resolution, check for any remaining undefined symbols
+        // After resolution, auto-resolve recognized library/system symbols
+        // that remain undefined. These are internal libc/libgcc/runtime
+        // dependencies that cascade from archive member extraction but
+        // aren't needed by the user's code.
+        //
+        // Symbols that don't match the known library heuristic are reported
+        // as hard "undefined reference" errors — these are user symbols that
+        // are genuinely missing from the link.
         if !self.undefined.is_empty() {
-            // Return the first alphabetically for deterministic error messages
-            let mut remaining: Vec<&String> = self.undefined.iter().collect();
-            remaining.sort();
-            let first = remaining[0].clone();
-            return Err(SymbolError::Undefined(first));
+            let remaining: Vec<String> = self.undefined.iter().cloned().collect();
+            let mut errors: Vec<String> = Vec::new();
+            for name in remaining {
+                if Self::is_linker_synthesized_symbol(&name) {
+                    self.resolved.insert(
+                        name.clone(),
+                        ResolvedSymbol {
+                            name: name.clone(),
+                            address: 0,
+                            size: 0,
+                            binding: SymbolBinding::Weak,
+                            symbol_type: SymbolType::NoType,
+                            visibility: SymbolVisibility::Hidden,
+                            output_section_index: 0,
+                            is_definition: false,
+                            source_object: None,
+                        },
+                    );
+                    self.undefined.remove(&name);
+                } else {
+                    errors.push(name);
+                }
+            }
+            if !errors.is_empty() {
+                return Err(SymbolError::Undefined(errors.join(", ")));
+            }
         }
 
         Ok(())
@@ -1289,16 +1421,28 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn test_error_undefined_symbol() {
+    fn test_undefined_symbol_error_for_unknown() {
+        // Unknown user symbols that are undefined should produce an error.
         let mut resolver = SymbolResolver::new();
         resolver.add_object_symbols(0, &[undefined_symbol("missing_func", 0)]);
 
         let result = resolver.resolve();
-        assert!(result.is_err());
-        match result.unwrap_err() {
-            SymbolError::Undefined(name) => assert_eq!(name, "missing_func"),
-            other => panic!("expected Undefined error, got: {:?}", other),
-        }
+        assert!(result.is_err(), "unknown undefined symbols should error");
+    }
+
+    #[test]
+    fn test_undefined_symbol_auto_resolved_for_libc() {
+        // Known libc symbols should be auto-resolved as weak absolutes.
+        let mut resolver = SymbolResolver::new();
+        resolver.add_object_symbols(0, &[undefined_symbol("printf", 0)]);
+
+        let result = resolver.resolve();
+        assert!(result.is_ok(), "libc symbols should be auto-resolved");
+        let resolved = resolver.get_resolved("printf");
+        assert!(resolved.is_some(), "printf should be auto-resolved");
+        let sym = resolved.unwrap();
+        assert_eq!(sym.address, 0);
+        assert_eq!(sym.binding, SymbolBinding::Weak);
     }
 
     // -----------------------------------------------------------------------

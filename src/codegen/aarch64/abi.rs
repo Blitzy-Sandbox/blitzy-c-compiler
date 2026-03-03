@@ -1622,6 +1622,8 @@ mod tests {
             blocks: vec![BasicBlock::new(BlockId(0), "entry".to_string())],
             entry_block: BlockId(0),
             is_definition: true,
+is_static: false,
+is_weak: false,
         }
     }
 

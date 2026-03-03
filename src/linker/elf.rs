@@ -1564,6 +1564,11 @@ pub struct OutputSection {
     pub data: Vec<u8>,
     /// Section header metadata.
     pub header: OutputSectionHeader,
+    /// Optional explicit file offset from the linker's layout engine.
+    /// When `Some(offset)`, the ELF writer places this section's data at
+    /// exactly that file offset (padding with zeros as needed). When `None`,
+    /// the writer auto-assigns offsets sequentially with alignment padding.
+    pub file_offset: Option<u64>,
 }
 
 /// An output program header for the ELF writer.
@@ -1667,23 +1672,46 @@ impl ElfWriter {
         let shstrtab_name_off = shstrtab.len() as u32;
         shstrtab.extend_from_slice(b".shstrtab\0");
 
-        // Compute section data offsets
+        // Compute section data offsets.
+        // When a section has an explicit `file_offset` (from the linker's
+        // layout engine), use that offset. Otherwise, auto-assign offsets
+        // sequentially with alignment padding. This ensures that section
+        // header file offsets and program header file offsets are consistent.
         let mut current_offset = ehdr_sz + phdr_total;
         let mut section_offsets: Vec<usize> = Vec::new();
         for sec in &self.sections {
-            let align = if sec.header.sh_addralign > 1 {
-                sec.header.sh_addralign as usize
+            if let Some(explicit_offset) = sec.file_offset {
+                // Use the linker-assigned file offset. Advance current_offset
+                // past this section so non-explicit sections placed after it
+                // don't overlap.
+                let off = explicit_offset as usize;
+                section_offsets.push(off);
+                if sec.header.sh_type != SHT_NOBITS {
+                    let end = off + sec.data.len();
+                    if end > current_offset {
+                        current_offset = end;
+                    }
+                } else {
+                    // NOBITS: no file content, but track file position
+                    if off > current_offset {
+                        current_offset = off;
+                    }
+                }
             } else {
-                1
-            };
-            // Align current offset
-            let remainder = current_offset % align;
-            if remainder != 0 {
-                current_offset += align - remainder;
-            }
-            section_offsets.push(current_offset);
-            if sec.header.sh_type != SHT_NOBITS {
-                current_offset += sec.data.len();
+                let align = if sec.header.sh_addralign > 1 {
+                    sec.header.sh_addralign as usize
+                } else {
+                    1
+                };
+                // Align current offset
+                let remainder = current_offset % align;
+                if remainder != 0 {
+                    current_offset += align - remainder;
+                }
+                section_offsets.push(current_offset);
+                if sec.header.sh_type != SHT_NOBITS {
+                    current_offset += sec.data.len();
+                }
             }
         }
 
@@ -2642,6 +2670,7 @@ mod tests {
                 sh_link: 0,
                 sh_info: 0,
             },
+            file_offset: None,
         });
 
         let output = writer.write();
@@ -2676,6 +2705,7 @@ mod tests {
                 sh_link: 0,
                 sh_info: 0,
             },
+            file_offset: None,
         });
 
         let output = writer.write();

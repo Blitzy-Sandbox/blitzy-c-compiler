@@ -105,7 +105,7 @@ pub fn construct_ssa(cfg: &mut ControlFlowGraph) {
     let phi_vars = place_phi_nodes(cfg, &var_defs, &dom_frontiers, &alloca_types);
 
     // Step 5: Rename variables via dominator tree preorder walk.
-    let mut value_counter = find_max_value(cfg) + 1;
+    let mut value_counter = find_max_value(cfg).wrapping_add(1);
     rename_variables(
         cfg,
         &dom_tree,
@@ -293,7 +293,7 @@ fn is_promotable(alloca_val: Value, cfg: &ControlFlowGraph) -> bool {
                 }
                 // Storing TO the alloca (ptr operand) — acceptable.
                 // Storing the alloca's ADDRESS (value operand) — NOT promotable.
-                Instruction::Store { value, ptr } => {
+                Instruction::Store { value, ptr, .. } => {
                     if *ptr == alloca_val {
                         continue;
                     }
@@ -391,7 +391,7 @@ fn place_phi_nodes(
     alloca_types: &HashMap<Variable, IrType>,
 ) -> HashMap<(BlockId, Variable), Value> {
     let mut phi_vars: HashMap<(BlockId, Variable), Value> = HashMap::new();
-    let mut next_val = find_max_value(cfg) + 1;
+    let mut next_val = find_max_value(cfg).wrapping_add(1);
 
     for (&var, def_blocks) in var_defs {
         let ty = match alloca_types.get(&var) {
@@ -417,7 +417,7 @@ fn place_phi_nodes(
                     if !inserted.contains(&df_block) {
                         // Generate a fresh Value for the phi node result.
                         let result = Value(next_val);
-                        next_val += 1;
+                        next_val = next_val.wrapping_add(1);
 
                         let phi = PhiNode {
                             result,
@@ -490,7 +490,7 @@ fn classify_instruction(
                 variable: *ptr,
             }
         }
-        Instruction::Store { value, ptr } if promoted_set.contains(ptr) => {
+        Instruction::Store { value, ptr, .. } if promoted_set.contains(ptr) => {
             RenameAction::DeleteStore {
                 stored_value: *value,
                 variable: *ptr,
@@ -992,7 +992,7 @@ fn split_critical_edges(cfg: &mut ControlFlowGraph) {
 
     for (from_id, to_id) in critical_edges {
         let new_block_id = BlockId(next_block_id);
-        next_block_id += 1;
+        next_block_id = next_block_id.wrapping_add(1);
 
         // Create an intermediate block with an unconditional branch to the
         // original target.
@@ -1108,10 +1108,7 @@ mod tests {
             ty: IrType::I32,
             count: None,
         });
-        entry.instructions.push(Instruction::Store {
-            value: val(10),
-            ptr: val(1),
-        });
+        entry.instructions.push(Instruction::Store { value: val(10), ptr: val(1), store_ty: None });
         entry.terminator = Some(Terminator::CondBranch {
             condition: val(20),
             true_block: bid(1),
@@ -1122,14 +1119,14 @@ mod tests {
         let mut then_block = BasicBlock::new(bid(1), "then".to_string());
         then_block
             .instructions
-            .push(Instruction::Store { value: val(42), ptr: val(1) });
+            .push(Instruction::Store { value: val(42), ptr: val(1), store_ty: None });
         then_block.terminator = Some(Terminator::Branch { target: bid(3) });
         cfg.add_block(then_block);
 
         let mut else_block = BasicBlock::new(bid(2), "else".to_string());
         else_block
             .instructions
-            .push(Instruction::Store { value: val(99), ptr: val(1) });
+            .push(Instruction::Store { value: val(99), ptr: val(1), store_ty: None });
         else_block.terminator = Some(Terminator::Branch { target: bid(3) });
         cfg.add_block(else_block);
 
@@ -1173,10 +1170,7 @@ mod tests {
             ty: IrType::I32,
             count: None,
         });
-        entry.instructions.push(Instruction::Store {
-            value: val(10),
-            ptr: val(1),
-        });
+        entry.instructions.push(Instruction::Store { value: val(10), ptr: val(1), store_ty: None });
         entry.instructions.push(Instruction::Load {
             result: val(2),
             ty: IrType::I32,
@@ -1260,10 +1254,7 @@ mod tests {
             ty: IrType::I32,
             count: None,
         });
-        entry.instructions.push(Instruction::Store {
-            value: val(10),
-            ptr: val(1),
-        });
+        entry.instructions.push(Instruction::Store { value: val(10), ptr: val(1), store_ty: None });
         entry.terminator = Some(Terminator::Branch { target: bid(1) });
         cfg.add_block(entry);
 
@@ -1281,10 +1272,7 @@ mod tests {
         cfg.add_block(header);
 
         let mut body = BasicBlock::new(bid(2), "body".to_string());
-        body.instructions.push(Instruction::Store {
-            value: val(30),
-            ptr: val(1),
-        });
+        body.instructions.push(Instruction::Store { value: val(30), ptr: val(1), store_ty: None });
         body.terminator = Some(Terminator::Branch { target: bid(1) });
         cfg.add_block(body);
 
@@ -1332,10 +1320,7 @@ mod tests {
             ty: IrType::I32,
             count: None,
         });
-        entry.instructions.push(Instruction::Store {
-            value: val(10),
-            ptr: val(1),
-        });
+        entry.instructions.push(Instruction::Store { value: val(10), ptr: val(1), store_ty: None });
         entry.instructions.push(Instruction::Load {
             result: val(2),
             ty: IrType::I32,
@@ -1385,10 +1370,7 @@ mod tests {
             count: None,
         });
         // Store the alloca ADDRESS as a value (escapes).
-        entry.instructions.push(Instruction::Store {
-            value: val(1),
-            ptr: val(50),
-        });
+        entry.instructions.push(Instruction::Store { value: val(1), ptr: val(50), store_ty: None });
         entry.terminator = Some(Terminator::Return { value: None });
         cfg.add_block(entry);
 
@@ -1587,10 +1569,7 @@ mod tests {
             ty: IrType::I32,
             count: None,
         });
-        entry.instructions.push(Instruction::Store {
-            value: val(1),
-            ptr: val(50),
-        });
+        entry.instructions.push(Instruction::Store { value: val(1), ptr: val(50), store_ty: None });
         entry.terminator = Some(Terminator::Return { value: None });
         cfg.add_block(entry);
 

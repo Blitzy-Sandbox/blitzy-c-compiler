@@ -293,11 +293,35 @@ pub struct CompilationUnitDebugInfo {
     pub functions: Vec<FunctionDebugInfo>,
     /// Debug information for global variables in this compilation unit.
     pub global_variables: Vec<VariableDebugInfo>,
+    /// Struct/union type definitions in this compilation unit.
+    pub struct_defs: Vec<StructDebugDef>,
     /// All source file paths referenced by this CU (for the line program
     /// file table). Index 0 is typically the main source file.
     pub source_files: Vec<String>,
     /// Include directories referenced by source files.
     pub include_directories: Vec<String>,
+}
+
+/// Debug information for a struct/union type definition.
+#[derive(Debug, Clone)]
+pub struct StructDebugDef {
+    /// Struct tag name (e.g., "Point").
+    pub name: String,
+    /// Total byte size of the struct.
+    pub byte_size: u64,
+    /// Member fields.
+    pub members: Vec<StructMemberDebugInfo>,
+}
+
+/// Debug information for a single struct/union member field.
+#[derive(Debug, Clone)]
+pub struct StructMemberDebugInfo {
+    /// Member field name.
+    pub name: String,
+    /// Byte offset within the struct.
+    pub byte_offset: u64,
+    /// Type of this member.
+    pub type_ref: DebugTypeRef,
 }
 
 // ===========================================================================
@@ -530,7 +554,134 @@ impl DebugInfoGenerator {
             type_dies.push(info::build_base_type_die(name, byte_size, encoding));
         }
 
+        // Collect all unique composite types (pointer, array, struct, typedef)
+        // referenced in the CU, and emit DIEs for them.
+        let mut seen_composite_keys: Vec<String> = Vec::new();
+        let mut composite_refs: Vec<DebugTypeRef> = Vec::new();
+        self.collect_composite_types_from_cu(cu_info, &mut seen_composite_keys, &mut composite_refs);
+
+        for type_ref in &composite_refs {
+            match type_ref {
+                DebugTypeRef::Pointer(_) => {
+                    // DW_TAG_pointer_type with pointee offset (use 0 as placeholder).
+                    type_dies.push(info::build_pointer_type_die(0, self.address_size));
+                }
+                DebugTypeRef::Array(_, count) => {
+                    // DW_TAG_array_type with element offset (use 0 as placeholder).
+                    type_dies.push(info::build_array_type_die(0, *count));
+                }
+                DebugTypeRef::Struct(name) => {
+                    // DW_TAG_structure_type with member DIEs.
+                    // Find struct info from CU if available.
+                    let members = self.find_struct_members(cu_info, name);
+                    type_dies.push(info::build_structure_type_die(
+                        name,
+                        0, // byte_size placeholder
+                        members,
+                    ));
+                }
+                DebugTypeRef::Typedef(name) => {
+                    // DW_TAG_typedef with type offset (use 0 as placeholder).
+                    type_dies.push(info::build_typedef_die(name, 0));
+                }
+                _ => {}
+            }
+        }
+
         type_dies
+    }
+
+    /// Collects all unique composite type references (Pointer, Array, Struct, Typedef)
+    /// from a compilation unit.
+    fn collect_composite_types_from_cu(
+        &self,
+        cu_info: &CompilationUnitDebugInfo,
+        keys: &mut Vec<String>,
+        refs: &mut Vec<DebugTypeRef>,
+    ) {
+        for func in &cu_info.functions {
+            self.collect_composite_from_type_ref(&func.return_type, keys, refs);
+            for param in &func.parameters {
+                self.collect_composite_from_type_ref(&param.type_ref, keys, refs);
+            }
+            for var in &func.local_variables {
+                self.collect_composite_from_type_ref(&var.type_ref, keys, refs);
+            }
+        }
+        for var in &cu_info.global_variables {
+            self.collect_composite_from_type_ref(&var.type_ref, keys, refs);
+        }
+    }
+
+    /// Recursively extracts composite types from a DebugTypeRef.
+    fn collect_composite_from_type_ref(
+        &self,
+        type_ref: &DebugTypeRef,
+        keys: &mut Vec<String>,
+        refs: &mut Vec<DebugTypeRef>,
+    ) {
+        match type_ref {
+            DebugTypeRef::Void | DebugTypeRef::BaseType(_) => {}
+            DebugTypeRef::Pointer(inner) => {
+                let key = format!("ptr:{:?}", inner);
+                if !keys.contains(&key) {
+                    keys.push(key);
+                    refs.push(type_ref.clone());
+                }
+                self.collect_composite_from_type_ref(inner, keys, refs);
+            }
+            DebugTypeRef::Array(inner, count) => {
+                let key = format!("arr:{:?}:{:?}", inner, count);
+                if !keys.contains(&key) {
+                    keys.push(key);
+                    refs.push(type_ref.clone());
+                }
+                self.collect_composite_from_type_ref(inner, keys, refs);
+            }
+            DebugTypeRef::Struct(name) => {
+                let key = format!("struct:{}", name);
+                if !keys.contains(&key) {
+                    keys.push(key);
+                    refs.push(type_ref.clone());
+                }
+            }
+            DebugTypeRef::Typedef(name) => {
+                let key = format!("typedef:{}", name);
+                if !keys.contains(&key) {
+                    keys.push(key);
+                    refs.push(type_ref.clone());
+                }
+            }
+            DebugTypeRef::Function { return_type, param_types } => {
+                self.collect_composite_from_type_ref(return_type, keys, refs);
+                for pt in param_types {
+                    self.collect_composite_from_type_ref(pt, keys, refs);
+                }
+            }
+        }
+    }
+
+    /// Find struct member information from the CU's struct definitions.
+    /// Extracts member information from the StructDebugDef entries passed
+    /// through the compilation unit debug info.
+    fn find_struct_members(
+        &self,
+        cu_info: &CompilationUnitDebugInfo,
+        struct_name: &str,
+    ) -> Vec<info::MemberDebugInfo> {
+        // Look for struct definitions that were passed through.
+        for def in &cu_info.struct_defs {
+            if def.name == struct_name {
+                return def.members.iter().map(|m| {
+                    info::MemberDebugInfo {
+                        name: m.name.clone(),
+                        type_offset: 0, // placeholder — correct offset requires full type table
+                        byte_offset: m.byte_offset as u32,
+                    }
+                }).collect();
+            }
+        }
+        Vec::new()
     }
 
     /// Recursively collects all unique `BaseTypeKind` values from a CU.
@@ -1048,6 +1199,7 @@ mod tests {
             high_pc: 0x2000,
             functions: Vec::new(),
             global_variables: Vec::new(),
+            struct_defs: Vec::new(),
             source_files: vec!["test.c".to_string()],
             include_directories: Vec::new(),
         };
@@ -1071,6 +1223,7 @@ mod tests {
                 make_test_function("helper", 0x1080, 0x1100),
             ],
             global_variables: Vec::new(),
+            struct_defs: Vec::new(),
             source_files: vec!["test.c".to_string()],
             include_directories: Vec::new(),
         };
@@ -1250,6 +1403,7 @@ mod tests {
             high_pc: 0x401020,
             functions: vec![make_test_function("main", 0x401000, 0x401020)],
             global_variables: Vec::new(),
+            struct_defs: Vec::new(),
             source_files: vec!["main.c".to_string()],
             include_directories: Vec::new(),
         }

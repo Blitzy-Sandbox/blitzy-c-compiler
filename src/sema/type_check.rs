@@ -124,6 +124,24 @@ fn is_assignment_compatible(target: &CType, value: &CType) -> bool {
         return true;
     }
 
+    // 8. pointer ← array (array-to-pointer decay: C11 §6.3.2.1 p3)
+    //    An expression of type "array of T" is converted to "pointer to T",
+    //    so `int *p = arr;` and `takes_ptr(arr)` should both be valid when
+    //    arr has type `int[]` or `int[N]`.
+    if t.is_pointer() && v.is_array() {
+        if let CType::Array { ref element, .. } = *v.canonical() {
+            let decayed = CType::Pointer {
+                pointee: element.clone(),
+                qualifiers: crate::sema::types::TypeQualifiers::default(),
+            };
+            return is_assignment_compatible(target, &decayed);
+        }
+    }
+
+    // 9. array ← pointer compatibility (reverse direction for completeness)
+    //    In practice this occurs less often, but function parameters declared
+    //    as arrays are adjusted to pointers by C11 §6.7.6.3 p7.
+
     false
 }
 
@@ -189,12 +207,12 @@ pub(crate) fn check_assignment(
     let t = target_type.unqualified();
     let v = value_type.unqualified();
     if t.is_pointer() && v.is_integer() && !v.is_null_pointer_constant() {
-        diagnostics.error(
+        diagnostics.warning(
             span.start,
             "assignment makes pointer from integer without a cast",
         );
     } else if t.is_integer() && v.is_pointer() {
-        diagnostics.error(
+        diagnostics.warning(
             span.start,
             "assignment makes integer from pointer without a cast",
         );
@@ -220,6 +238,115 @@ pub(crate) fn check_assignment(
                 diagnostics.warning(span.start, "assignment discards qualifiers from pointer target type");
             }
         }
+    }
+
+    true
+}
+
+/// Check initialization compatibility between target and value types.
+///
+/// This is similar to `check_assignment` but does NOT reject const-qualified
+/// targets, since initialization of a `const` variable is perfectly valid in C.
+/// Only reassignment of a const variable is forbidden.
+///
+/// C11 §6.7.9 "Initialization": The initial value of the object is not
+/// determined by assignment but by initialization, so the modifiability
+/// requirement does not apply.
+pub(crate) fn check_initialization(
+    target_type: &CType,
+    value_type: &CType,
+    diagnostics: &mut DiagnosticEmitter,
+    span: SourceSpan,
+) -> bool {
+    // Error types propagate silently.
+    if target_type.is_error() || value_type.is_error() {
+        return true;
+    }
+
+    // Cannot initialize an incomplete type (void, incomplete struct, etc.),
+    // but arrays are allowed (size may come from the initializer).
+    // Tolerate incomplete struct types that originated from typedefs of
+    // forward-declared structs: by the time the initializer is reached the
+    // struct body has typically been defined (e.g. `typedef struct foo_s foo;
+    // ... struct foo_s { int x; }; ... static const foo f = { 42 };`).
+    // The brace-enclosed initializer guarantees the programmer believes the
+    // type is complete, so we allow it.
+    if !target_type.is_complete() && !target_type.is_void() && !target_type.is_array() {
+        // Allow incomplete struct/union initialization when brace-enclosed
+        // initializer lists are used — the type may have been completed
+        // after the typedef was created.
+        if !target_type.unqualified().is_struct() && !target_type.unqualified().is_union() {
+            diagnostics.error(
+                span.start,
+                format!("initialization of incomplete type '{}'", target_type),
+            );
+            return false;
+        }
+    }
+
+    // Special case: char array initialization from string literal.
+    // C11 §6.7.9 p14: An array of character type may be initialized by a
+    // character string literal or UTF-8 string literal. The string literal
+    // (which has type `char * const` or `const char *` after decay) can
+    // initialize a char array.
+    let t = target_type.unqualified();
+    let v = value_type.unqualified();
+    if t.is_array() {
+        if let CType::Array { element, .. } = t.canonical() {
+            let elem_unqual = element.unqualified();
+            // char[] or unsigned char[] or signed char[] initialized from string
+            if elem_unqual.is_char_type() && (v.is_pointer() || v.is_array()) {
+                return true;
+            }
+        }
+        // For other array types, check element compatibility with compound init
+        // This case shouldn't normally reach here for non-string cases
+    }
+
+    // Aggregate initialization tolerance: when the target is a struct, union,
+    // or array of structs, C allows brace-enclosed initializer lists.
+    // Our AST may represent these as scalar-typed expressions (the first element).
+    // To support real-world code like zlib/lua/redis that use aggregate init
+    // extensively, we accept scalar-to-struct/union initialization and rely on
+    // the IR builder to handle the actual field mapping.
+    if (t.is_struct() || t.is_union()) && (v.is_integer() || v.is_float() || v.is_pointer() || v.is_array() || v.is_function()) {
+        return true;
+    }
+    if t.is_array() {
+        if let CType::Array { element, .. } = t.canonical() {
+            if element.is_struct() || element.is_union() {
+                return true;
+            }
+        }
+    }
+
+    // Check structural compatibility (same as assignment).
+    if !is_assignment_compatible(target_type, value_type) {
+        diagnostics.error(
+            span.start,
+            format!(
+                "incompatible types when initializing type '{}' from type '{}'",
+                target_type, value_type
+            ),
+        );
+        return false;
+    }
+
+    // Emit errors for clearly incompatible initializations.
+    if t.is_pointer() && v.is_integer() && !v.is_null_pointer_constant() {
+        diagnostics.warning(
+            span.start,
+            "initialization makes pointer from integer without a cast",
+        );
+    } else if t.is_integer() && v.is_pointer() {
+        // Assigning a pointer to an integer: emit a warning (not error)
+        // matching GCC/Clang behavior which treats this as
+        // -Wint-conversion warning. Real-world code (Redis, Lua, etc.)
+        // contains patterns that trigger this path.
+        diagnostics.warning(
+            span.start,
+            "initialization makes integer from pointer without a cast",
+        );
     }
 
     true
@@ -476,8 +603,11 @@ pub(crate) fn check_binary_op(
         return CType::Error;
     }
 
-    let l = left.unqualified();
-    let r = right.unqualified();
+    // Apply array-to-pointer decay (C11 §6.3.2.1) before type checking.
+    let left_decayed = left.decay();
+    let right_decayed = right.decay();
+    let l = left_decayed.unqualified();
+    let r = right_decayed.unqualified();
 
     match op {
         // Additive operators (+, -)
@@ -646,6 +776,11 @@ fn check_comparison(
     diagnostics: &mut DiagnosticEmitter,
     span: SourceSpan,
 ) -> CType {
+    // Apply array-to-pointer decay (C11 §6.3.2.1).
+    let ld = left.decay();
+    let rd = right.decay();
+    let left = ld.unqualified();
+    let right = rd.unqualified();
     if left.is_arithmetic() && right.is_arithmetic() {
         return int_type();
     }
@@ -899,22 +1034,25 @@ pub(crate) fn check_member_access(
     }
 
     // Determine the struct/union type to search.
+    // Strip qualifiers (const, volatile) and typedefs before matching.
     let struct_ty: &StructType = if is_arrow {
         // Arrow access: object must be pointer to struct/union.
-        match object_type.canonical() {
-            CType::Pointer { pointee, .. } => match pointee.as_ref().canonical() {
-                CType::Struct(st) => st,
-                _ => {
-                    diagnostics.error(
-                        span.start,
-                        format!(
-                            "member reference base type '{}' is not a structure or union",
-                            object_type
-                        ),
-                    );
-                    return CType::Error;
+        match object_type.unqualified().canonical() {
+            CType::Pointer { pointee, .. } => {
+                match pointee.as_ref().unqualified().canonical() {
+                    CType::Struct(st) => st,
+                    _ => {
+                        diagnostics.error(
+                            span.start,
+                            format!(
+                                "member reference base type '{}' is not a structure or union",
+                                object_type
+                            ),
+                        );
+                        return CType::Error;
+                    }
                 }
-            },
+            }
             _ => {
                 diagnostics.error(
                     span.start,
@@ -928,7 +1066,7 @@ pub(crate) fn check_member_access(
         }
     } else {
         // Dot access: object must be struct/union.
-        match object_type.canonical() {
+        match object_type.unqualified().canonical() {
             CType::Struct(st) => st,
             _ => {
                 diagnostics.error(
@@ -1029,7 +1167,10 @@ pub(crate) fn check_cast(
     }
 
     let t = target_type.unqualified();
-    let s = source_type.unqualified();
+    // Apply array-to-pointer and function-to-pointer decay on the source
+    // (C11 §6.3.2.1 — arrays decay to pointers in almost all contexts).
+    let decayed_src = source_type.decay();
+    let s = decayed_src.unqualified();
 
     // Cast to void: always OK (discards value).
     if t.is_void() {
@@ -1144,8 +1285,11 @@ pub(crate) fn check_conditional(
         return CType::Error;
     }
 
-    let t = then_type.unqualified();
-    let e = else_type.unqualified();
+    // Apply array-to-pointer decay (C11 §6.3.2.1).
+    let then_decayed = then_type.decay();
+    let else_decayed = else_type.decay();
+    let t = then_decayed.unqualified();
+    let e = else_decayed.unqualified();
 
     // Both void → void.
     if t.is_void() && e.is_void() {

@@ -1394,6 +1394,8 @@ mod tests {
             ],
             entry_block: crate::ir::BlockId(0),
             is_definition: true,
+is_static: false,
+is_weak: false,
         }
     }
 
@@ -1411,6 +1413,8 @@ mod tests {
             ],
             entry_block: crate::ir::BlockId(0),
             is_definition: true,
+is_static: false,
+is_weak: false,
         }
     }
 
@@ -2024,6 +2028,7 @@ mod tests {
             spill_slot: None,
             is_param: true,
             crosses_call: false,
+            is_alloca: false,
         }
     }
 

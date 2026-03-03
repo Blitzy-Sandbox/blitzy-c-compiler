@@ -529,7 +529,15 @@ fn parse_cast_expression(parser: &mut Parser<'_>) -> Expression {
         }
 
         // Check if the token after `(` starts a type name.
-        if is_type_start_token(parser, parser.peek()) {
+        // Disambiguation: If the identifier is a typedef name but is followed
+        // by `=`, `++`, `--`, `[`, `.`, `->`, or a binary operator, then it's
+        // a VARIABLE in a parenthesized expression, NOT a cast. Example:
+        //   typedef struct list { int len; } list;
+        //   struct list *list;
+        //   if ((list = malloc(...)) == NULL)  // NOT a cast, it's assignment
+        if is_type_start_token(parser, parser.peek())
+            && !is_typedef_var_use(parser)
+        {
             let start = parser.current_span();
             parser.advance(); // Consume `(`
 
@@ -647,7 +655,7 @@ fn parse_alignof(parser: &mut Parser<'_>) -> Expression {
 ///
 /// Checks for type specifier keywords, type qualifier keywords, and typedef
 /// names (identifiers that were previously declared as typedef names).
-fn is_type_start_token(parser: &Parser<'_>, token: &crate::frontend::lexer::token::Token) -> bool {
+pub(super) fn is_type_start_token(parser: &Parser<'_>, token: &crate::frontend::lexer::token::Token) -> bool {
     let kind = token.kind;
 
     // Type specifier keywords (int, void, struct, union, enum, etc.)
@@ -689,6 +697,76 @@ fn is_type_start_token(parser: &Parser<'_>, token: &crate::frontend::lexer::toke
     if kind == TokenKind::Identifier {
         if let TokenValue::Identifier(id) = token.value {
             return parser.is_typedef_name(id);
+        }
+    }
+
+    false
+}
+
+/// Checks whether `( identifier ...` is actually a variable usage inside
+/// parentheses rather than a cast expression. This handles the ambiguity
+/// where a typedef name is also used as a local variable name (common in
+/// code like `typedef struct list { ... } list; struct list *list;`).
+///
+/// If `peek()` (the token after `(`) is an Identifier that is a typedef
+/// name, and the token AFTER the identifier is an operator like `=`, `++`,
+/// `--`, `,`, `[`, `->`, `.`, etc., then this is clearly a variable in a
+/// parenthesized expression, NOT a cast.
+fn is_typedef_var_use(parser: &Parser<'_>) -> bool {
+    let next = parser.peek();
+    // Only applies to typedef-name identifiers.
+    if next.kind != TokenKind::Identifier {
+        return false;
+    }
+    let is_typedef = if let TokenValue::Identifier(id) = next.value {
+        parser.is_typedef_name(id)
+    } else {
+        return false;
+    };
+    if !is_typedef {
+        return false;
+    }
+
+    // Check the token after the identifier (lookahead(2): token at pos+2).
+    let after = parser.lookahead(2);
+
+    // Direct operator after typedef name: `(list = ...`, `(list->...`, etc.
+    if matches!(
+        after.kind,
+        TokenKind::Equal
+            | TokenKind::PlusEqual
+            | TokenKind::MinusEqual
+            | TokenKind::StarEqual
+            | TokenKind::SlashEqual
+            | TokenKind::PercentEqual
+            | TokenKind::AmpEqual
+            | TokenKind::PipeEqual
+            | TokenKind::CaretEqual
+            | TokenKind::LessLessEqual
+            | TokenKind::GreaterGreaterEqual
+            | TokenKind::PlusPlus
+            | TokenKind::MinusMinus
+            | TokenKind::LeftBracket
+            | TokenKind::Arrow
+            | TokenKind::Dot
+    ) {
+        return true;
+    }
+
+    // Pattern: `(typedef_name)` followed by a postfix operator.
+    // Example: `((list)->len)` — `(list)` is parenthesized variable, not a cast,
+    // because a cast operand can't start with `->` or `.`.
+    if after.kind == TokenKind::RightParen {
+        let after_paren = parser.lookahead(3);
+        if matches!(
+            after_paren.kind,
+            TokenKind::Arrow
+                | TokenKind::Dot
+                | TokenKind::LeftBracket
+                | TokenKind::PlusPlus
+                | TokenKind::MinusMinus
+        ) {
+            return true;
         }
     }
 
@@ -1028,7 +1106,87 @@ fn parse_paren_expression(parser: &mut Parser<'_>) -> Expression {
     // Safety net: if this is a type name, handle cast/compound literal.
     // This path is reached when `parse_paren_expression` is called from
     // a context that didn't go through `parse_cast_expression` first.
-    if types::is_type_specifier_start(parser) {
+    //
+    // Special handling for `__extension__`: it matches `is_type_specifier_start`
+    // because it CAN precede type specifiers (e.g., `(__extension__ __int128)`),
+    // but it can ALSO precede expressions (e.g., `(__extension__ 42)`). We
+    // disambiguate by looking past the `__extension__` token(s) to see if what
+    // follows is actually a type specifier.
+    let is_type_start = if parser.current().kind == TokenKind::GccExtension {
+        // Look ahead past __extension__ token(s) to check the real token
+        let mut skip = 0;
+        while parser.lookahead(skip).kind == TokenKind::GccExtension {
+            skip += 1;
+        }
+        let after_ext = parser.lookahead(skip);
+        after_ext.kind.is_type_specifier()
+            || after_ext.kind.is_type_qualifier()
+            || after_ext.kind.is_storage_class()
+            || matches!(after_ext.kind, TokenKind::Inline | TokenKind::Noreturn | TokenKind::GccAttribute | TokenKind::BuiltinVaList)
+            || (after_ext.kind == TokenKind::Identifier && {
+                if let super::super::lexer::token::TokenValue::Identifier(id) = after_ext.value {
+                    parser.is_typedef_name(id)
+                } else {
+                    false
+                }
+            })
+    } else {
+        types::is_type_specifier_start(parser)
+    };
+    // Disambiguation (Fix 117): If the current token is a typedef identifier
+    // but the NEXT token is an assignment operator, `++`, `--`, `[`, `->`,
+    // or `.`, this is actually a variable use in a parenthesized expression,
+    // NOT a cast. Example: `typedef struct list list; struct list *list;`
+    // then `(list = malloc(...))` is a parenthesized assignment, not a cast.
+    //
+    // Also handles `(list)->member` pattern: if the typedef name is followed
+    // by `)` and then a postfix operator (`->`, `.`, `[`, `++`, `--`), the
+    // typedef name is a variable expression, not a type in a cast.
+    let is_type_start = if is_type_start {
+        if parser.current().kind == TokenKind::Identifier {
+            let next_kind = parser.peek().kind;
+            if matches!(
+                next_kind,
+                TokenKind::Equal
+                    | TokenKind::PlusEqual
+                    | TokenKind::MinusEqual
+                    | TokenKind::StarEqual
+                    | TokenKind::SlashEqual
+                    | TokenKind::PercentEqual
+                    | TokenKind::AmpEqual
+                    | TokenKind::PipeEqual
+                    | TokenKind::CaretEqual
+                    | TokenKind::LessLessEqual
+                    | TokenKind::GreaterGreaterEqual
+                    | TokenKind::PlusPlus
+                    | TokenKind::MinusMinus
+                    | TokenKind::LeftBracket
+                    | TokenKind::Arrow
+                    | TokenKind::Dot
+            ) {
+                false
+            } else if next_kind == TokenKind::RightParen {
+                // `(typedef_name)` — check what follows the closing paren.
+                // If it's a postfix operator, this is `(variable)` not a cast.
+                let after_paren = parser.lookahead(2);
+                !matches!(
+                    after_paren.kind,
+                    TokenKind::Arrow
+                        | TokenKind::Dot
+                        | TokenKind::LeftBracket
+                        | TokenKind::PlusPlus
+                        | TokenKind::MinusMinus
+                )
+            } else {
+                true
+            }
+        } else {
+            true
+        }
+    } else {
+        false
+    };
+    if is_type_start {
         let type_name = types::parse_type_name(parser);
 
         if parser.expect(TokenKind::RightParen).is_err() {

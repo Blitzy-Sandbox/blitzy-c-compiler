@@ -543,6 +543,7 @@ impl X86_64InstructionSelector {
             self.param_value_set.insert(pv);
         }
 
+
         // Map function parameters to their ABI register locations.
         self.lower_params(function);
 
@@ -554,15 +555,21 @@ impl X86_64InstructionSelector {
                 vec![MachineOperand::Label(block.id.0)],
             );
 
-            // Lower phi nodes — emit MOV for each incoming edge.
-            // (Phi lowering inserts copies; real phi elimination happens
-            //  at register allocation time. Here we just record the
-            //  result mapping.)
+            // Lower phi nodes — allocate vregs for results and collect
+            // incoming edges for the phi resolution pass, which inserts
+            // MOV copies at the end of each predecessor block.
             for phi in &block.phi_nodes {
+                // Allocate a virtual register for the phi result.
                 let dst_op = self.get_operand(phi.result);
-                // Map phi result; actual copies are inserted by the
-                // phi-elimination pre-pass or regalloc.
                 self.set_operand(phi.result, dst_op);
+                // Ensure incoming values have operands allocated.
+                for (val, _block_id) in &phi.incoming {
+                    let _src = self.get_operand(*val);
+                }
+                // Record each incoming edge for phi resolution.
+                for (val, block_id) in &phi.incoming {
+                    self.pending_phis.push((phi.result, *val, *block_id));
+                }
             }
 
             // Lower each IR instruction in the block.
@@ -700,16 +707,26 @@ impl X86_64InstructionSelector {
                 if let Some(reg) = loc.register {
                     self.set_operand(val, MachineOperand::Register(reg));
                 } else if let Some(off) = loc.stack_offset {
-                    // Parameter lives on the stack relative to RBP.
-                    // Incoming stack args are at positive offsets from RBP:
-                    //   [RBP + 16] = first stack arg (after saved RBP + ret addr)
-                    self.set_operand(
-                        val,
-                        MachineOperand::Memory {
-                            base: RBP,
-                            offset: 16 + off,
-                        },
+                    // Parameter lives on the caller's stack frame at a
+                    // positive offset from RBP (after saved RBP + return
+                    // address).  Load it into a virtual register so that
+                    // every subsequent use sees a register operand —
+                    // consistent with register-passed params.  Using a
+                    // Memory operand directly would cause select_store and
+                    // select_alloca to LEA the address instead of loading
+                    // the actual value.
+                    let vreg = self.alloc_vreg();
+                    self.emit_instr(
+                        opcodes::MOV_RR,
+                        vec![
+                            MachineOperand::Register(vreg),
+                            MachineOperand::Memory {
+                                base: RBP,
+                                offset: 16 + off,
+                            },
+                        ],
                     );
+                    self.set_operand(val, MachineOperand::Register(vreg));
                 } else {
                     let vreg = self.alloc_vreg();
                     self.set_operand(val, MachineOperand::Register(vreg));
@@ -796,8 +813,8 @@ impl X86_64InstructionSelector {
             Instruction::Load { result, ty, ptr } => {
                 self.select_load(*result, *ptr, ty)?;
             }
-            Instruction::Store { value, ptr } => {
-                self.select_store(*value, *ptr)?;
+            Instruction::Store { value, ptr, store_ty, .. } => {
+                self.select_store(*value, *ptr, store_ty.as_ref())?;
             }
             Instruction::Alloca { result, ty, count } => {
                 self.select_alloca(*result, ty, count)?;
@@ -938,10 +955,19 @@ impl X86_64InstructionSelector {
                 if let Some(val) = value {
                     let src = self.get_operand(*val);
                     // Determine if float return (xmm0) or int return (rax).
-                    let is_sse = match &src {
-                        MachineOperand::Register(r) => is_xmm_reg(*r),
-                        _ => false,
-                    };
+                    // We check the type_map first (reliable at isel time
+                    // because vregs haven't been allocated to physical regs
+                    // yet, so is_xmm_reg on a vreg would always be false).
+                    let is_sse = self.type_map.get(val)
+                        .map(|t| t.is_float())
+                        .unwrap_or_else(|| {
+                            // Fallback: check if operand is already a
+                            // physical XMM register.
+                            match &src {
+                                MachineOperand::Register(r) => is_xmm_reg(*r),
+                                _ => false,
+                            }
+                        });
                     if is_sse {
                         self.emit_instr(
                             opcodes::MOVSD,
@@ -1119,15 +1145,17 @@ impl X86_64InstructionSelector {
         let lhs_op = self.get_operand(lhs);
         let rhs_op = self.get_operand(rhs);
 
-        // CRITICAL: Save the divisor into RCX (a physical register, NOT a
-        // vreg) BEFORE moving the dividend to RAX.  Using a physical register
-        // avoids the unmapped-vreg-fallback-to-RAX problem that would clobber
-        // the divisor when apply_register_assignments_v2 resolves it.
-        // RCX is safe: x86-64 IDIV only implicitly uses RAX and RDX.
-        self.emit_instr(
-            opcodes::MOV_RR,
-            vec![MachineOperand::Register(RCX), rhs_op],
-        );
+        // CRITICAL: Use PUSH/POP to safely stage operands and avoid the
+        // register-clobbering problem where moving the divisor to RCX first
+        // could overwrite the dividend if it happened to be allocated to RCX.
+        //
+        // Sequence:
+        //   1. PUSH rhs (save divisor on stack — safe regardless of allocation)
+        //   2. MOV RAX, lhs (move dividend to RAX — safe, rhs is on stack)
+        //   3. CQO/CDQ (sign extend RAX → RDX:RAX)
+        //   4. POP RCX (restore divisor from stack into RCX)
+        //   5. IDIV RCX
+        self.emit_instr(opcodes::PUSH, vec![rhs_op]);
 
         // Move dividend to RAX.
         self.emit_instr(
@@ -1154,7 +1182,10 @@ impl X86_64InstructionSelector {
             );
         }
 
-        // Emit IDIV or DIV using the saved divisor in RCX.
+        // Restore divisor from stack into RCX.
+        self.emit_instr(opcodes::POP, vec![MachineOperand::Register(RCX)]);
+
+        // Emit IDIV or DIV using the restored divisor in RCX.
         let div_op = if is_signed {
             opcodes::IDIV_R
         } else {
@@ -1243,15 +1274,31 @@ impl X86_64InstructionSelector {
         let dst = self.get_operand(result);
         let cc = compare_op_to_cond_code(op);
 
+        // Ensure LHS is in a register — CMP requires at least one register.
+        let lhs_reg = match &lhs_op {
+            MachineOperand::Memory { .. } => {
+                let scratch = MachineOperand::Register(self.alloc_vreg());
+                self.emit_instr(opcodes::LOAD64, vec![scratch.clone(), lhs_op]);
+                scratch
+            }
+            _ => lhs_op,
+        };
+
         match &rhs_op {
             MachineOperand::Immediate(imm) => {
                 self.emit_instr(
                     opcodes::CMP_RI,
-                    vec![lhs_op, MachineOperand::Immediate(*imm)],
+                    vec![lhs_reg, MachineOperand::Immediate(*imm)],
                 );
             }
+            MachineOperand::Memory { .. } => {
+                // Load memory operand into a scratch register for CMP_RR.
+                let scratch = MachineOperand::Register(self.alloc_vreg());
+                self.emit_instr(opcodes::LOAD64, vec![scratch.clone(), rhs_op]);
+                self.emit_instr(opcodes::CMP_RR, vec![lhs_reg, scratch]);
+            }
             _ => {
-                self.emit_instr(opcodes::CMP_RR, vec![lhs_op, rhs_op]);
+                self.emit_instr(opcodes::CMP_RR, vec![lhs_reg, rhs_op]);
             }
         }
 
@@ -1426,6 +1473,7 @@ impl X86_64InstructionSelector {
         &mut self,
         value: Value,
         ptr: Value,
+        store_ty: Option<&IrType>,
     ) -> Result<(), CodeGenError> {
         let val_op = self.get_operand(value);
         let ptr_op = self.get_operand(ptr);
@@ -1439,32 +1487,67 @@ impl X86_64InstructionSelector {
             _ => 0,
         };
 
-        // Check if value is in an SSE register.
-        let is_sse = match &val_op {
-            MachineOperand::Register(r) => is_xmm_reg(*r),
-            _ => false,
+        // If the value operand is a Memory operand (an alloca address being
+        // stored as a pointer value, e.g., `int *p = &local;`), we need to
+        // materialise the address into a temporary register first, since x86
+        // does not support memory-to-memory MOV.
+        let effective_val = match &val_op {
+            MachineOperand::Memory { .. } => {
+                let tmp = self.alloc_vreg();
+                self.emit_instr(
+                    opcodes::LEA,
+                    vec![MachineOperand::Register(tmp), val_op],
+                );
+                MachineOperand::Register(tmp)
+            }
+            _ => val_op,
         };
 
+        // Determine if the value is a float type using the type map
+        // (reliable at isel time, unlike is_xmm_reg on vregs).
+        let is_sse = self.type_map.get(&value)
+            .map(|t| t.is_float())
+            .unwrap_or_else(|| {
+                // Fallback: check if already a physical XMM register.
+                match &effective_val {
+                    MachineOperand::Register(r) => is_xmm_reg(*r),
+                    _ => false,
+                }
+            });
+
         if is_sse {
+            // Use MOVSS for F32, MOVSD for F64.
+            let mov_op = match self.type_map.get(&value) {
+                Some(IrType::F32) => opcodes::MOVSS,
+                _ => opcodes::MOVSD,
+            };
             self.emit_instr(
-                opcodes::MOVSD,
+                mov_op,
                 vec![
                     MachineOperand::Memory {
                         base: base_reg,
                         offset,
                     },
-                    val_op,
+                    effective_val,
                 ],
             );
         } else {
+            // Select store width: use explicit store_ty if provided (e.g., for struct
+            // field stores), otherwise default to 64-bit (safe for 8-byte-aligned allocas).
+            let store_op = match store_ty {
+                Some(IrType::I32) => opcodes::STORE32,
+                Some(IrType::I16) => opcodes::STORE32, // TODO: add STORE16 if needed
+                Some(IrType::I8) | Some(IrType::I1) => opcodes::STORE32, // TODO: add STORE8 if needed
+                _ => opcodes::STORE64,
+            };
             self.emit_instr(
-                opcodes::STORE64,
+                store_op,
                 vec![
                     MachineOperand::Memory {
                         base: base_reg,
                         offset,
                     },
-                    val_op,
+                    effective_val,
                 ],
             );
         }
@@ -1516,25 +1599,25 @@ impl X86_64InstructionSelector {
 
         self.stack_offset += total_size;
 
-        // LEA dst, [rbp - stack_offset]
-        let dst = self.get_operand(result);
+        // Map the alloca result directly to an RBP-relative memory operand.
+        // Loads/stores that reference this alloca will use the memory operand
+        // directly (e.g., `MOV [rbp-8], reg` for stores, `MOV reg, [rbp-8]`
+        // for loads).  When the alloca value is used as a *pointer* (e.g., in
+        // GEP, call argument, or stored into another variable), the consuming
+        // instruction is responsible for emitting an LEA to materialise the
+        // address into a register.
+        //
+        // We intentionally do NOT emit a LEA here and do NOT allocate a vreg
+        // for the alloca result.  Emitting LEAs at alloca time allocated
+        // virtual registers that the register allocator could map to ABI
+        // parameter registers (RDI, RSI, RDX, RCX), clobbering incoming
+        // function arguments before they were spilled to the stack.
         self.set_operand(
             result,
             MachineOperand::Memory {
                 base: RBP,
                 offset: -self.stack_offset,
             },
-        );
-        // Also emit a LEA so the value can be used as a pointer.
-        self.emit_instr(
-            opcodes::LEA,
-            vec![
-                dst,
-                MachineOperand::Memory {
-                    base: RBP,
-                    offset: -self.stack_offset,
-                },
-            ],
         );
 
         Ok(())
@@ -1556,7 +1639,18 @@ impl X86_64InstructionSelector {
         let dst = self.get_operand(result);
 
         // Start with the base pointer in the destination register.
-        self.emit_instr(opcodes::MOV_RR, vec![dst.clone(), ptr_op]);
+        // When the pointer comes from an alloca (represented as a Memory
+        // operand), we need LEA to materialise the *address* into a register.
+        // MOV_RR with a Memory source would load the *contents* at that
+        // address, which is wrong for GEP base-pointer computation.
+        match &ptr_op {
+            MachineOperand::Memory { .. } => {
+                self.emit_instr(opcodes::LEA, vec![dst.clone(), ptr_op]);
+            }
+            _ => {
+                self.emit_instr(opcodes::MOV_RR, vec![dst.clone(), ptr_op]);
+            }
+        }
 
         // Walk through indices, accumulating offsets.
         let mut current_ty = base_ty.clone();
@@ -1582,22 +1676,32 @@ impl X86_64InstructionSelector {
                             }
                         }
                         _ => {
-                            // idx * elem_size → use IMUL then ADD.
-                            let tmp = self.alloc_vreg();
+                            // idx * elem_size → 3-operand IMUL to avoid
+                            // clobbering the index register with a MOV_RI.
+                            // Use IMUL_RI dst_tmp, idx, elem_size, then
+                            // ADD_RR dst, dst_tmp.
+                            // We reuse `dst` as the temporary: save base,
+                            // compute scaled index into dst, then add base back.
                             self.emit_instr(
-                                opcodes::MOV_RI,
+                                opcodes::PUSH,
+                                vec![dst.clone()],
+                            );
+                            self.emit_instr(
+                                opcodes::IMUL_RI,
                                 vec![
-                                    MachineOperand::Register(tmp),
+                                    dst.clone(),
+                                    idx_op.clone(),
                                     MachineOperand::Immediate(elem_size),
                                 ],
                             );
+                            // Pop saved base into R11, add to dst.
                             self.emit_instr(
-                                opcodes::IMUL_RR,
-                                vec![MachineOperand::Register(tmp), idx_op],
+                                opcodes::POP,
+                                vec![MachineOperand::Register(R11)],
                             );
                             self.emit_instr(
                                 opcodes::ADD_RR,
-                                vec![dst.clone(), MachineOperand::Register(tmp)],
+                                vec![dst.clone(), MachineOperand::Register(R11)],
                             );
                         }
                     }
@@ -1754,22 +1858,92 @@ impl X86_64InstructionSelector {
         }
 
         // Move register-passed arguments into the correct registers.
-        for (i, loc) in layout.locations.iter().enumerate() {
-            if let Some(reg) = loc.register {
-                if let Some(arg_val) = args.get(i) {
-                    let arg_op = self.get_operand(*arg_val);
-                    if is_xmm_reg(reg) {
-                        self.emit_instr(
-                            opcodes::MOVSD,
-                            vec![MachineOperand::Register(reg), arg_op],
-                        );
-                    } else {
-                        self.emit_instr(
-                            opcodes::MOV_RR,
-                            vec![MachineOperand::Register(reg), arg_op],
-                        );
+        //
+        // After register allocation, argument values may live in registers
+        // that are also argument registers for *other* arguments (e.g. the
+        // value for arg6 may be in RCX, which is also the target register
+        // for arg4).  Direct MOV would clobber the value.
+        //
+        // Solution: PUSH all integer argument values first (reads every
+        // source once before any argument register is written), then POP
+        // into the argument registers in reverse order.  XMM arguments are
+        // handled separately since PUSH/POP don't apply to SSE regs.
+        {
+            let mut gpr_args: Vec<(PhysReg, MachineOperand)> = Vec::new();
+            let mut xmm_args: Vec<(PhysReg, MachineOperand)> = Vec::new();
+
+            for (i, loc) in layout.locations.iter().enumerate() {
+                if let Some(reg) = loc.register {
+                    if let Some(arg_val) = args.get(i) {
+                        let arg_op = self.get_operand(*arg_val);
+                        if is_xmm_reg(reg) {
+                            xmm_args.push((reg, arg_op));
+                        } else {
+                            gpr_args.push((reg, arg_op));
+                        }
                     }
                 }
+            }
+
+            // --- GPR arguments via PUSH/POP to avoid clobbering ---
+            if !gpr_args.is_empty() {
+                // PUSH each argument value (forward order).
+                // For Memory operands (alloca results) use LEA into R11
+                // first, since PUSH only accepts registers.
+                for (_dst, src) in gpr_args.iter() {
+                    match src {
+                        MachineOperand::Memory { .. } => {
+                            self.emit_instr(
+                                opcodes::LEA,
+                                vec![MachineOperand::Register(R11), src.clone()],
+                            );
+                            self.emit_instr(
+                                opcodes::PUSH,
+                                vec![MachineOperand::Register(R11)],
+                            );
+                        }
+                        MachineOperand::Immediate(val) => {
+                            // Load immediate into R11, then PUSH.
+                            self.emit_instr(
+                                opcodes::MOV_RI,
+                                vec![
+                                    MachineOperand::Register(R11),
+                                    MachineOperand::Immediate(*val),
+                                ],
+                            );
+                            self.emit_instr(
+                                opcodes::PUSH,
+                                vec![MachineOperand::Register(R11)],
+                            );
+                        }
+                        _ => {
+                            self.emit_instr(
+                                opcodes::PUSH,
+                                vec![src.clone()],
+                            );
+                        }
+                    }
+                }
+
+                // POP into target registers in REVERSE order.
+                // (LIFO: last pushed = first popped → reverse maps to
+                //  forward argument order.)
+                for (dst, _src) in gpr_args.iter().rev() {
+                    self.emit_instr(
+                        opcodes::POP,
+                        vec![MachineOperand::Register(*dst)],
+                    );
+                }
+            }
+
+            // --- XMM arguments: direct MOVSD (no register conflict
+            //     because XMM regs are disjoint from the GPR fallback
+            //     pool and the linear-scan GPR allocator). ---
+            for (dst, src) in xmm_args.iter() {
+                self.emit_instr(
+                    opcodes::MOVSD,
+                    vec![MachineOperand::Register(*dst), src.clone()],
+                );
             }
         }
 
@@ -1848,6 +2022,32 @@ impl X86_64InstructionSelector {
     // ===================================================================
     // Type casts
     // ===================================================================
+
+    /// Emit a single argument move into the target register, choosing the
+    /// correct opcode based on whether the register is XMM (float) or GPR.
+    fn emit_arg_move(
+        &mut self,
+        dst: PhysReg,
+        src: &MachineOperand,
+        is_xmm: bool,
+    ) {
+        if is_xmm {
+            self.emit_instr(
+                opcodes::MOVSD,
+                vec![MachineOperand::Register(dst), src.clone()],
+            );
+        } else if matches!(src, MachineOperand::Memory { .. }) {
+            self.emit_instr(
+                opcodes::LEA,
+                vec![MachineOperand::Register(dst), src.clone()],
+            );
+        } else {
+            self.emit_instr(
+                opcodes::MOV_RR,
+                vec![MachineOperand::Register(dst), src.clone()],
+            );
+        }
+    }
 
     /// Select a type cast instruction.
     fn select_cast(
@@ -2034,17 +2234,19 @@ impl X86_64InstructionSelector {
                 let _ = ty;
             }
             Constant::Float { value: v, ty } => {
-                // Float constants: load from a RIP-relative constant pool.
-                // At isel time we emit a MOV_RM placeholder with a symbol
-                // reference; the encoder/linker resolves the actual address.
+                // Float constants: materialise via stack-spill then MOVSD
+                // load into the destination XMM register.  This avoids the
+                // need for a MOVQ (GPR→XMM) instruction that the current
+                // encoder does not support.  The sequence is:
+                //   1. MOV_RI  tmp, <float bits as i64>
+                //   2. PUSH    tmp         (spill to stack)
+                //   3. MOVSD   dst, [rsp]  (load into XMM)
+                //   4. POP     tmp         (restore stack)
                 let bits = if *ty == IrType::F32 {
                     (*v as f32).to_bits() as i64
                 } else {
                     v.to_bits() as i64
                 };
-                // Materialise float constant via integer register then move
-                // to XMM register. This avoids needing a rodata section lookup
-                // at isel time.
                 let tmp = self.alloc_vreg();
                 self.emit_instr(
                     opcodes::MOV_RI,
@@ -2053,10 +2255,26 @@ impl X86_64InstructionSelector {
                         MachineOperand::Immediate(bits),
                     ],
                 );
-                // Move integer bits to XMM (MOVQ / MOVD).
+                // Spill integer bits to stack, then load as float.
                 self.emit_instr(
-                    opcodes::MOV_RR,
-                    vec![dst, MachineOperand::Register(tmp)],
+                    opcodes::PUSH,
+                    vec![MachineOperand::Register(tmp)],
+                );
+                let mov_op = if *ty == IrType::F32 {
+                    opcodes::MOVSS
+                } else {
+                    opcodes::MOVSD
+                };
+                self.emit_instr(
+                    mov_op,
+                    vec![
+                        dst,
+                        MachineOperand::Memory { base: RSP, offset: 0 },
+                    ],
+                );
+                self.emit_instr(
+                    opcodes::POP,
+                    vec![MachineOperand::Register(tmp)],
                 );
             }
             Constant::Bool(b) => {
@@ -2292,6 +2510,8 @@ mod tests {
             blocks: vec![block],
             entry_block: entry,
             is_definition: true,
+is_static: false,
+is_weak: false,
         }
     }
 
@@ -2471,10 +2691,7 @@ mod tests {
                 result: Value(1),
                 value: Constant::Integer { value: 0x2000, ty: IrType::I64 },
             },
-            Instruction::Store {
-                value: Value(0),
-                ptr: Value(1),
-            },
+            Instruction::Store { value: Value(0), ptr: Value(1), store_ty: None },
         ];
         let result = select(instrs, Terminator::Return { value: None });
         assert!(has_opcode(&result, opcodes::STORE64));

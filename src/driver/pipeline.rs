@@ -245,6 +245,22 @@ pub fn run(cli_args: CliArgs, target: TargetConfig) -> Result<(), ()> {
     for input_path_str in &input_files {
         let input_path = Path::new(input_path_str);
 
+        // === Handle pre-compiled object files (.o) directly ===
+        if let Some(ext) = input_path.extension() {
+            if ext == "o" {
+                match read_object_file(input_path, &ctx.target) {
+                    Ok(obj) => {
+                        all_objects.push(obj);
+                        continue;
+                    }
+                    Err(msg) => {
+                        ctx.diagnostics.error_no_loc(msg);
+                        return Err(());
+                    }
+                }
+            }
+        }
+
         // === Step 1: Read source file ===
         let source = match fs::read_to_string(input_path) {
             Ok(content) => content,
@@ -391,6 +407,9 @@ pub fn run(cli_args: CliArgs, target: TargetConfig) -> Result<(), ()> {
                 input_path_str,
                 &optimized_module,
                 &object_code,
+                &typed_ast,
+                &ctx.interner,
+                &ctx.target,
             );
             all_debug_cu_info.push(cu_info);
         }
@@ -454,9 +473,71 @@ fn build_preprocessor_options(
     // Bundled freestanding header path.
     options.bundled_header_path = bundled_header_path.clone();
 
+    // Architecture-specific predefined macros for system header compatibility.
+    // These must match what GCC/Clang define for each target so that system
+    // headers like <gnu/stubs.h> select the correct architecture paths.
+    let arch_str = &target.triple;
+    if arch_str.starts_with("x86_64") || arch_str.starts_with("x86-64") {
+        options.defines.push(("__x86_64__".to_string(), Some("1".to_string())));
+        options.defines.push(("__x86_64".to_string(), Some("1".to_string())));
+        options.defines.push(("__amd64__".to_string(), Some("1".to_string())));
+        options.defines.push(("__amd64".to_string(), Some("1".to_string())));
+        options.defines.push(("__LP64__".to_string(), Some("1".to_string())));
+        options.defines.push(("_LP64".to_string(), Some("1".to_string())));
+        options.defines.push(("__SIZEOF_POINTER__".to_string(), Some("8".to_string())));
+        options.defines.push(("__SIZEOF_LONG__".to_string(), Some("8".to_string())));
+        options.defines.push(("__SIZEOF_INT__".to_string(), Some("4".to_string())));
+    } else if arch_str.starts_with("i686") || arch_str.starts_with("i386") {
+        options.defines.push(("__i686__".to_string(), Some("1".to_string())));
+        options.defines.push(("__i386__".to_string(), Some("1".to_string())));
+        options.defines.push(("__i386".to_string(), Some("1".to_string())));
+        options.defines.push(("i386".to_string(), Some("1".to_string())));
+        options.defines.push(("__ILP32__".to_string(), Some("1".to_string())));
+        options.defines.push(("__SIZEOF_POINTER__".to_string(), Some("4".to_string())));
+        options.defines.push(("__SIZEOF_LONG__".to_string(), Some("4".to_string())));
+        options.defines.push(("__SIZEOF_INT__".to_string(), Some("4".to_string())));
+    } else if arch_str.starts_with("aarch64") {
+        options.defines.push(("__aarch64__".to_string(), Some("1".to_string())));
+        options.defines.push(("__LP64__".to_string(), Some("1".to_string())));
+        options.defines.push(("_LP64".to_string(), Some("1".to_string())));
+        options.defines.push(("__SIZEOF_POINTER__".to_string(), Some("8".to_string())));
+        options.defines.push(("__SIZEOF_LONG__".to_string(), Some("8".to_string())));
+        options.defines.push(("__SIZEOF_INT__".to_string(), Some("4".to_string())));
+        // Suppress ARM NEON and SVE vector type declarations in glibc math.h.
+        // Our compiler does not support NEON/SVE intrinsics, so these types
+        // (__f32x4_t, __sv_f32_t, etc.) would cause parse errors.
+        options.defines.push(("__ARM_NEON".to_string(), Some("0".to_string())));
+        options.defines.push(("__ARM_FEATURE_SVE".to_string(), Some("0".to_string())));
+        // Define GCC builtin vector types as simple integer types so that
+        // glibc's bits/math-vector.h ADVSIMD/SVE sections parse cleanly.
+        // These types are only used in SIMD math function declarations that
+        // our compiler never invokes, so substituting `int` is sufficient.
+        options.defines.push(("__Float32x4_t".to_string(), Some("int".to_string())));
+        options.defines.push(("__Float64x2_t".to_string(), Some("long".to_string())));
+        options.defines.push(("__SVFloat32_t".to_string(), Some("int".to_string())));
+        options.defines.push(("__SVFloat64_t".to_string(), Some("long".to_string())));
+        options.defines.push(("__SVBool_t".to_string(), Some("int".to_string())));
+        // Suppress the __aarch64_vector_pcs__ calling convention attribute.
+        options.defines.push(("__vpcs".to_string(), None));
+    } else if arch_str.starts_with("riscv64") {
+        options.defines.push(("__riscv".to_string(), Some("1".to_string())));
+        options.defines.push(("__riscv_xlen".to_string(), Some("64".to_string())));
+        // RISC-V floating-point register length — required by glibc's
+        // bits/setjmp.h to determine how many FP registers to save.
+        // 64 = double-precision (D extension), matching RV64GC.
+        options.defines.push(("__riscv_flen".to_string(), Some("64".to_string())));
+        // Double-precision float ABI flag required by glibc's bits/setjmp.h
+        // to include FP callee-saved registers in jmp_buf.
+        options.defines.push(("__riscv_float_abi_double".to_string(), Some("1".to_string())));
+        options.defines.push(("__LP64__".to_string(), Some("1".to_string())));
+        options.defines.push(("_LP64".to_string(), Some("1".to_string())));
+        options.defines.push(("__SIZEOF_POINTER__".to_string(), Some("8".to_string())));
+        options.defines.push(("__SIZEOF_LONG__".to_string(), Some("8".to_string())));
+        options.defines.push(("__SIZEOF_INT__".to_string(), Some("4".to_string())));
+    }
+
     // System include directories based on target architecture.
     options.system_include_dirs.push(PathBuf::from("/usr/include"));
-    let arch_str = &target.triple;
     if arch_str.starts_with("x86_64") || arch_str.starts_with("x86-64") {
         options.system_include_dirs.push(PathBuf::from("/usr/include/x86_64-linux-gnu"));
     } else if arch_str.starts_with("i686") || arch_str.starts_with("i386") {
@@ -715,6 +796,9 @@ fn build_debug_cu_info(
     source_file: &str,
     ir_module: &Module,
     object_code: &ObjectCode,
+    typed_ast: &crate::sema::TypedTranslationUnit,
+    interner: &Interner,
+    target: &TargetConfig,
 ) -> CompilationUnitDebugInfo {
     // Determine compilation directory (current working directory).
     let comp_dir = std::env::current_dir()
@@ -777,6 +861,10 @@ fn build_debug_cu_info(
                 Vec::new()
             };
 
+            // Extract parameter and local variable debug info from typed AST.
+            let (params_dbg, locals_dbg, ret_type_dbg) =
+                extract_function_debug_types(&f.name, typed_ast, interner);
+
             FunctionDebugInfo {
                 name: f.name.clone(),
                 linkage_name: None,
@@ -784,9 +872,9 @@ fn build_debug_cu_info(
                 high_pc,
                 file_id: 0,
                 line: decl_line,
-                return_type: crate::debug::DebugTypeRef::Void,
-                parameters: Vec::new(),
-                local_variables: Vec::new(),
+                return_type: ret_type_dbg,
+                parameters: params_dbg,
+                local_variables: locals_dbg,
                 line_mappings,
                 frame_info: FunctionFrameInfo {
                     cfa_register: 6, // rbp for x86-64
@@ -801,6 +889,9 @@ fn build_debug_cu_info(
         cu_low = 0;
     }
 
+    // Extract struct definitions from the typed AST for DWARF type info.
+    let struct_defs = extract_struct_defs(typed_ast, interner, target);
+
     CompilationUnitDebugInfo {
         producer: "bcc 0.1.0".to_string(),
         language: crate::debug::DW_LANG_C11,
@@ -810,6 +901,7 @@ fn build_debug_cu_info(
         high_pc: cu_high,
         functions,
         global_variables: Vec::new(),
+        struct_defs,
         source_files: vec![source_file.to_string()],
         include_directories: Vec::new(),
     }
@@ -893,6 +985,498 @@ fn merge_debug_sections(
 // ===========================================================================
 // Unit Tests
 // ===========================================================================
+
+// ===========================================================================
+// read_object_file — parse a pre-compiled .o ELF into ObjectCode
+// ===========================================================================
+
+/// Reads a pre-compiled ELF relocatable object (`.o`) file and converts it
+/// into the internal [`ObjectCode`] representation so that it can be passed
+/// directly to the linker alongside freshly compiled objects.
+///
+/// This enables the `bcc` CLI to accept `.o` files as inputs for multi-file
+/// linking (e.g. `bcc a.o b.o -o out`).
+fn read_object_file(path: &Path, target: &TargetConfig) -> Result<ObjectCode, String> {
+    use crate::codegen::{
+        Architecture, Relocation, RelocationType,
+        Section as CgSection, SectionFlags, SectionType as CgSectionType,
+        Symbol as CgSymbol, SymbolBinding, SymbolType as CgSymbolType,
+        SymbolVisibility,
+    };
+    use crate::linker::elf;
+
+    let data = fs::read(path).map_err(|e| format!("{}: {}", path.display(), e))?;
+    let elf_obj = elf::ElfObject::parse(&data)
+        .map_err(|e| format!("{}: invalid ELF object: {:?}", path.display(), e))?;
+
+    // Determine architecture from ELF machine type.
+    let arch = match elf_obj.machine {
+        elf::EM_X86_64 => Architecture::X86_64,
+        elf::EM_386 => Architecture::I686,
+        elf::EM_AARCH64 => Architecture::Aarch64,
+        elf::EM_RISCV => Architecture::Riscv64,
+        m => return Err(format!("{}: unsupported ELF machine type {}", path.display(), m)),
+    };
+
+    let mut obj = ObjectCode::new(arch);
+
+    // Convert parsed sections to codegen sections, skipping metadata sections.
+    // Build a mapping from ELF section index → codegen section index.
+    let mut elf_to_cg_section: std::collections::HashMap<usize, usize> =
+        std::collections::HashMap::new();
+    for (elf_idx, sec) in elf_obj.sections.iter().enumerate() {
+        // Skip non-content sections.
+        if sec.section_type == elf::SHT_NULL
+            || sec.section_type == elf::SHT_STRTAB
+            || sec.section_type == elf::SHT_SYMTAB
+            || sec.section_type == elf::SHT_RELA
+            || sec.section_type == elf::SHT_REL
+        {
+            continue;
+        }
+
+        let section_type = match sec.name.as_str() {
+            ".text" => CgSectionType::Text,
+            ".data" => CgSectionType::Data,
+            ".rodata" => CgSectionType::Rodata,
+            ".bss" => CgSectionType::Bss,
+            _ => CgSectionType::Custom(sec.section_type),
+        };
+
+        let flags = SectionFlags {
+            writable: (sec.flags & elf::SHF_WRITE) != 0,
+            executable: (sec.flags & elf::SHF_EXECINSTR) != 0,
+            allocatable: (sec.flags & elf::SHF_ALLOC) != 0,
+        };
+
+        let cg_idx = obj.add_section(CgSection {
+            name: sec.name.clone(),
+            data: sec.data.clone(),
+            section_type,
+            alignment: sec.alignment as u32,
+            flags,
+        });
+        elf_to_cg_section.insert(elf_idx, cg_idx);
+    }
+
+    // Convert parsed symbols. The ELF section_index is 1-based; we map to
+    // the 0-based codegen section index via elf_to_cg_section.
+    for sym in &elf_obj.symbols {
+        if sym.name.is_empty() {
+            continue; // Skip the null symbol
+        }
+
+        let binding = match sym.binding {
+            0 => SymbolBinding::Local,
+            1 => SymbolBinding::Global,
+            2 => SymbolBinding::Weak,
+            _ => SymbolBinding::Global,
+        };
+
+        let symbol_type = match sym.symbol_type {
+            2 => CgSymbolType::Function,
+            1 => CgSymbolType::Object,
+            3 => CgSymbolType::Section,
+            _ => CgSymbolType::NoType,
+        };
+
+        let visibility = match sym.visibility {
+            0 => SymbolVisibility::Default,
+            2 => SymbolVisibility::Hidden,
+            3 => SymbolVisibility::Protected,
+            _ => SymbolVisibility::Default,
+        };
+
+        let is_def = sym.section_index != 0
+            && (sym.section_index as u32) < elf::SHN_ABS as u32;
+        let cg_sec_idx = if is_def {
+            elf_to_cg_section
+                .get(&(sym.section_index as usize))
+                .copied()
+                .unwrap_or(0)
+        } else {
+            0
+        };
+
+        obj.add_symbol(CgSymbol {
+            name: sym.name.clone(),
+            section_index: cg_sec_idx,
+            offset: sym.value,
+            size: sym.size,
+            binding,
+            symbol_type,
+            visibility,
+            is_definition: is_def,
+        });
+    }
+
+    // Convert relocations — map ELF relocation types to our RelocationType.
+    for reloc in &elf_obj.relocations {
+        // Look up the symbol name from the ELF symbol table.
+        let sym_name = if (reloc.symbol_index as usize) < elf_obj.symbols.len() {
+            elf_obj.symbols[reloc.symbol_index as usize].name.clone()
+        } else {
+            String::new()
+        };
+
+        let cg_sec_idx = elf_to_cg_section
+            .get(&reloc.section_index)
+            .copied()
+            .unwrap_or(0);
+
+        let reloc_type = match arch {
+            Architecture::X86_64 => match reloc.reloc_type {
+                1 => RelocationType::X86_64_64,
+                2 => RelocationType::X86_64_PC32,
+                4 => RelocationType::X86_64_PLT32,
+                9 => RelocationType::X86_64_GOTPCREL,
+                _ => RelocationType::X86_64_64, // fallback
+            },
+            Architecture::I686 => match reloc.reloc_type {
+                1 => RelocationType::I386_32,
+                2 => RelocationType::I386_PC32,
+                _ => RelocationType::I386_32,
+            },
+            Architecture::Aarch64 => match reloc.reloc_type {
+                257 => RelocationType::Aarch64_ABS64,
+                258 => RelocationType::Aarch64_ABS32,
+                283 => RelocationType::Aarch64_CALL26,
+                _ => RelocationType::Aarch64_ABS64,
+            },
+            Architecture::Riscv64 => match reloc.reloc_type {
+                1 => RelocationType::Riscv_64,
+                2 => RelocationType::Riscv_32,
+                _ => RelocationType::Riscv_64,
+            },
+        };
+
+        obj.add_relocation(Relocation {
+            offset: reloc.offset,
+            symbol: sym_name,
+            reloc_type,
+            addend: reloc.addend,
+            section_index: cg_sec_idx,
+        });
+    }
+
+    Ok(obj)
+}
+
+// ===========================================================================
+// Helper: Extract debug type information from the typed AST
+// ===========================================================================
+
+use crate::frontend::parser::ast::{
+    TranslationUnit, Declaration, TypeSpecifier, Declarator, DirectDeclarator,
+    Statement,
+};
+use crate::debug::{
+    DebugTypeRef, BaseTypeKind, ParameterDebugInfo,
+    VariableDebugInfo as DebugVariableDebugInfo,
+    VariableLocation, StructDebugDef, StructMemberDebugInfo,
+};
+
+/// Convert an AST TypeSpecifier to a DebugTypeRef.
+fn type_specifier_to_debug_ref(ts: &TypeSpecifier, interner: &Interner) -> DebugTypeRef {
+    match ts {
+        TypeSpecifier::Void => DebugTypeRef::Void,
+        TypeSpecifier::Char => DebugTypeRef::BaseType(BaseTypeKind::SignedChar),
+        TypeSpecifier::Short => DebugTypeRef::BaseType(BaseTypeKind::Short),
+        TypeSpecifier::Int => DebugTypeRef::BaseType(BaseTypeKind::Int),
+        TypeSpecifier::Long => DebugTypeRef::BaseType(BaseTypeKind::Long),
+        TypeSpecifier::LongLong => DebugTypeRef::BaseType(BaseTypeKind::LongLong),
+        TypeSpecifier::Float => DebugTypeRef::BaseType(BaseTypeKind::Float),
+        TypeSpecifier::Double => DebugTypeRef::BaseType(BaseTypeKind::Double),
+        TypeSpecifier::LongDouble => DebugTypeRef::BaseType(BaseTypeKind::LongDouble),
+        TypeSpecifier::Bool => DebugTypeRef::BaseType(BaseTypeKind::Bool),
+        TypeSpecifier::Signed(inner) => match inner.as_ref() {
+            TypeSpecifier::Char => DebugTypeRef::BaseType(BaseTypeKind::SignedChar),
+            TypeSpecifier::Short => DebugTypeRef::BaseType(BaseTypeKind::Short),
+            TypeSpecifier::Int => DebugTypeRef::BaseType(BaseTypeKind::Int),
+            TypeSpecifier::Long => DebugTypeRef::BaseType(BaseTypeKind::Long),
+            TypeSpecifier::LongLong => DebugTypeRef::BaseType(BaseTypeKind::LongLong),
+            _ => DebugTypeRef::BaseType(BaseTypeKind::Int),
+        },
+        TypeSpecifier::Unsigned(inner) => match inner.as_ref() {
+            TypeSpecifier::Char => DebugTypeRef::BaseType(BaseTypeKind::UnsignedChar),
+            TypeSpecifier::Short => DebugTypeRef::BaseType(BaseTypeKind::UnsignedShort),
+            TypeSpecifier::Int => DebugTypeRef::BaseType(BaseTypeKind::UnsignedInt),
+            TypeSpecifier::Long => DebugTypeRef::BaseType(BaseTypeKind::UnsignedLong),
+            TypeSpecifier::LongLong => DebugTypeRef::BaseType(BaseTypeKind::UnsignedLongLong),
+            _ => DebugTypeRef::BaseType(BaseTypeKind::UnsignedInt),
+        },
+        TypeSpecifier::Struct(def) => {
+            let name = def.tag.map(|t| interner.resolve(t).to_string()).unwrap_or_default();
+            DebugTypeRef::Struct(name)
+        }
+        TypeSpecifier::StructRef { tag, .. } => {
+            let name = interner.resolve(*tag);
+            DebugTypeRef::Struct(name.to_string())
+        }
+        TypeSpecifier::TypedefName { name, .. } => {
+            let n = interner.resolve(*name);
+            DebugTypeRef::Typedef(n.to_string())
+        }
+        TypeSpecifier::Qualified { inner, .. } => type_specifier_to_debug_ref(inner, interner),
+        _ => DebugTypeRef::BaseType(BaseTypeKind::Int), // fallback
+    }
+}
+
+/// Check if a declarator is a pointer type and wrap the base type accordingly.
+fn wrap_debug_type_for_declarator(
+    base: DebugTypeRef,
+    decl: &Declarator,
+) -> DebugTypeRef {
+    let mut result = base;
+    // Count pointer levels from the declarator's pointer chain.
+    for _ in &decl.pointer {
+        result = DebugTypeRef::Pointer(Box::new(result));
+    }
+    // Check for array declarator in the direct part.
+    if let DirectDeclarator::Array { size, .. } = &decl.direct {
+        let count = match size {
+            crate::frontend::parser::ast::ArraySize::Fixed(expr) => {
+                // Try to extract the constant value
+                if let crate::frontend::parser::ast::Expression::IntegerLiteral { value, .. } = expr.as_ref() {
+                    Some(*value as u64)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+        result = DebugTypeRef::Array(Box::new(result), count);
+    }
+    result
+}
+
+/// Extract function debug info (parameters, locals, return type) from the typed AST.
+fn extract_function_debug_types(
+    func_name: &str,
+    typed_ast: &crate::sema::TypedTranslationUnit,
+    interner: &Interner,
+) -> (Vec<ParameterDebugInfo>, Vec<DebugVariableDebugInfo>, DebugTypeRef) {
+    for typed_decl in &typed_ast.declarations {
+        if let Declaration::Function(fdef) = &typed_decl.decl {
+            // Match by function name — extract from the direct declarator.
+            let decl_name = match &fdef.declarator.direct {
+                DirectDeclarator::Identifier(id) => interner.resolve(*id).to_string(),
+                DirectDeclarator::Function { base, .. } => {
+                    if let DirectDeclarator::Identifier(id) = base.as_ref() {
+                        interner.resolve(*id).to_string()
+                    } else {
+                        continue;
+                    }
+                }
+                _ => continue,
+            };
+            if decl_name != func_name {
+                continue;
+            }
+
+            // Return type from specifiers
+            let ret_type = type_specifier_to_debug_ref(&fdef.specifiers.type_specifier, interner);
+
+            // Parameters from declarator
+            let params: Vec<ParameterDebugInfo> = match &fdef.declarator.direct {
+                DirectDeclarator::Function { params, .. } => {
+                    params.params.iter().map(|p| {
+                        let param_name = if let Some(ref decl) = p.declarator {
+                            match &decl.direct {
+                                DirectDeclarator::Identifier(id) => interner.resolve(*id).to_string(),
+                                _ => String::new(),
+                            }
+                        } else {
+                            String::new()
+                        };
+                        let base_type = type_specifier_to_debug_ref(&p.specifiers.type_specifier, interner);
+                        let type_ref = if let Some(ref decl) = p.declarator {
+                            wrap_debug_type_for_declarator(base_type, decl)
+                        } else {
+                            base_type
+                        };
+                        ParameterDebugInfo {
+                            name: param_name,
+                            type_ref,
+                            location: VariableLocation::FrameOffset(0),
+                        }
+                    }).collect()
+                }
+                _ => Vec::new(),
+            };
+
+            // Local variables from function body
+            let locals = extract_locals_from_stmt(&fdef.body, interner);
+
+            return (params, locals, ret_type);
+        }
+    }
+
+    (Vec::new(), Vec::new(), DebugTypeRef::Void)
+}
+
+/// Recursively extract local variable declarations from a statement tree.
+fn extract_locals_from_stmt(
+    stmt: &Statement,
+    interner: &Interner,
+) -> Vec<DebugVariableDebugInfo> {
+    let mut locals = Vec::new();
+    match stmt {
+        Statement::Compound { items, .. } => {
+            for item in items {
+                match item {
+                    crate::frontend::parser::ast::BlockItem::Declaration(decl) => {
+                        if let Declaration::Variable { specifiers, declarators, .. } = decl.as_ref() {
+                            let base_type = type_specifier_to_debug_ref(&specifiers.type_specifier, interner);
+                            for init_decl in declarators {
+                                let var_name = match &init_decl.declarator.direct {
+                                    DirectDeclarator::Identifier(id) => interner.resolve(*id).to_string(),
+                                    DirectDeclarator::Array { base, .. } => {
+                                        if let DirectDeclarator::Identifier(id) = base.as_ref() {
+                                            interner.resolve(*id).to_string()
+                                        } else { continue; }
+                                    }
+                                    _ => continue,
+                                };
+                                let type_ref = wrap_debug_type_for_declarator(base_type.clone(), &init_decl.declarator);
+                                locals.push(DebugVariableDebugInfo {
+                                    name: var_name,
+                                    type_ref,
+                                    location: VariableLocation::FrameOffset(0),
+                                    scope_low_pc: 0,
+                                    scope_high_pc: 0,
+                                });
+                            }
+                        }
+                    }
+                    crate::frontend::parser::ast::BlockItem::Statement(inner_stmt) => {
+                        locals.extend(extract_locals_from_stmt(inner_stmt, interner));
+                    }
+                }
+            }
+        }
+        Statement::If { then_branch, else_branch, .. } => {
+            locals.extend(extract_locals_from_stmt(then_branch, interner));
+            if let Some(e) = else_branch {
+                locals.extend(extract_locals_from_stmt(e, interner));
+            }
+        }
+        Statement::While { body, .. } | Statement::DoWhile { body, .. } => {
+            locals.extend(extract_locals_from_stmt(body, interner));
+        }
+        Statement::For { body, .. } => {
+            locals.extend(extract_locals_from_stmt(body, interner));
+        }
+        _ => {}
+    }
+    locals
+}
+
+/// Extract struct definitions from the typed AST.
+fn extract_struct_defs(
+    typed_ast: &crate::sema::TypedTranslationUnit,
+    interner: &Interner,
+    _target: &TargetConfig,
+) -> Vec<StructDebugDef> {
+    let mut defs = Vec::new();
+    for typed_decl in &typed_ast.declarations {
+        // Look for struct definitions in variable declarations and function definitions
+        extract_struct_from_type_specifier(&typed_decl.decl, interner, &mut defs);
+    }
+    defs
+}
+
+/// Extract struct definitions from various declaration contexts.
+fn extract_struct_from_type_specifier(
+    decl: &Declaration,
+    interner: &Interner,
+    defs: &mut Vec<StructDebugDef>,
+) {
+    match decl {
+        Declaration::Variable { specifiers, .. } => {
+            check_type_for_struct(&specifiers.type_specifier, interner, defs);
+        }
+        Declaration::Function(fdef) => {
+            check_type_for_struct(&fdef.specifiers.type_specifier, interner, defs);
+            // Check function body for struct usage
+            extract_structs_from_stmt(&fdef.body, interner, defs);
+        }
+        Declaration::Typedef { specifiers, .. } => {
+            check_type_for_struct(&specifiers.type_specifier, interner, defs);
+        }
+        _ => {}
+    }
+}
+
+/// Check if a type specifier contains a struct definition and extract it.
+fn check_type_for_struct(
+    ts: &TypeSpecifier,
+    interner: &Interner,
+    defs: &mut Vec<StructDebugDef>,
+) {
+    if let TypeSpecifier::Struct(sdef) = ts {
+        if let Some(tag) = sdef.tag {
+            let name = interner.resolve(tag).to_string();
+            if !defs.iter().any(|d| d.name == name) {
+                let mut field_members: Vec<StructMemberDebugInfo> = Vec::new();
+                let mut byte_offset: u64 = 0;
+                for member in &sdef.members {
+                    if let crate::frontend::parser::ast::StructMember::Field { specifiers, declarators, .. } = member {
+                        for field_decl in declarators {
+                            if let Some(ref decl) = field_decl.declarator {
+                                let field_name = match &decl.direct {
+                                    DirectDeclarator::Identifier(id) => interner.resolve(*id).to_string(),
+                                    _ => continue,
+                                };
+                                let type_ref = type_specifier_to_debug_ref(&specifiers.type_specifier, interner);
+                                field_members.push(StructMemberDebugInfo {
+                                    name: field_name,
+                                    byte_offset,
+                                    type_ref,
+                                });
+                                byte_offset += 4; // simplified: assume 4 bytes per field
+                            }
+                        }
+                    }
+                }
+                defs.push(StructDebugDef {
+                    name,
+                    byte_size: byte_offset,
+                    members: field_members,
+                });
+            }
+        }
+    }
+}
+
+/// Extract struct definitions from statement blocks.
+fn extract_structs_from_stmt(
+    stmt: &Statement,
+    interner: &Interner,
+    defs: &mut Vec<StructDebugDef>,
+) {
+    match stmt {
+        Statement::Compound { items, .. } => {
+            for item in items {
+                match item {
+                    crate::frontend::parser::ast::BlockItem::Declaration(decl) => {
+                        extract_struct_from_type_specifier(decl, interner, defs);
+                    }
+                    crate::frontend::parser::ast::BlockItem::Statement(inner) => {
+                        extract_structs_from_stmt(inner, interner, defs);
+                    }
+                }
+            }
+        }
+        Statement::If { then_branch, else_branch, .. } => {
+            extract_structs_from_stmt(then_branch, interner, defs);
+            if let Some(e) = else_branch {
+                extract_structs_from_stmt(e, interner, defs);
+            }
+        }
+        _ => {}
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -1022,11 +1606,17 @@ mod tests {
         ];
         let target = crate::driver::target::TargetConfig::x86_64();
         let opts = build_preprocessor_options(&args, &None, &target);
-        assert_eq!(opts.defines.len(), 2);
+        // The first two defines are the user-specified ones; additional
+        // defines are architecture-specific predefined macros added by
+        // build_preprocessor_options for system header compatibility.
+        assert!(opts.defines.len() >= 2, "Expected at least 2 defines, got {}", opts.defines.len());
         assert_eq!(opts.defines[0].0, "DEBUG");
         assert_eq!(opts.defines[0].1, Some("1".to_string()));
         assert_eq!(opts.defines[1].0, "NDEBUG");
         assert_eq!(opts.defines[1].1, None);
+        // Verify architecture-specific macros are present.
+        let has_x86_64 = opts.defines.iter().any(|(k, _)| k == "__x86_64__");
+        assert!(has_x86_64, "Expected __x86_64__ in defines for x86_64 target");
     }
 
     #[test]

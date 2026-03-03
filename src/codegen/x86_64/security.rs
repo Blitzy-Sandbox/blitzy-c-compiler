@@ -248,31 +248,57 @@ impl SecurityHardening {
             return;
         }
 
-        for i in 0..instrs.len() {
+        // We process in reverse to handle insertions without index shift issues.
+        let mut i = 0;
+        while i < instrs.len() {
             if instrs[i].opcode != opcodes::CALL_R {
+                i += 1;
                 continue;
             }
 
             // Extract the target register from the indirect call.
             let reg = match instrs[i].operands.first() {
                 Some(MachineOperand::Register(r)) => *r,
-                _ => continue,
+                _ => { i += 1; continue; }
             };
 
-            // Look up the retpoline thunk symbol name for this register.
-            if let Some(thunk_name) = retpoline_thunk_name_for_reg(reg) {
-                // Preserve the source location from the original instruction
-                // so DWARF debug info remains accurate.
-                let loc = instrs[i].loc.clone();
+            // Preserve the source location from the original instruction
+            // so DWARF debug info remains accurate.
+            let loc = instrs[i].loc.clone();
 
-                // Replace with a direct call to the retpoline thunk.
+            // If the register has a dedicated retpoline thunk, use it directly.
+            // Otherwise, move the value to RAX first then use the RAX thunk.
+            if let Some(thunk_name) = retpoline_thunk_name_for_reg(reg) {
+                // Direct replacement with the matching retpoline thunk.
                 let mut replacement = MachineInstr::with_operands(
                     opcodes::CALL,
                     vec![MachineOperand::Symbol(thunk_name)],
                 );
                 replacement.loc = loc;
                 instrs[i] = replacement;
+            } else {
+                // No dedicated thunk for this register — emit mov %reg, %rax
+                // followed by call __x86_retpoline_rax.
+                let mut mov_instr = MachineInstr::with_operands(
+                    opcodes::MOV_RR,
+                    vec![
+                        MachineOperand::Register(RAX),
+                        MachineOperand::Register(reg),
+                    ],
+                );
+                mov_instr.loc = loc.clone();
+
+                let mut call_instr = MachineInstr::with_operands(
+                    opcodes::CALL,
+                    vec![MachineOperand::Symbol("__x86_retpoline_rax".to_string())],
+                );
+                call_instr.loc = loc;
+
+                // Replace CALL_R with mov + call
+                instrs[i] = mov_instr;
+                instrs.insert(i + 1, call_instr);
             }
+            i += 1;
         }
     }
 
@@ -665,7 +691,11 @@ impl SecurityHardening {
             ],
         ));
 
-        // Loop body start — the JCC below references this label.
+        // Loop body start — define the label that the JCC below references.
+        instrs.push(MachineInstr::with_operands(
+            opcodes::NOP,
+            vec![MachineOperand::Label(PROBE_LOOP_LABEL)],
+        ));
 
         // sub rsp, 4096 — allocate one page.
         instrs.push(MachineInstr::with_operands(
@@ -1320,18 +1350,20 @@ mod tests {
         // 65536 = 16 pages → loop probe.
         let instrs = hardening.generate_stack_probe_instrs(65536);
 
-        // Loop probe: MOV_RR, SUB_RI, SUB_RI, MOV_RM(probe), CMP_RR, JCC, MOV_RR
-        assert_eq!(instrs.len(), 7);
+        // Loop probe: MOV_RR, SUB_RI, NOP(Label), SUB_RI, MOV_RM(probe), CMP_RR, JCC, MOV_RR
+        // The NOP with Label operand defines the loop target for the backward JCC branch.
+        assert_eq!(instrs.len(), 8);
         assert_eq!(instrs[0].opcode, opcodes::MOV_RR);  // mov rax, rsp
         assert_eq!(instrs[1].opcode, opcodes::SUB_RI);   // sub rax, total
-        assert_eq!(instrs[2].opcode, opcodes::SUB_RI);   // sub rsp, 4096
-        assert_eq!(instrs[3].opcode, opcodes::MOV_RM);   // mov rcx, [rsp] (probe)
-        assert_eq!(instrs[4].opcode, opcodes::CMP_RR);   // cmp rsp, rax
-        assert_eq!(instrs[5].opcode, opcodes::JCC);      // ja loop
-        assert_eq!(instrs[6].opcode, opcodes::MOV_RR);   // mov rsp, rax
+        assert_eq!(instrs[2].opcode, opcodes::NOP);       // loop label definition
+        assert_eq!(instrs[3].opcode, opcodes::SUB_RI);   // sub rsp, 4096
+        assert_eq!(instrs[4].opcode, opcodes::MOV_RM);   // mov rcx, [rsp] (probe)
+        assert_eq!(instrs[5].opcode, opcodes::CMP_RR);   // cmp rsp, rax
+        assert_eq!(instrs[6].opcode, opcodes::JCC);      // ja loop
+        assert_eq!(instrs[7].opcode, opcodes::MOV_RR);   // mov rsp, rax
 
         // Verify JCC condition code is CondCode::A
-        match &instrs[5].operands[0] {
+        match &instrs[6].operands[0] {
             MachineOperand::Immediate(val) => {
                 assert_eq!(*val, CondCode::A as i64);
             }

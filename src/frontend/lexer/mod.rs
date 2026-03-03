@@ -529,6 +529,12 @@ impl<'a> Lexer<'a> {
                     (b'-', Some(b'-')) => (TokenKind::MinusMinus, 2),
                     (b'-', Some(b'>')) => (TokenKind::Arrow, 2),
                     (b'#', Some(b'#')) => (TokenKind::HashHash, 2),
+                    // C digraphs (ISO C 6.4.6)
+                    (b'<', Some(b':')) => (TokenKind::LeftBracket, 2),
+                    (b':', Some(b'>')) => (TokenKind::RightBracket, 2),
+                    (b'<', Some(b'%')) => (TokenKind::LeftBrace, 2),
+                    (b'%', Some(b'>')) => (TokenKind::RightBrace, 2),
+                    (b'%', Some(b':')) => (TokenKind::Hash, 2),
                     _ => {
                         // Single-character operators and punctuation.
                         let kind = match b {

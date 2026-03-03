@@ -697,6 +697,8 @@ mod tests {
             blocks: vec![block],
             entry_block: entry,
             is_definition: true,
+is_static: false,
+is_weak: false,
         }
     }
 
@@ -755,6 +757,8 @@ mod tests {
             blocks: vec![entry_block, left_block, right_block, merge_block],
             entry_block: bb0,
             is_definition: true,
+is_static: false,
+is_weak: false,
         }
     }
 
@@ -855,7 +859,7 @@ mod tests {
 
     #[test]
     fn test_store_not_eligible() {
-        let inst = Instruction::Store { value: Value(1), ptr: Value(2) };
+        let inst = Instruction::Store { value: Value(1), ptr: Value(2), store_ty: None };
         assert!(expression_key(&inst).is_none(), "Store must not be CSE-eligible");
     }
 
@@ -971,8 +975,8 @@ mod tests {
     fn test_local_cse_stores_preserved() {
         // Two store instructions to the same address must both be preserved.
         let instructions = vec![
-            Instruction::Store { value: Value(1), ptr: Value(5) },
-            Instruction::Store { value: Value(2), ptr: Value(5) },
+            Instruction::Store { value: Value(1), ptr: Value(5), store_ty: None },
+            Instruction::Store { value: Value(2), ptr: Value(5), store_ty: None },
         ];
         let mut func = make_single_block_function(instructions);
         let mut pass = CsePass::new();
@@ -1188,6 +1192,8 @@ mod tests {
             blocks: vec![entry, merge],
             entry_block: bb0,
             is_definition: true,
+is_static: false,
+is_weak: false,
         };
 
         let mut pass = CsePass::new();
@@ -1245,6 +1251,8 @@ mod tests {
             blocks: vec![entry, left, right],
             entry_block: bb0,
             is_definition: true,
+is_static: false,
+is_weak: false,
         };
 
         let mut pass = CsePass::new();
@@ -1301,6 +1309,8 @@ mod tests {
             blocks: Vec::new(),
             entry_block: BlockId(0),
             is_definition: true,
+is_static: false,
+is_weak: false,
         };
         let mut pass = CsePass::new();
         assert!(!pass.run_on_function(&mut func));
@@ -1316,6 +1326,8 @@ mod tests {
             blocks: Vec::new(),
             entry_block: BlockId(0),
             is_definition: false,
+is_static: false,
+is_weak: false,
         };
         let mut pass = CsePass::new();
         assert!(!pass.run_on_function(&mut func));

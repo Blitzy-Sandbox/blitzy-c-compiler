@@ -376,6 +376,7 @@ impl IrType {
     pub fn element_type(&self) -> Option<&IrType> {
         match self {
             IrType::Array { element, .. } => Some(element),
+            IrType::Pointer(inner) => Some(inner.as_ref()),
             _ => None,
         }
     }

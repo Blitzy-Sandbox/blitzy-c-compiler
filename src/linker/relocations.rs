@@ -94,6 +94,8 @@ pub const R_386_RELATIVE: u32 = 8;
 pub const R_386_GOTOFF: u32 = 9;
 /// GOT + A - P — PC-relative GOT address.
 pub const R_386_GOTPC: u32 = 10;
+/// GOT32X — relaxable GOT-relative relocation (can be optimized to direct).
+pub const R_386_GOT32X: u32 = 43;
 
 // ===========================================================================
 // AArch64 Relocation Type Constants (ELF ARM64 ABI)
@@ -121,6 +123,16 @@ pub const R_AARCH64_JUMP26: u32 = 282;
 pub const R_AARCH64_CALL26: u32 = 283;
 /// ((S+A) & 0xFFF) >> 3 — 12-bit scaled offset for 64-bit LD/ST (no check).
 pub const R_AARCH64_LDST64_ABS_LO12_NC: u32 = 286;
+/// Page(S + A) - Page(P) — GOT page offset for ADRP instruction.
+pub const R_AARCH64_ADR_GOT_PAGE: u32 = 311;
+/// G(S) & 0xFFF — GOT entry low 12 bits for LDR instruction.
+pub const R_AARCH64_LD64_GOT_LO12_NC: u32 = 312;
+/// LDST8 low 12 bits: (S + A) & 0xFFF.
+pub const R_AARCH64_LDST8_ABS_LO12_NC: u32 = 278;
+/// LDST16 low 12 bits: ((S + A) & 0xFFF) >> 1.
+pub const R_AARCH64_LDST16_ABS_LO12_NC: u32 = 284;
+/// LDST32 low 12 bits: ((S + A) & 0xFFF) >> 2.
+pub const R_AARCH64_LDST32_ABS_LO12_NC: u32 = 285;
 /// S — GOT slot (absolute).
 pub const R_AARCH64_GLOB_DAT: u32 = 1025;
 /// S — jump slot (PLT).
@@ -623,6 +635,15 @@ fn apply_i686_relocation(
             write_u32_le(section_data, reloc, value)?;
         }
 
+        R_386_GOT32X => {
+            // Relaxable GOT-relative relocation: in a static executable,
+            // resolve as S + A - GOT (same as GOT32/GOTOFF) since there
+            // is no GOT indirection in fully-resolved static links.
+            let value =
+                (s as i64).wrapping_add(a).wrapping_sub(ctx.got_address as i64) as u32;
+            write_u32_le(section_data, reloc, value)?;
+        }
+
         _ => {
             return Err(RelocationError::UnsupportedType(
                 reloc.reloc_type,
@@ -733,6 +754,57 @@ fn apply_aarch64_relocation(
                 encoded,
                 mask,
             )?;
+        }
+
+        R_AARCH64_LDST8_ABS_LO12_NC => {
+            // (S + A) & 0xFFF — low 12 bits, no scaling (byte load/store)
+            let byte_off = ((s as i64).wrapping_add(a) & 0xFFF) as u32;
+            let mask = 0xFFF << 10;
+            let encoded = (byte_off & 0xFFF) << 10;
+            patch_instruction_bits(section_data, reloc.section_index, reloc.offset, encoded, mask)?;
+        }
+
+        R_AARCH64_LDST16_ABS_LO12_NC => {
+            // ((S + A) & 0xFFF) >> 1 — scaled 16-bit load/store
+            let byte_off = ((s as i64).wrapping_add(a) & 0xFFF) as u32;
+            let scaled = byte_off >> 1;
+            let mask = 0xFFF << 10;
+            let encoded = (scaled & 0xFFF) << 10;
+            patch_instruction_bits(section_data, reloc.section_index, reloc.offset, encoded, mask)?;
+        }
+
+        R_AARCH64_LDST32_ABS_LO12_NC => {
+            // ((S + A) & 0xFFF) >> 2 — scaled 32-bit load/store
+            let byte_off = ((s as i64).wrapping_add(a) & 0xFFF) as u32;
+            let scaled = byte_off >> 2;
+            let mask = 0xFFF << 10;
+            let encoded = (scaled & 0xFFF) << 10;
+            patch_instruction_bits(section_data, reloc.section_index, reloc.offset, encoded, mask)?;
+        }
+
+        R_AARCH64_ADR_GOT_PAGE => {
+            // Page(GOT(S)) - Page(P)  — for static linking, resolve as
+            // Page(S + A) - Page(P) since there is no GOT indirection.
+            let target_page = ((s as i64).wrapping_add(a) >> 12) as i64;
+            let pc_page = (p as i64) >> 12;
+            let page_off = target_page.wrapping_sub(pc_page);
+            // Encode into ADRP: immhi at [23:5], immlo at [30:29]
+            let imm21 = (page_off as u32) & 0x1F_FFFF;
+            let immlo = imm21 & 3;
+            let immhi = (imm21 >> 2) & 0x7_FFFF;
+            let mask: u32 = (0x7_FFFF << 5) | (3 << 29);
+            let encoded = (immhi << 5) | (immlo << 29);
+            patch_instruction_bits(section_data, reloc.section_index, reloc.offset, encoded, mask)?;
+        }
+
+        R_AARCH64_LD64_GOT_LO12_NC => {
+            // For static linking: treat as absolute — resolve S + A low 12
+            // bits, scaled for 64-bit LDR.
+            let byte_off = ((s as i64).wrapping_add(a) & 0xFFF) as u32;
+            let scaled = byte_off >> 3;
+            let mask = 0xFFF << 10;
+            let encoded = (scaled & 0xFFF) << 10;
+            patch_instruction_bits(section_data, reloc.section_index, reloc.offset, encoded, mask)?;
         }
 
         R_AARCH64_GLOB_DAT | R_AARCH64_JUMP_SLOT => {
@@ -1204,6 +1276,7 @@ mod tests {
             visibility: SymbolVisibility::Default,
             output_section_index: 0,
             is_definition: true,
+            source_object: None,
         }
     }
 

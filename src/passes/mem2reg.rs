@@ -148,7 +148,10 @@ impl FunctionPass for Mem2RegPass {
         let dom_frontiers = compute_dominance_frontiers(&cfg, &dom_tree);
 
         // Step 3: Find the next available Value ID for fresh phi node results.
-        let mut next_val = find_max_value_id(function) + 1;
+        // Use wrapping_add to avoid overflow when undef values (u32::MAX) are
+        // present in the function's IR — find_max_value_id filters them, but
+        // defensive wrapping prevents panic in edge cases.
+        let mut next_val = find_max_value_id(function).wrapping_add(1);
 
         // Step 4: Collect the set of promoted alloca values for cleanup.
         let promoted_set: HashSet<Value> =
@@ -211,6 +214,11 @@ fn find_promotable_allocas(function: &Function) -> Vec<(Value, IrType)> {
         return promotable;
     }
 
+    // Build a map from Value → IrType for all instructions that produce typed
+    // results. This is used below to verify type consistency between stored
+    // values and the alloca's element type.
+    let value_type_map = build_value_type_map(function);
+
     // Only scan the entry block for allocas. In well-formed IR from the builder,
     // all allocas reside in the entry block.
     for inst in &function.blocks[entry_idx].instructions {
@@ -226,12 +234,94 @@ fn find_promotable_allocas(function: &Function) -> Vec<(Value, IrType)> {
             }
 
             if is_alloca_promotable(*result, function) {
-                promotable.push((*result, ty.clone()));
+                // Additional safety check: verify that all stores to this alloca
+                // write values whose types are compatible with the alloca's element
+                // type. If a store writes an I32 value to an F64 alloca, promotion
+                // would create a direct use of the I32 value where an F64 is
+                // expected, causing register class mismatches at code generation.
+                // This happens when the IR builder incorrectly resolves struct
+                // member types — the alloca/store/load memory cycle acts as an
+                // implicit bitcast that promotion eliminates unsafely.
+                if stores_type_consistent(*result, ty, function, &value_type_map) {
+                    promotable.push((*result, ty.clone()));
+                }
             }
         }
     }
 
     promotable
+}
+
+/// Builds a mapping from Value → IrType for all defined values in the function.
+///
+/// Covers instruction results, phi node results, and function parameters.
+/// Used by [`stores_type_consistent`] to check type compatibility of stored values.
+fn build_value_type_map(function: &Function) -> HashMap<Value, IrType> {
+    let mut map = HashMap::new();
+
+    // Map parameter values to their declared types.
+    for (i, pv) in function.param_values.iter().enumerate() {
+        if let Some((_, ty)) = function.params.get(i) {
+            map.insert(*pv, ty.clone());
+        }
+    }
+
+    for block in &function.blocks {
+        // Phi node results
+        for phi in &block.phi_nodes {
+            map.insert(phi.result, phi.ty.clone());
+        }
+
+        // Instruction results
+        for inst in &block.instructions {
+            if let Some(result) = inst.result() {
+                if let Some(ty) = inst.result_type() {
+                    map.insert(result, ty.clone());
+                }
+            }
+        }
+    }
+
+    map
+}
+
+/// Checks that all stores to the given alloca write values whose register class
+/// (integer vs float) matches the alloca's element type.
+///
+/// This prevents mem2reg from promoting allocas that act as implicit bitcasts
+/// between integer and floating-point types. Such promotions create direct
+/// references between incompatible register classes, causing panics in the
+/// machine code encoder (e.g., MOVSD receiving a GPR operand).
+fn stores_type_consistent(
+    alloca_val: Value,
+    alloca_ty: &IrType,
+    function: &Function,
+    value_type_map: &HashMap<Value, IrType>,
+) -> bool {
+    let alloca_is_float = alloca_ty.is_float();
+
+    for block in &function.blocks {
+        for inst in &block.instructions {
+            if let Instruction::Store { value, ptr, .. } = inst {
+                if *ptr == alloca_val {
+                    // Check if the stored value's type has the same register class
+                    // as the alloca's element type. If we can't determine the stored
+                    // value's type, conservatively refuse promotion.
+                    if let Some(stored_ty) = value_type_map.get(value) {
+                        if stored_ty.is_float() != alloca_is_float {
+                            // Type class mismatch: integer stored into float alloca
+                            // or vice versa. Don't promote.
+                            return false;
+                        }
+                    }
+                    // If the stored value's type is unknown (e.g., from a Const with
+                    // no IrType field), allow promotion — the alloca type is authoritative.
+                }
+            }
+        }
+    }
+
+    true
 }
 
 /// Determines whether a specific alloca value is promotable by scanning all
@@ -267,7 +357,7 @@ fn is_alloca_promotable(alloca_val: Value, function: &Function) -> bool {
 
                 // Storing TO the alloca (alloca_val is the pointer target) is valid,
                 // but storing the alloca's ADDRESS as a value is NOT valid.
-                Instruction::Store { ptr, value }
+                Instruction::Store { ptr, value, .. }
                     if *ptr == alloca_val && *value != alloca_val => {}
 
                 // Every other use is non-promotable (Call args, GEP, Cast, BitCast,
@@ -379,7 +469,7 @@ fn place_phi_nodes(
 
                 // Allocate a fresh Value for the phi node's result.
                 let phi_result = Value(*next_val);
-                *next_val += 1;
+                *next_val = next_val.wrapping_add(1);
 
                 // Create the phi node with empty incoming list.
                 let phi_node = PhiNode {
@@ -494,7 +584,7 @@ fn rename_block(
                         .unwrap_or(Value::undef());
                     local_replacements.push((*result, current));
                 }
-                Instruction::Store { value, ptr } if *ptr == alloca_val => {
+                Instruction::Store { value, ptr, .. } if *ptr == alloca_val => {
                     // A new definition of the variable.
                     local_defs.push(*value);
                 }
@@ -521,8 +611,21 @@ fn rename_block(
         .copied()
         .unwrap_or(Value::undef());
 
-    // Clone successors to avoid borrow conflicts when mutating successor blocks.
-    let successors: Vec<BlockId> = function.blocks[block_idx].successors.clone();
+    // Extract successors from the terminator (the canonical source of truth).
+    // block.successors is not populated by the IR builder, so we must read
+    // the targets from the terminator directly — same approach as build_cfg.
+    let successors: Vec<BlockId> = match &function.blocks[block_idx].terminator {
+        Some(crate::ir::Terminator::Branch { target }) => vec![*target],
+        Some(crate::ir::Terminator::CondBranch { true_block, false_block, .. }) => {
+            vec![*true_block, *false_block]
+        }
+        Some(crate::ir::Terminator::Switch { default, cases, .. }) => {
+            let mut targets = vec![*default];
+            for &(_, t) in cases { targets.push(t); }
+            targets
+        }
+        _ => Vec::new(),
+    };
 
     for succ_id in successors {
         if let Some(&_phi_result) = phi_values.get(&succ_id) {
@@ -768,6 +871,31 @@ fn build_cfg(function: &Function) -> ControlFlowGraph {
     for block in &function.blocks {
         cfg.add_block(block.clone());
     }
+    // The IR builder does not populate block.successors/predecessors, so we
+    // must extract edges from block terminators. Without these edges, the
+    // dominance tree computation would treat non-entry blocks as unreachable,
+    // preventing mem2reg from renaming variables across blocks.
+    for block in &function.blocks {
+        let from = block.id;
+        if let Some(ref term) = block.terminator {
+            match term {
+                crate::ir::Terminator::Branch { target } => {
+                    cfg.add_edge(from, *target);
+                }
+                crate::ir::Terminator::CondBranch { true_block, false_block, .. } => {
+                    cfg.add_edge(from, *true_block);
+                    cfg.add_edge(from, *false_block);
+                }
+                crate::ir::Terminator::Switch { default, cases, .. } => {
+                    cfg.add_edge(from, *default);
+                    for &(_, target) in cases {
+                        cfg.add_edge(from, target);
+                    }
+                }
+                _ => {} // Return, Unreachable — no successors
+            }
+        }
+    }
     cfg
 }
 
@@ -778,13 +906,16 @@ fn build_cfg(function: &Function) -> ControlFlowGraph {
 /// existing values.
 fn find_max_value_id(function: &Function) -> u32 {
     let mut max_val: u32 = 0;
+    let undef_id = Value::undef().0;
 
     for block in &function.blocks {
-        // Scan phi nodes.
+        // Scan phi nodes — filter undef (u32::MAX) from both results and incoming.
         for phi in &block.phi_nodes {
-            max_val = max_val.max(phi.result.0);
+            if phi.result.0 != undef_id {
+                max_val = max_val.max(phi.result.0);
+            }
             for &(v, _) in &phi.incoming {
-                if v != Value::undef() {
+                if v.0 != undef_id {
                     max_val = max_val.max(v.0);
                 }
             }
@@ -793,12 +924,12 @@ fn find_max_value_id(function: &Function) -> u32 {
         // Scan instructions.
         for inst in &block.instructions {
             if let Some(result) = inst.result() {
-                if result != Value::undef() {
+                if result.0 != undef_id {
                     max_val = max_val.max(result.0);
                 }
             }
             for op in inst.operands() {
-                if op != Value::undef() {
+                if op.0 != undef_id {
                     max_val = max_val.max(op.0);
                 }
             }
@@ -897,10 +1028,7 @@ mod tests {
                     ty: IrType::I32,
                 },
             },
-            Instruction::Store {
-                value: Value(1),
-                ptr: Value(0),
-            },
+            Instruction::Store { value: Value(1), ptr: Value(0), store_ty: None },
             Instruction::Load {
                 result: Value(2),
                 ty: IrType::I32,
@@ -919,6 +1047,8 @@ mod tests {
             blocks: vec![block],
             entry_block: entry,
             is_definition: true,
+is_static: false,
+is_weak: false,
         };
 
         let promotable = find_promotable_allocas(&function);
@@ -953,6 +1083,8 @@ mod tests {
             blocks: vec![block],
             entry_block: entry,
             is_definition: true,
+is_static: false,
+is_weak: false,
         };
 
         let promotable = find_promotable_allocas(&function);
@@ -994,6 +1126,8 @@ mod tests {
             blocks: vec![block],
             entry_block: entry,
             is_definition: true,
+is_static: false,
+is_weak: false,
         };
 
         let promotable = find_promotable_allocas(&function);
@@ -1016,10 +1150,7 @@ mod tests {
                 count: None,
             },
             // Storing the ADDRESS of alloca %0 into alloca %1.
-            Instruction::Store {
-                value: Value(0),
-                ptr: Value(1),
-            },
+            Instruction::Store { value: Value(0), ptr: Value(1), store_ty: None },
         ];
         block.terminator = Some(Terminator::Return { value: None });
 
@@ -1031,6 +1162,8 @@ mod tests {
             blocks: vec![block],
             entry_block: entry,
             is_definition: true,
+is_static: false,
+is_weak: false,
         };
 
         let promotable = find_promotable_allocas(&function);
@@ -1066,6 +1199,8 @@ mod tests {
             blocks: vec![block],
             entry_block: entry,
             is_definition: true,
+is_static: false,
+is_weak: false,
         };
 
         let promotable = find_promotable_allocas(&function);
@@ -1099,14 +1234,8 @@ mod tests {
                     ty: IrType::I32,
                 },
             },
-            Instruction::Store {
-                value: Value(3),
-                ptr: Value(0),
-            },
-            Instruction::Store {
-                value: Value(3),
-                ptr: Value(2),
-            },
+            Instruction::Store { value: Value(3), ptr: Value(0), store_ty: None },
+            Instruction::Store { value: Value(3), ptr: Value(2), store_ty: None },
             Instruction::Call {
                 result: None,
                 callee: Callee::Direct("bar".to_string()),
@@ -1124,6 +1253,8 @@ mod tests {
             blocks: vec![block],
             entry_block: entry,
             is_definition: true,
+is_static: false,
+is_weak: false,
         };
 
         let promotable = find_promotable_allocas(&function);
@@ -1155,10 +1286,7 @@ mod tests {
                     ty: IrType::I32,
                 },
             },
-            Instruction::Store {
-                value: Value(1),
-                ptr: Value(0),
-            },
+            Instruction::Store { value: Value(1), ptr: Value(0), store_ty: None },
             Instruction::Load {
                 result: Value(2),
                 ty: IrType::I32,
@@ -1177,6 +1305,8 @@ mod tests {
             blocks: vec![block],
             entry_block: entry,
             is_definition: true,
+is_static: false,
+is_weak: false,
         };
         setup_edges(&mut function);
 
@@ -1251,10 +1381,7 @@ mod tests {
                     ty: IrType::I32,
                 },
             },
-            Instruction::Store {
-                value: Value(2),
-                ptr: Value(0),
-            },
+            Instruction::Store { value: Value(2), ptr: Value(0), store_ty: None },
         ];
         then_blk.terminator = Some(Terminator::Branch {
             target: BlockId(3),
@@ -1268,10 +1395,7 @@ mod tests {
                     ty: IrType::I32,
                 },
             },
-            Instruction::Store {
-                value: Value(3),
-                ptr: Value(0),
-            },
+            Instruction::Store { value: Value(3), ptr: Value(0), store_ty: None },
         ];
         else_blk.terminator = Some(Terminator::Branch {
             target: BlockId(3),
@@ -1294,6 +1418,8 @@ mod tests {
             blocks: vec![entry_blk, then_blk, else_blk, merge_blk],
             entry_block: BlockId(0),
             is_definition: true,
+is_static: false,
+is_weak: false,
         };
         setup_edges(&mut function);
 
@@ -1344,6 +1470,8 @@ mod tests {
             blocks: vec![block],
             entry_block: entry,
             is_definition: true,
+is_static: false,
+is_weak: false,
         };
         setup_edges(&mut function);
 
@@ -1378,6 +1506,8 @@ mod tests {
             blocks: vec![block],
             entry_block: entry,
             is_definition: true,
+is_static: false,
+is_weak: false,
         };
         setup_edges(&mut function);
 
@@ -1395,6 +1525,8 @@ mod tests {
             blocks: Vec::new(),
             entry_block: BlockId(0),
             is_definition: false,
+is_static: false,
+is_weak: false,
         };
 
         let mut pass = Mem2RegPass::new();
@@ -1506,14 +1638,8 @@ mod tests {
                     ty: IrType::I64,
                 },
             },
-            Instruction::Store {
-                value: Value(3),
-                ptr: Value(0),
-            },
-            Instruction::Store {
-                value: Value(4),
-                ptr: Value(2),
-            },
+            Instruction::Store { value: Value(3), ptr: Value(0), store_ty: None },
+            Instruction::Store { value: Value(4), ptr: Value(2), store_ty: None },
             Instruction::Call {
                 result: None,
                 callee: Callee::Direct("sink".to_string()),
@@ -1543,6 +1669,8 @@ mod tests {
             blocks: vec![block],
             entry_block: entry,
             is_definition: true,
+is_static: false,
+is_weak: false,
         };
         setup_edges(&mut function);
 
@@ -1609,10 +1737,7 @@ mod tests {
                     ty: IrType::I32,
                 },
             },
-            Instruction::Store {
-                value: Value(1),
-                ptr: Value(0),
-            },
+            Instruction::Store { value: Value(1), ptr: Value(0), store_ty: None },
         ];
         entry_blk.terminator = Some(Terminator::Branch {
             target: BlockId(1),
@@ -1635,10 +1760,7 @@ mod tests {
                     ty: IrType::I32,
                 },
             },
-            Instruction::Store {
-                value: Value(3),
-                ptr: Value(0),
-            },
+            Instruction::Store { value: Value(3), ptr: Value(0), store_ty: None },
         ];
         blk2.terminator = Some(Terminator::Return { value: None });
 
@@ -1650,6 +1772,8 @@ mod tests {
             blocks: vec![entry_blk, blk1, blk2],
             entry_block: BlockId(0),
             is_definition: true,
+is_static: false,
+is_weak: false,
         };
 
         let info = collect_alloca_info(Value(0), IrType::I32, &function);
@@ -1711,10 +1835,7 @@ mod tests {
                     ty: IrType::I32,
                 },
             },
-            Instruction::Store {
-                value: Value(10),
-                ptr: Value(5),
-            },
+            Instruction::Store { value: Value(10), ptr: Value(5), store_ty: None },
             Instruction::Load {
                 result: Value(15),
                 ty: IrType::I32,
@@ -1733,6 +1854,8 @@ mod tests {
             blocks: vec![block],
             entry_block: BlockId(0),
             is_definition: true,
+is_static: false,
+is_weak: false,
         };
 
         let max_id = find_max_value_id(&function);
@@ -1763,6 +1886,8 @@ mod tests {
             blocks: vec![b0, b1],
             entry_block: BlockId(0),
             is_definition: true,
+is_static: false,
+is_weak: false,
         };
 
         let cfg = build_cfg(&function);

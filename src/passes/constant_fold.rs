@@ -93,6 +93,13 @@ impl FunctionPass for ConstantFoldPass {
         let mut constants: HashMap<Value, Constant> = HashMap::new();
         let mut changed = false;
 
+        // Build a set of parameter value IDs. The IR builder emits placeholder
+        // Const instructions for function parameters (with value = parameter
+        // index). These must NOT be treated as foldable constants — they
+        // represent runtime values passed by the caller via ABI registers.
+        let param_set: std::collections::HashSet<Value> =
+            function.param_values.iter().copied().collect();
+
         for block_idx in 0..function.blocks.len() {
             let num_insts = function.blocks[block_idx].instructions.len();
             for inst_idx in 0..num_insts {
@@ -100,9 +107,13 @@ impl FunctionPass for ConstantFoldPass {
                 // instruction reference and the mutable constants map / block list.
                 let inst = function.blocks[block_idx].instructions[inst_idx].clone();
 
-                // Register constants from Const instructions into the tracking map.
+                // Register constants from Const instructions into the tracking map,
+                // but SKIP parameter placeholder constants — their integer values
+                // are parameter indices, not runtime constants.
                 if let Instruction::Const { result, ref value } = inst {
-                    constants.insert(result, value.clone());
+                    if !param_set.contains(&result) {
+                        constants.insert(result, value.clone());
+                    }
                     continue;
                 }
 
@@ -914,6 +925,8 @@ mod tests {
             blocks: vec![block],
             entry_block: BlockId(0),
             is_definition: true,
+is_static: false,
+is_weak: false,
         }
     }
 
@@ -940,6 +953,8 @@ mod tests {
             blocks: vec![entry, true_block, false_block],
             entry_block: BlockId(0),
             is_definition: true,
+is_static: false,
+is_weak: false,
         }
     }
 
@@ -1789,6 +1804,8 @@ mod tests {
             blocks: vec![entry, b1, b2, b3],
             entry_block: BlockId(0),
             is_definition: true,
+is_static: false,
+is_weak: false,
         };
 
         let mut pass = ConstantFoldPass::new();
@@ -1884,6 +1901,8 @@ mod tests {
             blocks: Vec::new(),
             entry_block: BlockId(0),
             is_definition: true,
+is_static: false,
+is_weak: false,
         };
         let mut pass = ConstantFoldPass::new();
         assert!(!pass.run_on_function(&mut func));
@@ -1971,6 +1990,8 @@ mod tests {
             blocks: vec![entry, b1, b2, b3],
             entry_block: BlockId(0),
             is_definition: true,
+is_static: false,
+is_weak: false,
         };
 
         let mut pass = ConstantFoldPass::new();

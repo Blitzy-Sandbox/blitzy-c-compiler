@@ -457,7 +457,7 @@ pub(super) fn parse_typeof(parser: &mut Parser) -> TypeSpecifier {
         }
         let span = parser.span_from(start);
         TypeSpecifier::TypeofType {
-            type_name: Box::new(type_name.specifiers.type_specifier),
+            type_name: Box::new(type_name),
             span,
         }
     } else {
@@ -746,10 +746,12 @@ pub(super) fn parse_asm_statement(parser: &mut Parser) -> Statement {
 /// Parses the assembly template: one or more concatenated string literals.
 fn parse_asm_template(parser: &mut Parser) -> String {
     let mut template = String::new();
+    let mut found_string = false;
 
     loop {
         match parser.current().kind {
             TokenKind::StringLiteral => {
+                found_string = true;
                 if let TokenValue::Str(ref s) = parser.current().value {
                     template.push_str(s);
                 }
@@ -759,7 +761,7 @@ fn parse_asm_template(parser: &mut Parser) -> String {
         }
     }
 
-    if template.is_empty() {
+    if !found_string {
         parser.error("expected assembly template string");
     }
 

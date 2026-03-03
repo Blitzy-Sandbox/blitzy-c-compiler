@@ -119,6 +119,9 @@ pub struct DeclSpecifiers {
     pub function_specifiers: Vec<FunctionSpecifier>,
     /// GCC `__attribute__` annotations.
     pub attributes: Vec<GccAttribute>,
+    /// Optional C11 alignment specifier: `_Alignas(expr)` or `_Alignas(type)`.
+    /// Stored as the alignment expression from the parenthesized argument.
+    pub alignment: Option<Box<Expression>>,
     /// Source span covering all specifiers.
     pub span: SourceSpan,
 }
@@ -326,9 +329,10 @@ pub enum TypeSpecifier {
         expr: Box<Expression>,
         span: SourceSpan,
     },
-    /// `typeof(type)` — echoes a type (useful in macros).
+    /// `typeof(type)` — echoes a type (useful in macros), preserving the full
+    /// TypeName including abstract declarator (pointer/array modifiers).
     TypeofType {
-        type_name: Box<TypeSpecifier>,
+        type_name: Box<TypeName>,
         span: SourceSpan,
     },
 
@@ -1154,6 +1158,7 @@ mod tests {
     fn test_translation_unit_with_variable_declaration() {
         let decl = Declaration::Variable {
             specifiers: DeclSpecifiers {
+                alignment: None,
                 storage_class: None,
                 type_qualifiers: vec![],
                 type_specifier: TypeSpecifier::Int,
@@ -1189,6 +1194,7 @@ mod tests {
     fn test_declaration_variable() {
         let decl = Declaration::Variable {
             specifiers: DeclSpecifiers {
+                alignment: None,
                 storage_class: Some(StorageClass::Static),
                 type_qualifiers: vec![TypeQualifier::Const],
                 type_specifier: TypeSpecifier::Int,
@@ -1234,6 +1240,7 @@ mod tests {
     fn test_function_def_construction() {
         let func = FunctionDef {
             specifiers: DeclSpecifiers {
+                alignment: None,
                 storage_class: None,
                 type_qualifiers: vec![],
                 type_specifier: TypeSpecifier::Int,
@@ -1403,6 +1410,7 @@ mod tests {
         let type_name = || {
             Box::new(TypeName {
                 specifiers: DeclSpecifiers {
+                    alignment: None,
                     storage_class: None,
                     type_qualifiers: vec![],
                     type_specifier: TypeSpecifier::Int,
@@ -1719,7 +1727,19 @@ mod tests {
             span: dummy_span(),
         };
         let _typeof_type = TypeSpecifier::TypeofType {
-            type_name: Box::new(TypeSpecifier::Int),
+            type_name: Box::new(TypeName {
+                specifiers: DeclSpecifiers {
+                    type_specifier: TypeSpecifier::Int,
+                    storage_class: None,
+                    type_qualifiers: Vec::new(),
+                    function_specifiers: Vec::new(),
+                    attributes: Vec::new(),
+                    alignment: None,
+                    span: dummy_span(),
+                },
+                abstract_declarator: None,
+                span: dummy_span(),
+            }),
             span: dummy_span(),
         };
     }
@@ -1809,6 +1829,7 @@ mod tests {
     fn test_type_name_construction() {
         let tn = TypeName {
             specifiers: DeclSpecifiers {
+                alignment: None,
                 storage_class: None,
                 type_qualifiers: vec![TypeQualifier::Const],
                 type_specifier: TypeSpecifier::Int,
@@ -1975,6 +1996,7 @@ mod tests {
         let type_assoc = GenericAssociation::Type {
             type_name: TypeName {
                 specifiers: DeclSpecifiers {
+                    alignment: None,
                     storage_class: None,
                     type_qualifiers: vec![],
                     type_specifier: TypeSpecifier::Int,
@@ -2119,6 +2141,7 @@ mod tests {
         assert_debug_clone(&Declaration::Empty { span: s });
         assert_debug_clone(&FunctionDef {
             specifiers: DeclSpecifiers {
+                alignment: None,
                 storage_class: None,
                 type_qualifiers: vec![],
                 type_specifier: TypeSpecifier::Void,
@@ -2137,6 +2160,7 @@ mod tests {
             span: s,
         });
         assert_debug_clone(&DeclSpecifiers {
+            alignment: None,
             storage_class: None,
             type_qualifiers: vec![],
             type_specifier: TypeSpecifier::Int,
@@ -2176,6 +2200,7 @@ mod tests {
         });
         assert_debug_clone(&ParamDeclaration {
             specifiers: DeclSpecifiers {
+                alignment: None,
                 storage_class: None,
                 type_qualifiers: vec![],
                 type_specifier: TypeSpecifier::Int,
@@ -2231,6 +2256,7 @@ mod tests {
         assert_debug_clone(&Expression::Error { span: s });
         assert_debug_clone(&TypeName {
             specifiers: DeclSpecifiers {
+                alignment: None,
                 storage_class: None,
                 type_qualifiers: vec![],
                 type_specifier: TypeSpecifier::Int,
@@ -2286,6 +2312,7 @@ mod tests {
     fn test_struct_member_field_with_bitwidth() {
         let member = StructMember::Field {
             specifiers: DeclSpecifiers {
+                alignment: None,
                 storage_class: None,
                 type_qualifiers: vec![],
                 type_specifier: TypeSpecifier::Int,

@@ -42,11 +42,14 @@ const VALID_C_SOURCE: &str = "int main(void) { return 0; }\n";
 /// C source with an intentional syntax error (missing closing paren).
 const SYNTAX_ERROR_SOURCE: &str = "int main( { return 0; }\n";
 
-/// C source with a type error (assigning string literal to int without cast).
+/// C source with a type error: calling an undeclared identifier as a function
+/// with incompatible redeclaration that triggers a hard semantic error.
 const TYPE_ERROR_SOURCE: &str = r#"
+void foo(int a, int b);
+void foo(double a);
 int main(void) {
-    int x = "hello";
-    return x;
+    foo(1, 2);
+    return 0;
 }
 "#;
 

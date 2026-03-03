@@ -777,7 +777,7 @@ impl Aarch64InstructionSelector {
                 self.select_alloca(*result, ty, count),
             Instruction::Load { result, ty, ptr } =>
                 self.select_load(*result, ty, *ptr),
-            Instruction::Store { value, ptr } =>
+            Instruction::Store { value, ptr, .. } =>
                 self.select_store(*value, *ptr),
             Instruction::GetElementPtr { result, base_ty, ptr, indices, .. } =>
                 self.select_gep(*result, base_ty, *ptr, indices),
@@ -1644,6 +1644,8 @@ mod tests {
             blocks,
             entry_block: entry,
             is_definition: true,
+is_static: false,
+is_weak: false,
         }
     }
 
@@ -1750,6 +1752,8 @@ mod tests {
             params: vec![("a".into(), IrType::I64), ("b".into(), IrType::I64)],
             param_values: Vec::new(),
             blocks: vec![b], entry_block: BlockId(0), is_definition: true,
+is_static: false,
+is_weak: false,
         };
         let r = s.select_function(&f).unwrap();
         assert!(r.iter().any(|i| i.opcode == Aarch64Opcode::ADD.as_u32()));
@@ -1766,6 +1770,8 @@ mod tests {
             params: vec![("a".into(), IrType::I64), ("b".into(), IrType::I64)],
             param_values: Vec::new(),
             blocks: vec![b], entry_block: BlockId(0), is_definition: true,
+is_static: false,
+is_weak: false,
         };
         let r = s.select_function(&f).unwrap();
         assert!(r.iter().any(|i| i.opcode == Aarch64Opcode::MUL.as_u32()));
@@ -1783,6 +1789,8 @@ mod tests {
             params: vec![("a".into(), IrType::I64), ("b".into(), IrType::I64)],
             param_values: Vec::new(),
             blocks: vec![b], entry_block: BlockId(0), is_definition: true,
+is_static: false,
+is_weak: false,
         };
         let r = s.select_function(&f).unwrap();
         assert!(r.iter().any(|i| i.opcode == Aarch64Opcode::SDIV.as_u32()));
@@ -1800,6 +1808,8 @@ mod tests {
             params: vec![("a".into(), IrType::I64), ("b".into(), IrType::I64)],
             param_values: Vec::new(),
             blocks: vec![b], entry_block: BlockId(0), is_definition: true,
+is_static: false,
+is_weak: false,
         };
         let r = s.select_function(&f).unwrap();
         assert!(r.iter().any(|i| i.opcode == Aarch64Opcode::SDIV.as_u32()));
@@ -1820,6 +1830,8 @@ mod tests {
             params: vec![("a".into(), IrType::I64), ("b".into(), IrType::I64)],
             param_values: Vec::new(),
             blocks: vec![b], entry_block: BlockId(0), is_definition: true,
+is_static: false,
+is_weak: false,
         };
         let r = s.select_function(&f).unwrap();
         assert!(r.iter().any(|i| i.opcode == Aarch64Opcode::SUBS.as_u32()));
@@ -1840,6 +1852,8 @@ mod tests {
             params: vec![("a".into(), IrType::I64), ("b".into(), IrType::I64)],
             param_values: Vec::new(),
             blocks: vec![b], entry_block: BlockId(0), is_definition: true,
+is_static: false,
+is_weak: false,
         };
         let r = s.select_function(&f).unwrap();
         assert!(r.iter().any(|i| i.opcode == Aarch64Opcode::CSEL.as_u32()));
@@ -1858,6 +1872,8 @@ mod tests {
             params: vec![("p".into(), IrType::Pointer(Box::new(IrType::I64)))],
             param_values: Vec::new(),
             blocks: vec![b], entry_block: BlockId(0), is_definition: true,
+is_static: false,
+is_weak: false,
         };
         let r = s.select_function(&f).unwrap();
         assert!(r.iter().any(|i| i.opcode == Aarch64Opcode::LDR.as_u32()));
@@ -1867,7 +1883,7 @@ mod tests {
     fn test_select_store_and_load_i32() {
         let mut s = Aarch64InstructionSelector::new();
         let b = make_block(0, vec![
-            Instruction::Store { value: Value(0), ptr: Value(1) },
+            Instruction::Store { value: Value(0), ptr: Value(1), store_ty: None },
             Instruction::Load { result: Value(2), ty: IrType::I32, ptr: Value(1) },
         ], Some(Terminator::Return { value: Some(Value(2)) }));
         let f = Function {
@@ -1878,6 +1894,8 @@ mod tests {
             ],
             param_values: Vec::new(),
             blocks: vec![b], entry_block: BlockId(0), is_definition: true,
+is_static: false,
+is_weak: false,
         };
         let r = s.select_function(&f).unwrap();
         assert!(r.iter().any(|i| i.opcode == Aarch64Opcode::STR.as_u32()
@@ -1909,6 +1927,8 @@ mod tests {
             params: vec![("c".into(), IrType::I1)],
             param_values: Vec::new(),
             blocks: vec![b0, b1, b2], entry_block: BlockId(0), is_definition: true,
+is_static: false,
+is_weak: false,
         };
         let r = s.select_function(&f).unwrap();
         assert!(r.iter().any(|i| i.opcode == Aarch64Opcode::CBNZ.as_u32()));
@@ -1923,6 +1943,8 @@ mod tests {
             params: vec![("v".into(), IrType::I64)],
             param_values: Vec::new(),
             blocks: vec![b], entry_block: BlockId(0), is_definition: true,
+is_static: false,
+is_weak: false,
         };
         let r = s.select_function(&f).unwrap();
         assert!(r.iter().any(|i| i.opcode == Aarch64Opcode::RET.as_u32()));
@@ -1942,6 +1964,8 @@ mod tests {
             params: vec![("v".into(), IrType::I32)],
             param_values: Vec::new(),
             blocks: vec![b], entry_block: BlockId(0), is_definition: true,
+is_static: false,
+is_weak: false,
         };
         let r = s.select_function(&f).unwrap();
         assert!(r.iter().any(|i| i.opcode == Aarch64Opcode::SXTW.as_u32()));
@@ -1959,6 +1983,8 @@ mod tests {
             params: vec![("v".into(), IrType::F32)],
             param_values: Vec::new(),
             blocks: vec![b], entry_block: BlockId(0), is_definition: true,
+is_static: false,
+is_weak: false,
         };
         let r = s.select_function(&f).unwrap();
         assert!(r.iter().any(|i| i.opcode == Aarch64Opcode::FCVT_S_TO_D.as_u32()));
@@ -1976,6 +2002,8 @@ mod tests {
             params: vec![("v".into(), IrType::I64)],
             param_values: Vec::new(),
             blocks: vec![b], entry_block: BlockId(0), is_definition: true,
+is_static: false,
+is_weak: false,
         };
         let r = s.select_function(&f).unwrap();
         assert!(r.iter().any(|i| i.opcode == Aarch64Opcode::SCVTF_D.as_u32()));
@@ -2011,6 +2039,8 @@ mod tests {
             params: vec![("a".into(), IrType::F64), ("b".into(), IrType::F64)],
             param_values: Vec::new(),
             blocks: vec![b], entry_block: BlockId(0), is_definition: true,
+is_static: false,
+is_weak: false,
         };
         let r = s.select_function(&f).unwrap();
         assert!(r.iter().any(|i| i.opcode == Aarch64Opcode::FADD_D.as_u32()));
@@ -2033,6 +2063,8 @@ mod tests {
             params: vec![("v".into(), IrType::I64)],
             param_values: Vec::new(),
             blocks: vec![b0, b1, b2, b3], entry_block: BlockId(0), is_definition: true,
+is_static: false,
+is_weak: false,
         };
         let r = s.select_function(&f).unwrap();
         let n = r.iter().filter(|i| i.opcode == Aarch64Opcode::B_cond.as_u32()).count();

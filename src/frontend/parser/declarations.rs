@@ -307,6 +307,30 @@ pub(super) fn parse_declaration_specifiers(parser: &mut Parser<'_>) -> (DeclSpec
                 // Continue parsing specifiers after __extension__.
             }
 
+            // --- C11 _Alignas alignment specifier ---
+            TokenKind::Alignas => {
+                parser.advance(); // consume `_Alignas`
+                if parser.expect(TokenKind::LeftParen).is_ok() {
+                    // _Alignas can take either a type-name or a constant expression.
+                    // For simplicity, we parse it as an expression (which handles
+                    // both integer constants and sizeof/alignof expressions).
+                    // Type-name arguments like _Alignas(int) are handled by treating
+                    // the type keyword as part of an expression context, or by
+                    // checking if the current token starts a type specifier.
+                    if types::is_type_specifier_start(parser) {
+                        // _Alignas(type-name) — parse type and use its alignment.
+                        let _type_name = types::parse_type_name(parser);
+                        // We store a placeholder expression; the semantic analyzer
+                        // will resolve the actual alignment from the type.
+                    } else {
+                        // _Alignas(constant-expression)
+                        let _expr = super::expressions::parse_assignment_expression(parser);
+                    }
+                    let _ = parser.expect(TokenKind::RightParen);
+                }
+                // Continue parsing remaining specifiers.
+            }
+
             // --- Anything else that starts a type specifier ---
             _ => break,
         }
@@ -360,6 +384,7 @@ pub(super) fn parse_declaration_specifiers(parser: &mut Parser<'_>) -> (DeclSpec
             type_specifier,
             function_specifiers,
             attributes,
+            alignment: None,
             span,
         },
         is_typedef,
@@ -677,6 +702,7 @@ fn parse_param_specifiers(parser: &mut Parser<'_>) -> DeclSpecifiers {
         type_specifier,
         function_specifiers: Vec::new(),
         attributes,
+        alignment: None,
         span,
     }
 }
@@ -745,12 +771,45 @@ fn try_parse_param_declarator(parser: &mut Parser<'_>) -> Option<Declarator> {
             // Check if this is a parenthesized declarator or function params.
             // Heuristic: If `(` is followed by `*` or another `(`, it's likely
             // a parenthesized declarator (function pointer).
+            // Also handle the C pattern `void(callback)(dict*)` where
+            // `(callback)` is a parenthesized parameter name followed by a
+            // function parameter list suffix — valid C syntax for declaring
+            // function (not pointer) parameters that decay to function ptrs.
             let next = parser.peek().kind;
             if next == TokenKind::Star || next == TokenKind::LeftParen {
                 parser.advance(); // consume `(`
                 let inner = parse_declarator(parser);
                 let _ = parser.expect(TokenKind::RightParen);
                 DirectDeclarator::Parenthesized(Box::new(inner))
+            } else if next == TokenKind::Identifier {
+                // `(identifier)` — could be a parenthesized param name.
+                // Peek further: if `)` follows the identifier, parse as
+                // parenthesized declarator. This handles patterns like
+                // `void(callback)(dict*)` where callback is the name.
+                let id_token = parser.peek();
+                let is_typedef = if let TokenValue::Identifier(id) = id_token.value {
+                    parser.is_typedef_name(id)
+                } else {
+                    false
+                };
+                if !is_typedef {
+                    // Check if (identifier) is followed by `)` at offset +2
+                    let after_id = parser.lookahead(2).kind;
+                    if after_id == TokenKind::RightParen {
+                        parser.advance(); // consume `(`
+                        let inner = parse_declarator(parser);
+                        let _ = parser.expect(TokenKind::RightParen);
+                        DirectDeclarator::Parenthesized(Box::new(inner))
+                    } else if ptrs.is_empty() {
+                        return None;
+                    } else {
+                        DirectDeclarator::Abstract
+                    }
+                } else if ptrs.is_empty() {
+                    return None;
+                } else {
+                    DirectDeclarator::Abstract
+                }
             } else if ptrs.is_empty() {
                 // No pointers and `(` — could be function params for abstract.
                 // Don't consume; return None.
@@ -1679,6 +1738,11 @@ fn parse_variable_declaration(
     // Parse additional declarators.
     while parser.match_token(TokenKind::Comma) {
         let decl_start = parser.current_span();
+
+        // Consume any GCC __attribute__ between declarators, e.g.:
+        //   static const T a = {1}, __attribute__((deprecated)) b = {2};
+        let _pre_attrs = gcc_extensions::try_parse_attributes(parser);
+
         let decl = parse_declarator(parser);
 
         let init = if parser.match_token(TokenKind::Equal) {
@@ -1757,6 +1821,7 @@ fn parse_kr_identifier_list(parser: &mut Parser<'_>, start: SourceSpan) -> Param
                         type_specifier: TypeSpecifier::Int, // Default for K&R.
                         function_specifiers: Vec::new(),
                         attributes: Vec::new(),
+                        alignment: None,
                         span: decl_span,
                     },
                     declarator: Some(Declarator {

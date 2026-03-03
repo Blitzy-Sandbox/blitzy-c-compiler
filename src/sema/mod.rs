@@ -309,11 +309,55 @@ impl<'a> SemanticAnalyzer<'a> {
     // Declaration analysis
     // -----------------------------------------------------------------------
 
+    /// Analyzes a declaration that appears inside a function body (local scope).
+    ///
+    /// Performs the same type checking and symbol table registration as
+    /// `analyze_declaration`, but does NOT add the declaration to the
+    /// `typed_declarations` list (which feeds into the IR builder's top-level
+    /// declaration processing). Local declarations are handled by the IR
+    /// builder's `lower_local_declaration` when it processes the function body.
+    pub fn analyze_local_declaration(&mut self, decl: &Declaration) {
+        match decl {
+            Declaration::Variable {
+                specifiers,
+                declarators,
+                span,
+            } => {
+                self.analyze_variable_declaration(specifiers, declarators, *span);
+                // Do NOT push to typed_declarations — local vars are not top-level.
+            }
+            Declaration::Typedef {
+                specifiers,
+                declarators,
+                span,
+            } => {
+                self.analyze_typedef(specifiers, declarators, *span);
+                // Typedefs don't produce IR, but we still don't push them at local scope.
+            }
+            Declaration::StaticAssert {
+                expr, ..
+            } => {
+                let _ = self.analyze_expression(expr);
+                // Static asserts don't produce IR.
+            }
+            Declaration::Function(_) => {
+                // Nested function definitions are not valid in C11 at local scope,
+                // but GCC allows nested functions as an extension. We'll just
+                // analyze it but not add to top-level declarations.
+                // For now, skip — nested functions are out of scope.
+            }
+            Declaration::Empty { .. } => {}
+        }
+    }
+
     /// Analyzes a single declaration, dispatching to the appropriate handler
     /// based on the declaration kind.
     ///
     /// Handles variable declarations, function definitions, typedefs,
     /// static assertions, and empty declarations.
+    /// NOTE: This method adds declarations to `typed_declarations` for top-level
+    /// (file scope) processing by the IR builder. For declarations inside function
+    /// bodies, use `analyze_local_declaration` instead.
     pub fn analyze_declaration(&mut self, decl: &Declaration) {
         match decl {
             Declaration::Variable {
@@ -516,7 +560,10 @@ impl<'a> SemanticAnalyzer<'a> {
         let prev_return_type = self.current_function_return_type.take();
         let prev_in_loop = self.in_loop;
         let prev_in_switch = self.in_switch;
-        self.current_function_return_type = Some(return_type);
+        // Use the actual return type from the function type (which includes
+        // pointer declarator modifiers), not just the base specifier type.
+        // For `int *foo()`, func_type.return_type is Pointer(Int), not just Int.
+        self.current_function_return_type = Some(*func_type.return_type.clone());
         self.in_loop = false;
         self.in_switch = false;
 
@@ -655,7 +702,7 @@ impl<'a> SemanticAnalyzer<'a> {
                 for item in items {
                     match item {
                         BlockItem::Declaration(decl) => {
-                            self.analyze_declaration(decl);
+                            self.analyze_local_declaration(decl);
                         }
                         BlockItem::Statement(sub_stmt) => {
                             self.analyze_statement(sub_stmt);
@@ -703,7 +750,7 @@ impl<'a> SemanticAnalyzer<'a> {
                 if let Some(ref for_init) = init {
                     match for_init.as_ref() {
                         ForInit::Declaration(decl) => {
-                            self.analyze_declaration(decl);
+                            self.analyze_local_declaration(decl);
                         }
                         ForInit::Expression(expr) => {
                             self.analyze_expression(expr);
@@ -783,7 +830,10 @@ impl<'a> SemanticAnalyzer<'a> {
 
             Statement::Switch { expr, body, span } => {
                 let expr_type = self.analyze_expression(expr);
-                if !expr_type.is_integer() && !expr_type.is_error() {
+                // C11 §6.8.4.2: The controlling expression of a switch
+                // statement shall have integer type. Enum types are integer
+                // types in C (underlying type is int).
+                if !expr_type.is_integer() && !expr_type.is_enum() && !expr_type.is_error() {
                     self.diagnostics.error(
                         span.start,
                         format!(
@@ -928,7 +978,7 @@ impl<'a> SemanticAnalyzer<'a> {
             }
 
             Statement::Declaration(decl) => {
-                self.analyze_declaration(decl);
+                self.analyze_local_declaration(decl);
             }
 
             Statement::Asm(_) => {
@@ -1094,9 +1144,11 @@ impl<'a> SemanticAnalyzer<'a> {
                 span,
             } => {
                 let object_type = self.analyze_expression(object);
+                // Resolve incomplete struct types to their complete definitions.
+                let resolved_type = self.resolve_complete_type(&object_type);
                 let member_str = self.interner.resolve(*member);
                 type_check::check_member_access(
-                    &object_type,
+                    &resolved_type,
                     *member,
                     member_str,
                     false, // direct access (not arrow)
@@ -1111,9 +1163,15 @@ impl<'a> SemanticAnalyzer<'a> {
                 span,
             } => {
                 let pointer_type = self.analyze_expression(pointer);
+                // Resolve incomplete struct types to their complete definitions.
+                // This is critical for self-referential structs like:
+                //   struct Node { int val; struct Node *next; };
+                // where `next` was typed as pointer-to-incomplete-Node at parse
+                // time, but Node is now complete.
+                let resolved_type = self.resolve_complete_type(&pointer_type);
                 let member_str = self.interner.resolve(*member);
                 type_check::check_member_access(
-                    &pointer_type,
+                    &resolved_type,
                     *member,
                     member_str,
                     true, // arrow access (dereference first)
@@ -1297,11 +1355,12 @@ impl<'a> SemanticAnalyzer<'a> {
                 // declared inside the body are still in scope), not after.
                 if let Statement::Compound { items, .. } = body.as_ref() {
                     self.scope_stack.push(ScopeKind::Block);
+                    self.symbol_table.push_scope(ScopeKind::Block);
                     let mut last_expr_type = CType::Void;
                     for item in items.iter() {
                         match item {
                             BlockItem::Declaration(decl) => {
-                                self.analyze_declaration(decl);
+                                self.analyze_local_declaration(decl);
                                 last_expr_type = CType::Void;
                             }
                             BlockItem::Statement(Statement::Expression {
@@ -1316,6 +1375,7 @@ impl<'a> SemanticAnalyzer<'a> {
                             }
                         }
                     }
+                    self.symbol_table.pop_scope();
                     self.scope_stack.pop();
                     last_expr_type
                 } else {
@@ -1398,6 +1458,41 @@ impl<'a> SemanticAnalyzer<'a> {
     /// Maps parser-level type specifiers to the semantic analysis type system,
     /// handling basic types, signed/unsigned modifiers, composite types, typedef
     /// references, and GCC extensions.
+    /// Resolve an incomplete struct/union type to its complete definition if one
+    /// exists in the current scope. When a `struct Node *next;` is declared
+    /// inside the struct body, the pointee is captured as an incomplete
+    /// `CType::Struct(StructType { is_complete: false, .. })`. By the time
+    /// we perform member access (`a.next->value`), the struct definition has
+    /// been completed, so we look up the tag in the symbol table and return
+    /// the complete type.
+    fn resolve_complete_type(&self, ty: &CType) -> CType {
+        match ty.canonical() {
+            CType::Struct(st) if !st.is_complete => {
+                if let Some(ref tag) = st.tag {
+                    // Use `get` (non-mutating lookup) instead of `intern`.
+                    if let Some(tag_intern) = self.interner.get(tag) {
+                        if let Some(sym) = self.symbol_table.lookup_tag(tag_intern) {
+                            if let CType::Struct(complete_st) = sym.ty.canonical() {
+                                if complete_st.is_complete {
+                                    return CType::Struct(complete_st.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+                ty.clone()
+            }
+            CType::Pointer { pointee, qualifiers } => {
+                let resolved_pointee = self.resolve_complete_type(pointee);
+                CType::Pointer {
+                    pointee: Box::new(resolved_pointee),
+                    qualifiers: *qualifiers,
+                }
+            }
+            _ => ty.clone(),
+        }
+    }
+
     fn resolve_type_specifier(&mut self, spec: &TypeSpecifier) -> CType {
         match spec {
             TypeSpecifier::Void => CType::Void,
@@ -1580,7 +1675,23 @@ impl<'a> SemanticAnalyzer<'a> {
             }
 
             TypeSpecifier::TypeofType { type_name, .. } => {
-                let ty = self.resolve_type_specifier(type_name);
+                // Resolve base type from the type specifier
+                let mut ty = self.resolve_type_specifier(&type_name.specifiers.type_specifier);
+
+                // Apply abstract declarator modifiers (pointers, arrays)
+                // so that typeof(int *) correctly produces Pointer(Int)
+                if let Some(ref ad) = type_name.abstract_declarator {
+                    for ptr in &ad.pointer {
+                        let quals = self.resolve_qualifiers(&ptr.qualifiers);
+                        ty = CType::Pointer {
+                            pointee: Box::new(ty),
+                            qualifiers: quals,
+                        };
+                    }
+                    // Note: array modifiers in abstract declarator of typeof
+                    // are rare but could be handled similarly if needed
+                }
+
                 CType::TypeOf(Box::new(ty))
             }
 
@@ -1602,6 +1713,44 @@ impl<'a> SemanticAnalyzer<'a> {
     }
 
     /// Resolves a list of AST type qualifiers into a [`TypeQualifiers`] struct.
+    /// Attempts to evaluate an expression as a compile-time constant integer.
+    ///
+    /// Used for array size evaluation in declarations like `int arr[1024]`.
+    /// Supports integer literals and simple binary/unary operations on constants.
+    fn try_eval_array_size(expr: &crate::frontend::parser::ast::Expression) -> usize {
+        use crate::frontend::parser::ast::{Expression, BinaryOp, UnaryOp};
+        match expr {
+            Expression::IntegerLiteral { value, .. } => *value as usize,
+            Expression::UnaryPrefix { op, operand, .. } => {
+                let inner = Self::try_eval_array_size(operand);
+                match op {
+                    UnaryOp::Negate => {
+                        // Negative array size doesn't make sense, but handle gracefully
+                        (-(inner as i64)) as usize
+                    }
+                    UnaryOp::Plus => inner,
+                    _ => 0,
+                }
+            }
+            Expression::Binary { op, left, right, .. } => {
+                let l = Self::try_eval_array_size(left);
+                let r = Self::try_eval_array_size(right);
+                match op {
+                    BinaryOp::Add => l.wrapping_add(r),
+                    BinaryOp::Sub => l.wrapping_sub(r),
+                    BinaryOp::Mul => l.wrapping_mul(r),
+                    BinaryOp::Div if r != 0 => l / r,
+                    BinaryOp::Mod if r != 0 => l % r,
+                    BinaryOp::ShiftLeft => l << (r & 63),
+                    BinaryOp::ShiftRight => l >> (r & 63),
+                    _ => 0,
+                }
+            }
+            Expression::Cast { operand, .. } => Self::try_eval_array_size(operand),
+            _ => 0,
+        }
+    }
+
     fn resolve_qualifiers(
         &self,
         qualifiers: &[crate::frontend::parser::ast::TypeQualifier],
@@ -1641,20 +1790,124 @@ impl<'a> SemanticAnalyzer<'a> {
     }
 
     /// Applies an abstract declarator's pointer/array/function modifiers to a base type.
+    ///
+    /// C declarators are read "inside-out": the innermost declarator modifies
+    /// the base type first, and outer modifiers wrap the result. For example,
+    /// `void(*)(int)` = pointer to function(int) returning void:
+    ///   1. Function modifier applied to base `void` → function(int) → void
+    ///   2. Parenthesized pointer wraps the function → pointer to function
     fn apply_abstract_declarator(
-        &self,
-        mut base: CType,
+        &mut self,
+        base: CType,
         abs: &crate::frontend::parser::ast::AbstractDeclarator,
     ) -> CType {
-        // Apply pointer modifiers (outermost first).
+        use crate::frontend::parser::ast::DirectAbstractDeclarator;
+
+        // First, apply the direct abstract declarator (function/array suffixes).
+        let result = if let Some(ref direct) = abs.direct {
+            self.apply_direct_abstract_declarator(base, direct)
+        } else {
+            base
+        };
+
+        // Then apply pointer modifiers (outermost).
+        let mut result = result;
         for ptr in &abs.pointer {
             let quals = self.resolve_qualifiers(&ptr.qualifiers);
-            base = CType::Pointer {
-                pointee: Box::new(base),
+            result = CType::Pointer {
+                pointee: Box::new(result),
                 qualifiers: quals,
             };
         }
-        base
+        result
+    }
+
+    /// Applies a direct abstract declarator to a base type (inside-out reading).
+    fn apply_direct_abstract_declarator(
+        &mut self,
+        base: CType,
+        direct: &crate::frontend::parser::ast::DirectAbstractDeclarator,
+    ) -> CType {
+        use crate::frontend::parser::ast::{DirectAbstractDeclarator, ArraySize};
+
+        match direct {
+            DirectAbstractDeclarator::Parenthesized(inner_abs) => {
+                // Parenthesized grouping: apply the inner abstract declarator.
+                self.apply_abstract_declarator(base, inner_abs)
+            }
+
+            DirectAbstractDeclarator::Function { base: inner_base, params } => {
+                // Function suffix: create a function type with `base` as the
+                // return type and `params` as the parameter types.
+                let param_types: Vec<crate::sema::types::FunctionParam> = params
+                    .params
+                    .iter()
+                    .map(|p| {
+                        let ptype = self.resolve_type_specifier(&p.specifiers.type_specifier);
+                        let quals = self.resolve_qualifiers(&p.specifiers.type_qualifiers);
+                        let mut ptype = if quals.is_empty() {
+                            ptype
+                        } else {
+                            CType::Qualified {
+                                base: Box::new(ptype),
+                                qualifiers: quals,
+                            }
+                        };
+                        // Apply the parameter's declarator (pointer, array, etc.)
+                        if let Some(ref decl) = p.declarator {
+                            ptype = self.apply_declarator_to_type(&ptype, decl);
+                        }
+                        crate::sema::types::FunctionParam {
+                            name: None,
+                            ty: ptype,
+                        }
+                    })
+                    .collect();
+
+                let func_type = CType::Function(crate::sema::types::FunctionType {
+                    return_type: Box::new(base),
+                    params: param_types,
+                    is_variadic: params.variadic,
+                    is_old_style: false,
+                });
+
+                // If there's an inner base (e.g., `(*)(int)` has base = Parenthesized(*)),
+                // apply the function type to the inner base.
+                if let Some(ref inner) = inner_base {
+                    self.apply_direct_abstract_declarator(func_type, inner)
+                } else {
+                    func_type
+                }
+            }
+
+            DirectAbstractDeclarator::Array { base: inner_base, size, .. } => {
+                // Array suffix: create an array type.
+                let array_size = match size {
+                    ArraySize::Fixed(expr) => {
+                        let val = Self::try_eval_array_size(expr);
+                        if val > 0 {
+                            crate::sema::types::ArraySize::Fixed(val)
+                        } else {
+                            crate::sema::types::ArraySize::Incomplete
+                        }
+                    }
+                    ArraySize::Unspecified => crate::sema::types::ArraySize::Incomplete,
+                    ArraySize::VLA => crate::sema::types::ArraySize::Variable,
+                    ArraySize::Static(_) => crate::sema::types::ArraySize::Incomplete,
+                };
+
+                let array_type = CType::Array {
+                    element: Box::new(base),
+                    size: array_size,
+                };
+
+                if let Some(ref inner) = inner_base {
+                    self.apply_direct_abstract_declarator(array_type, inner)
+                } else {
+                    array_type
+                }
+            }
+        }
     }
 
     /// Applies a declarator's pointer/array/function modifiers to a base type.
@@ -1703,10 +1956,9 @@ impl<'a> SemanticAnalyzer<'a> {
                 let array_size = match size {
                     crate::frontend::parser::ast::ArraySize::Fixed(expr) => {
                         // Evaluate constant expression for array size.
-                        // Simplified: treat all as incomplete for now until
-                        // constant evaluation is fully wired up.
                         let _ty = self.analyze_expression(expr);
-                        types::ArraySize::Fixed(0) // Placeholder — const eval needed
+                        let size_val = Self::try_eval_array_size(expr);
+                        types::ArraySize::Fixed(size_val)
                     }
                     crate::frontend::parser::ast::ArraySize::Unspecified => {
                         types::ArraySize::Incomplete
@@ -1716,7 +1968,8 @@ impl<'a> SemanticAnalyzer<'a> {
                     }
                     crate::frontend::parser::ast::ArraySize::Static(expr) => {
                         let _ty = self.analyze_expression(expr);
-                        types::ArraySize::Fixed(0) // Placeholder — const eval needed
+                        let size_val = Self::try_eval_array_size(expr);
+                        types::ArraySize::Fixed(size_val)
                     }
                 };
                 CType::Array {
@@ -1867,7 +2120,9 @@ impl<'a> SemanticAnalyzer<'a> {
         match init {
             Initializer::Expression(expr) => {
                 let init_type = self.analyze_expression(expr);
-                type_check::check_assignment(
+                // Use check_initialization instead of check_assignment
+                // because initializing a const variable is valid in C.
+                type_check::check_initialization(
                     target_type,
                     &init_type,
                     self.diagnostics,
@@ -2229,6 +2484,7 @@ mod tests {
             type_specifier: type_spec,
             function_specifiers: Vec::new(),
             attributes: Vec::new(),
+            alignment: None,
             span: dummy_span(),
         }
     }

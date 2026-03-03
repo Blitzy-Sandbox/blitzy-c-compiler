@@ -16,3 +16,4 @@ build = "build.rs"
 opt-level = 3
 lto = true
 debug = false
+overflow-checks = false

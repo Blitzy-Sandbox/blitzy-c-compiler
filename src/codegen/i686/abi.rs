@@ -948,6 +948,8 @@ mod tests {
             param_values: Vec::new(),
             entry_block: BlockId(0),
             is_definition: true,
+is_static: false,
+is_weak: false,
         }
     }
 
