@@ -46,12 +46,11 @@
 //!
 //! This module contains zero `unsafe` blocks. All operations use safe Rust.
 
-use super::expressions::is_type_start_token;
 use super::ast::{
     AbstractDeclarator, ArraySize, DeclSpecifiers, DirectAbstractDeclarator, Expression,
-    ParamDeclaration, ParamList, Pointer, StorageClass,
-    TypeName, TypeQualifier, TypeSpecifier,
+    ParamDeclaration, ParamList, Pointer, StorageClass, TypeName, TypeQualifier, TypeSpecifier,
 };
+use super::expressions::is_type_start_token;
 use super::gcc_extensions;
 use super::Parser;
 use crate::common::intern::InternId;
@@ -454,9 +453,7 @@ pub(super) fn parse_type_specifiers(parser: &mut Parser<'_>) -> TypeSpecifier {
                     || state.has_bool
                     || state.has_other
                 {
-                    parser.error(
-                        "invalid combination of type specifiers with 'unsigned'",
-                    );
+                    parser.error("invalid combination of type specifiers with 'unsigned'");
                     break;
                 }
                 state.has_unsigned = true;
@@ -573,10 +570,7 @@ pub(super) fn parse_type_specifiers(parser: &mut Parser<'_>) -> TypeSpecifier {
                         parser.advance();
                         let span = parser.span_from(id_span);
                         state.has_other = true;
-                        state.other_spec = Some(TypeSpecifier::TypedefName {
-                            name: id,
-                            span,
-                        });
+                        state.other_spec = Some(TypeSpecifier::TypedefName { name: id, span });
                         state.count += 1;
                     } else {
                         // Not a type specifier; stop parsing specifiers.
@@ -627,9 +621,8 @@ pub(super) fn parse_type_specifiers(parser: &mut Parser<'_>) -> TypeSpecifier {
             // === __builtin_va_list ===
             TokenKind::BuiltinVaList => {
                 if !state.is_empty() {
-                    parser.error(
-                        "'__builtin_va_list' cannot be combined with other type specifiers",
-                    );
+                    parser
+                        .error("'__builtin_va_list' cannot be combined with other type specifiers");
                     break;
                 }
                 let va_span = parser.current_span();
@@ -768,9 +761,7 @@ fn parse_struct_or_union_specifier(parser: &mut Parser<'_>, is_struct: bool) -> 
 ///
 /// Returns a vector of `StructMember` entries. Each member is a declaration
 /// with optional bit-field widths.
-fn parse_struct_or_union_body(
-    parser: &mut Parser<'_>,
-) -> Vec<super::ast::StructMember> {
+fn parse_struct_or_union_body(parser: &mut Parser<'_>) -> Vec<super::ast::StructMember> {
     let mut members = Vec::new();
 
     // Consume `{`.
@@ -812,6 +803,14 @@ fn parse_struct_or_union_body(
         let type_spec = parse_type_specifiers(parser);
         let mut more_quals = parse_type_qualifiers(parser);
         qualifiers.append(&mut more_quals);
+
+        // Parse GCC __attribute__ that may appear between type specifiers
+        // and the declarator name. This handles patterns like:
+        //   int __attribute__((aligned(8))) field_name;
+        //   __u64 __attribute__((packed)) offset;
+        // which are pervasive in the Linux kernel via macros like
+        // __aligned_u64 that expand to `__u64 __attribute__((aligned(8)))`.
+        let _mid_attrs = super::gcc_extensions::try_parse_attributes(parser);
 
         if matches!(type_spec, TypeSpecifier::Error) {
             // Recovery: skip to next `;` or `}`.
@@ -1045,10 +1044,18 @@ fn parse_constant_expression_simple(parser: &mut Parser<'_>) -> Expression {
 /// (including type casts like `(int)x`), unary operators, `sizeof`, and
 /// `_Alignof`. It does NOT handle binary operators — those are handled in the
 /// caller's loop.
-fn parse_const_expr_atom(parser: &mut Parser<'_>, start: crate::common::source_map::SourceSpan) -> Expression {
+fn parse_const_expr_atom(
+    parser: &mut Parser<'_>,
+    start: crate::common::source_map::SourceSpan,
+) -> Expression {
     match parser.current().kind {
         TokenKind::IntegerLiteral => {
-            if let TokenValue::Integer { value, suffix: _, base: _ } = parser.current().value {
+            if let TokenValue::Integer {
+                value,
+                suffix: _,
+                base: _,
+            } = parser.current().value
+            {
                 parser.advance();
                 let span = parser.span_from(start);
                 Expression::IntegerLiteral {
@@ -1670,9 +1677,7 @@ pub(super) fn parse_abstract_declarator(parser: &mut Parser<'_>) -> AbstractDecl
 ///                               | direct-abstract-declarator? '[' ... ']'
 ///                               | direct-abstract-declarator? '(' ... ')'
 /// ```
-fn parse_direct_abstract_declarator(
-    parser: &mut Parser<'_>,
-) -> Option<DirectAbstractDeclarator> {
+fn parse_direct_abstract_declarator(parser: &mut Parser<'_>) -> Option<DirectAbstractDeclarator> {
     let mut result: Option<DirectAbstractDeclarator> = None;
 
     // Check for parenthesized abstract declarator: `(abstract-declarator)`.
@@ -1689,9 +1694,7 @@ fn parse_direct_abstract_declarator(
         // - `(void)` or `(int,...)` → function parameter list
         let next = parser.peek().kind;
 
-        if next == TokenKind::Star
-            || next == TokenKind::LeftBracket
-            || next == TokenKind::LeftParen
+        if next == TokenKind::Star || next == TokenKind::LeftBracket || next == TokenKind::LeftParen
         {
             // Likely a parenthesized abstract declarator (e.g., `(*)(int)`).
             parser.advance(); // consume `(`
@@ -1707,19 +1710,13 @@ fn parse_direct_abstract_declarator(
                 variadic: false,
                 span: parser.previous_span(),
             };
-            result = Some(DirectAbstractDeclarator::Function {
-                base: None,
-                params,
-            });
+            result = Some(DirectAbstractDeclarator::Function { base: None, params });
         } else {
             // Could be a function parameter list: `(int, float)`.
             // Check if the first token is a type specifier or qualifier.
             if is_type_specifier_start_at(parser, 1) || next == TokenKind::Ellipsis {
                 let params = parse_parameter_type_list(parser);
-                result = Some(DirectAbstractDeclarator::Function {
-                    base: None,
-                    params,
-                });
+                result = Some(DirectAbstractDeclarator::Function { base: None, params });
             }
             // Otherwise, we don't have a direct abstract declarator starting
             // with `(`, so leave result as None and let the caller handle it.
@@ -1897,16 +1894,11 @@ fn parse_parameter_type_list(parser: &mut Parser<'_>) -> ParamList {
 /// - A named declarator: `int x`
 /// - An abstract declarator: `int *`
 /// - No declarator at all: `int`
-fn parse_param_declarator(
-    parser: &mut Parser<'_>,
-) -> Option<super::ast::Declarator> {
+fn parse_param_declarator(parser: &mut Parser<'_>) -> Option<super::ast::Declarator> {
     // If the current token cannot start a declarator, return None.
     if !matches!(
         parser.current().kind,
-        TokenKind::Star
-            | TokenKind::Identifier
-            | TokenKind::LeftParen
-            | TokenKind::LeftBracket
+        TokenKind::Star | TokenKind::Identifier | TokenKind::LeftParen | TokenKind::LeftBracket
     ) {
         return None;
     }
@@ -2700,10 +2692,8 @@ mod tests {
     fn test_parse_union_ref() {
         let mut interner = Interner::new();
         let tag_id = interner.intern("MyUnion");
-        let tokens = make_token_stream(vec![
-            make_token(TokenKind::Union),
-            make_ident_token(tag_id),
-        ]);
+        let tokens =
+            make_token_stream(vec![make_token(TokenKind::Union), make_ident_token(tag_id)]);
         let mut diag = DiagnosticEmitter::new();
         let mut parser = make_parser(&tokens, &interner, &mut diag);
 
@@ -2720,10 +2710,7 @@ mod tests {
     fn test_parse_enum_ref() {
         let mut interner = Interner::new();
         let tag_id = interner.intern("Color");
-        let tokens = make_token_stream(vec![
-            make_token(TokenKind::Enum),
-            make_ident_token(tag_id),
-        ]);
+        let tokens = make_token_stream(vec![make_token(TokenKind::Enum), make_ident_token(tag_id)]);
         let mut diag = DiagnosticEmitter::new();
         let mut parser = make_parser(&tokens, &interner, &mut diag);
 
@@ -2867,10 +2854,7 @@ mod tests {
             TypeSpecifier::Int
         ));
         assert_eq!(result.specifiers.type_qualifiers.len(), 1);
-        assert_eq!(
-            result.specifiers.type_qualifiers[0],
-            TypeQualifier::Const
-        );
+        assert_eq!(result.specifiers.type_qualifiers[0], TypeQualifier::Const);
     }
 
     // -----------------------------------------------------------------------

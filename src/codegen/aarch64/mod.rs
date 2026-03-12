@@ -58,19 +58,15 @@ pub mod abi;
 // Imports
 // ---------------------------------------------------------------------------
 
-use crate::codegen::{
-    Architecture, CodeGen, CodeGenError, MachineInstr, MachineOperand, ObjectCode,
-    Section, SectionFlags, SectionType,
-    Symbol, SymbolBinding, SymbolType, SymbolVisibility,
-    Relocation,
-};
 use crate::codegen::regalloc::{
-    PhysReg, RegisterInfo,
-    compute_live_intervals, linear_scan_allocate,
-    build_value_to_reg_map,
+    build_value_to_reg_map, compute_live_intervals, linear_scan_allocate, PhysReg, RegisterInfo,
 };
-use crate::ir::{Function, GlobalVariable, IrType, Module, Value};
+use crate::codegen::{
+    Architecture, CodeGen, CodeGenError, MachineInstr, MachineOperand, ObjectCode, Relocation,
+    Section, SectionFlags, SectionType, Symbol, SymbolBinding, SymbolType, SymbolVisibility,
+};
 use crate::driver::target::TargetConfig;
+use crate::ir::{Function, GlobalVariable, IrType, Module, Value};
 use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
@@ -82,25 +78,25 @@ use std::collections::HashMap;
 // Both are represented as PhysReg(31) — the encoder distinguishes context.
 
 /// x0 — Argument/result register; first integer argument, integer return value.
-pub const X0:  PhysReg = PhysReg(0);
+pub const X0: PhysReg = PhysReg(0);
 /// x1 — Second integer argument register; second return register for pairs.
-pub const X1:  PhysReg = PhysReg(1);
+pub const X1: PhysReg = PhysReg(1);
 /// x2 — Third integer argument register.
-pub const X2:  PhysReg = PhysReg(2);
+pub const X2: PhysReg = PhysReg(2);
 /// x3 — Fourth integer argument register.
-pub const X3:  PhysReg = PhysReg(3);
+pub const X3: PhysReg = PhysReg(3);
 /// x4 — Fifth integer argument register.
-pub const X4:  PhysReg = PhysReg(4);
+pub const X4: PhysReg = PhysReg(4);
 /// x5 — Sixth integer argument register.
-pub const X5:  PhysReg = PhysReg(5);
+pub const X5: PhysReg = PhysReg(5);
 /// x6 — Seventh integer argument register.
-pub const X6:  PhysReg = PhysReg(6);
+pub const X6: PhysReg = PhysReg(6);
 /// x7 — Eighth integer argument register.
-pub const X7:  PhysReg = PhysReg(7);
+pub const X7: PhysReg = PhysReg(7);
 /// x8 — Indirect result location register (for returning large structs via pointer).
-pub const X8:  PhysReg = PhysReg(8);
+pub const X8: PhysReg = PhysReg(8);
 /// x9 — Caller-saved temporary register.
-pub const X9:  PhysReg = PhysReg(9);
+pub const X9: PhysReg = PhysReg(9);
 /// x10 — Caller-saved temporary register.
 pub const X10: PhysReg = PhysReg(10);
 /// x11 — Caller-saved temporary register.
@@ -154,7 +150,7 @@ pub const X30: PhysReg = PhysReg(30);
 
 /// SP — Stack Pointer (encoded as x31 in base/address register contexts).
 #[allow(dead_code)]
-pub const SP:  PhysReg = PhysReg(31);
+pub const SP: PhysReg = PhysReg(31);
 /// XZR — Zero Register (encoded as x31 in operand register contexts).
 /// Reads always return zero; writes are discarded.
 #[allow(dead_code)]
@@ -168,25 +164,25 @@ pub const XZR: PhysReg = PhysReg(31);
 //   Bn (8-bit), Hn (16-bit), Sn (32-bit float), Dn (64-bit double), Qn (128-bit)
 
 /// v0 — FP argument/result register (s0/d0), caller-saved.
-pub const V0:  PhysReg = PhysReg(32);
+pub const V0: PhysReg = PhysReg(32);
 /// v1 — FP argument/result register (s1/d1), caller-saved.
-pub const V1:  PhysReg = PhysReg(33);
+pub const V1: PhysReg = PhysReg(33);
 /// v2 — FP argument register (s2/d2), caller-saved.
-pub const V2:  PhysReg = PhysReg(34);
+pub const V2: PhysReg = PhysReg(34);
 /// v3 — FP argument register (s3/d3), caller-saved.
-pub const V3:  PhysReg = PhysReg(35);
+pub const V3: PhysReg = PhysReg(35);
 /// v4 — FP argument register (s4/d4), caller-saved.
-pub const V4:  PhysReg = PhysReg(36);
+pub const V4: PhysReg = PhysReg(36);
 /// v5 — FP argument register (s5/d5), caller-saved.
-pub const V5:  PhysReg = PhysReg(37);
+pub const V5: PhysReg = PhysReg(37);
 /// v6 — FP argument register (s6/d6), caller-saved.
-pub const V6:  PhysReg = PhysReg(38);
+pub const V6: PhysReg = PhysReg(38);
 /// v7 — FP argument register (s7/d7), caller-saved.
-pub const V7:  PhysReg = PhysReg(39);
+pub const V7: PhysReg = PhysReg(39);
 /// v8 — Callee-saved FP register (lower 64 bits d8 preserved).
-pub const V8:  PhysReg = PhysReg(40);
+pub const V8: PhysReg = PhysReg(40);
 /// v9 — Callee-saved FP register (lower 64 bits d9 preserved).
-pub const V9:  PhysReg = PhysReg(41);
+pub const V9: PhysReg = PhysReg(41);
 /// v10 — Callee-saved FP register (lower 64 bits d10 preserved).
 pub const V10: PhysReg = PhysReg(42);
 /// v11 — Callee-saved FP register (lower 64 bits d11 preserved).
@@ -238,10 +234,10 @@ pub const V31: PhysReg = PhysReg(63);
 
 /// FP — Frame Pointer (alias for x29).
 #[allow(dead_code)]
-pub const FP:  PhysReg = X29;
+pub const FP: PhysReg = X29;
 /// LR — Link Register (alias for x30).
 #[allow(dead_code)]
-pub const LR:  PhysReg = X30;
+pub const LR: PhysReg = X30;
 /// IP0 — Intra-procedure-call scratch register 0 (alias for x16).
 /// Reserved for linker-generated veneers; NOT allocatable.
 #[allow(dead_code)]
@@ -267,16 +263,16 @@ pub fn build_aarch64_reg_names() -> HashMap<PhysReg, &'static str> {
     let mut names = HashMap::new();
 
     // GPRs x0-x28 use numeric names.
-    names.insert(PhysReg(0),  "x0");
-    names.insert(PhysReg(1),  "x1");
-    names.insert(PhysReg(2),  "x2");
-    names.insert(PhysReg(3),  "x3");
-    names.insert(PhysReg(4),  "x4");
-    names.insert(PhysReg(5),  "x5");
-    names.insert(PhysReg(6),  "x6");
-    names.insert(PhysReg(7),  "x7");
-    names.insert(PhysReg(8),  "x8");
-    names.insert(PhysReg(9),  "x9");
+    names.insert(PhysReg(0), "x0");
+    names.insert(PhysReg(1), "x1");
+    names.insert(PhysReg(2), "x2");
+    names.insert(PhysReg(3), "x3");
+    names.insert(PhysReg(4), "x4");
+    names.insert(PhysReg(5), "x5");
+    names.insert(PhysReg(6), "x6");
+    names.insert(PhysReg(7), "x7");
+    names.insert(PhysReg(8), "x8");
+    names.insert(PhysReg(9), "x9");
     names.insert(PhysReg(10), "x10");
     names.insert(PhysReg(11), "x11");
     names.insert(PhysReg(12), "x12");
@@ -374,29 +370,20 @@ pub fn aarch64_register_info() -> RegisterInfo {
             // Caller-saved temporaries (preferred for allocation — no save/restore cost)
             X9, X10, X11, X12, X13, X14, X15,
             // Argument registers (caller-saved; may conflict with parameter passing)
-            X0, X1, X2, X3, X4, X5, X6, X7,
-            // Indirect result register (caller-saved)
-            X8,
-            // Platform register (caller-saved on Linux)
-            X18,
-            // Callee-saved registers (used as last resort; require save/restore)
+            X0, X1, X2, X3, X4, X5, X6, X7,  // Indirect result register (caller-saved)
+            X8,  // Platform register (caller-saved on Linux)
+            X18, // Callee-saved registers (used as last resort; require save/restore)
             X19, X20, X21, X22, X23, X24, X25, X26, X27, X28,
         ],
         float_regs: vec![
             // Caller-saved FP argument registers (preferred)
-            V0, V1, V2, V3, V4, V5, V6, V7,
-            // More caller-saved FP registers
-            V16, V17, V18, V19, V20, V21, V22, V23,
-            V24, V25, V26, V27, V28, V29, V30, V31,
+            V0, V1, V2, V3, V4, V5, V6, V7, // More caller-saved FP registers
+            V16, V17, V18, V19, V20, V21, V22, V23, V24, V25, V26, V27, V28, V29, V30, V31,
             // Callee-saved FP registers (d8-d15, lower 64 bits preserved)
             V8, V9, V10, V11, V12, V13, V14, V15,
         ],
-        callee_saved_int: vec![
-            X19, X20, X21, X22, X23, X24, X25, X26, X27, X28,
-        ],
-        callee_saved_float: vec![
-            V8, V9, V10, V11, V12, V13, V14, V15,
-        ],
+        callee_saved_int: vec![X19, X20, X21, X22, X23, X24, X25, X26, X27, X28],
+        callee_saved_float: vec![V8, V9, V10, V11, V12, V13, V14, V15],
         reg_names: build_aarch64_reg_names(),
     }
 }
@@ -453,9 +440,7 @@ impl Aarch64CodeGen {
         // Maps vreg IDs → IR Values → PhysRegs from the allocator.
         let vreg_to_value = selector.build_vreg_to_value_map();
         let value_to_reg = build_value_to_reg_map(&alloc_result);
-        Self::apply_aarch64_reg_assignments(
-            &mut body_instrs, &vreg_to_value, &value_to_reg,
-        );
+        Self::apply_aarch64_reg_assignments(&mut body_instrs, &vreg_to_value, &value_to_reg);
 
         // Step 4: Generate AAPCS64-compliant function prologue.
         let prologue = abi::generate_prologue(function, &alloc_result, target);
@@ -465,9 +450,8 @@ impl Aarch64CodeGen {
 
         // Step 6: Concatenate prologue + body + epilogue into a complete
         // instruction sequence for the function.
-        let mut all_instrs = Vec::with_capacity(
-            prologue.len() + body_instrs.len() + epilogue.len(),
-        );
+        let mut all_instrs =
+            Vec::with_capacity(prologue.len() + body_instrs.len() + epilogue.len());
         all_instrs.extend(prologue);
         all_instrs.extend(body_instrs);
         all_instrs.extend(epilogue);
@@ -498,10 +482,10 @@ impl Aarch64CodeGen {
         // AArch64 GP registers: 0-30 (X0-X30), 31 = SP/XZR
         // FP/SIMD registers: numbered separately in instruction encoding
         let fallback_pool: [PhysReg; 4] = [
-            PhysReg(0),   // X0
-            PhysReg(1),   // X1
-            PhysReg(2),   // X2
-            PhysReg(9),   // X9 (caller-saved temp)
+            PhysReg(0), // X0
+            PhysReg(1), // X1
+            PhysReg(2), // X2
+            PhysReg(9), // X9 (caller-saved temp)
         ];
         let mut fallback_idx: usize = 0;
 
@@ -540,11 +524,7 @@ impl Aarch64CodeGen {
         }
     }
 
-    fn emit_global_data(
-        &self,
-        global: &GlobalVariable,
-        target: &TargetConfig,
-    ) -> Vec<u8> {
+    fn emit_global_data(&self, global: &GlobalVariable, target: &TargetConfig) -> Vec<u8> {
         match &global.initializer {
             Some(init) => self.emit_constant_data(init, &global.ty, target),
             None => {
@@ -578,7 +558,10 @@ impl Aarch64CodeGen {
                 }
                 bytes
             }
-            Constant::Float { value, ty: float_ty } => {
+            Constant::Float {
+                value,
+                ty: float_ty,
+            } => {
                 match float_ty {
                     IrType::F32 => {
                         let bits = (*value as f32).to_bits();
@@ -611,9 +594,7 @@ impl Aarch64CodeGen {
                 let size = undef_ty.size(target);
                 vec![0u8; size]
             }
-            Constant::String(bytes) => {
-                bytes.clone()
-            }
+            Constant::String(bytes) => bytes.clone(),
             Constant::GlobalRef(_name) => {
                 // Global reference — emit a zero placeholder that the linker
                 // will fill via a relocation entry. The actual relocation is
@@ -663,11 +644,7 @@ impl CodeGen for Aarch64CodeGen {
     /// - `.bss` section for zero-initialized or uninitialized globals
     /// - Symbol table entries for all functions and globals
     /// - Relocation entries for unresolved symbol references (R_AARCH64_*)
-    fn generate(
-        &self,
-        module: &Module,
-        target: &TargetConfig,
-    ) -> Result<ObjectCode, CodeGenError> {
+    fn generate(&self, module: &Module, target: &TargetConfig) -> Result<ObjectCode, CodeGenError> {
         let reg_info = aarch64_register_info();
 
         let mut sections: Vec<Section> = Vec::new();
@@ -698,8 +675,7 @@ impl CodeGen for Aarch64CodeGen {
             }
 
             // Generate machine code for this function.
-            let (func_code, func_relocs) =
-                self.generate_function(function, target, &reg_info)?;
+            let (func_code, func_relocs) = self.generate_function(function, target, &reg_info)?;
 
             // Record the function's starting offset in the .text section.
             let func_offset = text_data.len() as u64;
@@ -975,7 +951,10 @@ mod tests {
 
     #[test]
     fn test_sp_xzr_same_encoding() {
-        assert_eq!(SP, XZR, "SP and XZR should have the same encoding (PhysReg(31))");
+        assert_eq!(
+            SP, XZR,
+            "SP and XZR should have the same encoding (PhysReg(31))"
+        );
         assert_eq!(SP.0, 31);
         assert_eq!(XZR.0, 31);
     }
@@ -1014,64 +993,90 @@ mod tests {
         let reg_info = aarch64_register_info();
         // Should have 27 allocatable GPRs:
         // x9-x15 (7) + x0-x7 (8) + x8 (1) + x18 (1) + x19-x28 (10) = 27
-        assert_eq!(reg_info.int_regs.len(), 27,
-            "AArch64 should have 27 allocatable GPRs");
+        assert_eq!(
+            reg_info.int_regs.len(),
+            27,
+            "AArch64 should have 27 allocatable GPRs"
+        );
     }
 
     #[test]
     fn test_allocatable_fpr_count() {
         let reg_info = aarch64_register_info();
         // Should have 32 allocatable FP registers (v0-v31).
-        assert_eq!(reg_info.float_regs.len(), 32,
-            "AArch64 should have 32 allocatable FP registers");
+        assert_eq!(
+            reg_info.float_regs.len(),
+            32,
+            "AArch64 should have 32 allocatable FP registers"
+        );
     }
 
     #[test]
     fn test_callee_saved_gpr_count() {
         let reg_info = aarch64_register_info();
         // AAPCS64: x19-x28 = 10 callee-saved GPRs.
-        assert_eq!(reg_info.callee_saved_int.len(), 10,
-            "AAPCS64 specifies 10 callee-saved GPRs (x19-x28)");
+        assert_eq!(
+            reg_info.callee_saved_int.len(),
+            10,
+            "AAPCS64 specifies 10 callee-saved GPRs (x19-x28)"
+        );
     }
 
     #[test]
     fn test_callee_saved_fpr_count() {
         let reg_info = aarch64_register_info();
         // AAPCS64: v8-v15 / d8-d15 = 8 callee-saved FP registers.
-        assert_eq!(reg_info.callee_saved_float.len(), 8,
-            "AAPCS64 specifies 8 callee-saved FP registers (v8-v15)");
+        assert_eq!(
+            reg_info.callee_saved_float.len(),
+            8,
+            "AAPCS64 specifies 8 callee-saved FP registers (v8-v15)"
+        );
     }
 
     #[test]
     fn test_callee_saved_gpr_values() {
         let reg_info = aarch64_register_info();
         let expected = vec![X19, X20, X21, X22, X23, X24, X25, X26, X27, X28];
-        assert_eq!(reg_info.callee_saved_int, expected,
-            "Callee-saved GPRs must be x19-x28");
+        assert_eq!(
+            reg_info.callee_saved_int, expected,
+            "Callee-saved GPRs must be x19-x28"
+        );
     }
 
     #[test]
     fn test_callee_saved_fpr_values() {
         let reg_info = aarch64_register_info();
         let expected = vec![V8, V9, V10, V11, V12, V13, V14, V15];
-        assert_eq!(reg_info.callee_saved_float, expected,
-            "Callee-saved FPRs must be v8-v15");
+        assert_eq!(
+            reg_info.callee_saved_float, expected,
+            "Callee-saved FPRs must be v8-v15"
+        );
     }
 
     #[test]
     fn test_non_allocatable_registers_excluded() {
         let reg_info = aarch64_register_info();
         // SP/XZR (31), FP/x29, LR/x30, IP0/x16, IP1/x17 must NOT be allocatable.
-        assert!(!reg_info.int_regs.contains(&PhysReg(31)),
-            "SP/XZR must not be allocatable");
-        assert!(!reg_info.int_regs.contains(&X29),
-            "FP (x29) must not be allocatable");
-        assert!(!reg_info.int_regs.contains(&X30),
-            "LR (x30) must not be allocatable");
-        assert!(!reg_info.int_regs.contains(&X16),
-            "IP0 (x16) must not be allocatable");
-        assert!(!reg_info.int_regs.contains(&X17),
-            "IP1 (x17) must not be allocatable");
+        assert!(
+            !reg_info.int_regs.contains(&PhysReg(31)),
+            "SP/XZR must not be allocatable"
+        );
+        assert!(
+            !reg_info.int_regs.contains(&X29),
+            "FP (x29) must not be allocatable"
+        );
+        assert!(
+            !reg_info.int_regs.contains(&X30),
+            "LR (x30) must not be allocatable"
+        );
+        assert!(
+            !reg_info.int_regs.contains(&X16),
+            "IP0 (x16) must not be allocatable"
+        );
+        assert!(
+            !reg_info.int_regs.contains(&X17),
+            "IP1 (x17) must not be allocatable"
+        );
     }
 
     #[test]
@@ -1080,8 +1085,10 @@ mod tests {
         // First 7 registers should be the caller-saved temporaries x9-x15.
         let first_seven: Vec<PhysReg> = reg_info.int_regs[..7].to_vec();
         let expected = vec![X9, X10, X11, X12, X13, X14, X15];
-        assert_eq!(first_seven, expected,
-            "Caller-saved temporaries (x9-x15) should be listed first for allocation priority");
+        assert_eq!(
+            first_seven, expected,
+            "Caller-saved temporaries (x9-x15) should be listed first for allocation priority"
+        );
     }
 
     // =======================================================================
@@ -1097,15 +1104,25 @@ mod tests {
                 names.get(&PhysReg(i)).copied(),
                 Some(expected.as_str()),
                 "Register x{} should have name \"x{}\"",
-                i, i
+                i,
+                i
             );
         }
-        assert_eq!(names.get(&PhysReg(29)).copied(), Some("fp"),
-            "x29 should be named 'fp'");
-        assert_eq!(names.get(&PhysReg(30)).copied(), Some("lr"),
-            "x30 should be named 'lr'");
-        assert_eq!(names.get(&PhysReg(31)).copied(), Some("sp"),
-            "x31 should be named 'sp'");
+        assert_eq!(
+            names.get(&PhysReg(29)).copied(),
+            Some("fp"),
+            "x29 should be named 'fp'"
+        );
+        assert_eq!(
+            names.get(&PhysReg(30)).copied(),
+            Some("lr"),
+            "x30 should be named 'lr'"
+        );
+        assert_eq!(
+            names.get(&PhysReg(31)).copied(),
+            Some("sp"),
+            "x31 should be named 'sp'"
+        );
     }
 
     #[test]
@@ -1117,7 +1134,8 @@ mod tests {
                 names.get(&PhysReg(32 + i)).copied(),
                 Some(expected.as_str()),
                 "Register v{} should have name \"v{}\"",
-                i, i
+                i,
+                i
             );
         }
     }
@@ -1126,8 +1144,11 @@ mod tests {
     fn test_total_register_names() {
         let names = build_aarch64_reg_names();
         // 32 GPRs (x0-x28 + fp + lr + sp) + 32 FPRs (v0-v31) = 64 names
-        assert_eq!(names.len(), 64,
-            "Should have 64 total register names (32 GPR + 32 FPR)");
+        assert_eq!(
+            names.len(),
+            64,
+            "Should have 64 total register names (32 GPR + 32 FPR)"
+        );
     }
 
     // =======================================================================
@@ -1172,10 +1193,16 @@ mod tests {
             retpoline: false,
             cf_protection: false,
             pic: false,
+            no_red_zone: false,
+            function_sections: false,
+            data_sections: false,
         };
 
         let result = codegen.generate(&module, &target);
-        assert!(result.is_ok(), "Generating code for empty module should succeed");
+        assert!(
+            result.is_ok(),
+            "Generating code for empty module should succeed"
+        );
 
         let object = result.unwrap();
         assert_eq!(object.target_arch, Architecture::Aarch64);
@@ -1211,12 +1238,17 @@ mod tests {
             retpoline: false,
             cf_protection: false,
             pic: false,
+            no_red_zone: false,
+            function_sections: false,
+            data_sections: false,
         };
 
         let object = codegen.generate(&module, &target).unwrap();
         // .text section must have 4-byte alignment for AArch64.
-        assert_eq!(object.sections[0].alignment, 4,
-            ".text section must have 4-byte alignment for AArch64 instructions");
+        assert_eq!(
+            object.sections[0].alignment, 4,
+            ".text section must have 4-byte alignment for AArch64 instructions"
+        );
     }
 
     #[test]
@@ -1243,6 +1275,9 @@ mod tests {
             retpoline: false,
             cf_protection: false,
             pic: false,
+            no_red_zone: false,
+            function_sections: false,
+            data_sections: false,
         };
 
         let object = codegen.generate(&module, &target).unwrap();

@@ -225,6 +225,8 @@ pub const STT_FILE: u8 = 4;
 
 /// Default visibility.
 pub const STV_DEFAULT: u8 = 0;
+/// Symbol visibility: internal — not visible outside the component.
+pub const STV_INTERNAL: u8 = 1;
 /// Hidden visibility.
 pub const STV_HIDDEN: u8 = 2;
 /// Protected visibility.

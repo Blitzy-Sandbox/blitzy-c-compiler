@@ -36,21 +36,19 @@
 
 use std::collections::HashMap;
 
-use crate::codegen::{CodeGenError, MachineInstr, MachineOperand};
 use crate::codegen::regalloc::PhysReg;
-use crate::ir::{
-    BasicBlock, BlockId, Callee, CastOp, CompareOp, Constant, FloatCompareOp,
-    Function, Instruction, IrType, PhiNode, Terminator, Value,
-};
+use crate::codegen::{CodeGenError, MachineInstr, MachineOperand};
 use crate::driver::target::TargetConfig;
-
-use super::encoding::{
-    I686Opcode, phys_reg_to_encoding,
-    REG_EAX, REG_ECX, REG_EDX, REG_EBX, REG_ESP, REG_EBP, REG_ESI, REG_EDI,
-    CC_E, CC_NE, CC_B, CC_NB, CC_BE, CC_A, CC_L, CC_GE, CC_LE, CC_G,
-    CC_NP,
+use crate::ir::{
+    BasicBlock, BlockId, Callee, CastOp, CompareOp, Constant, FloatCompareOp, Function,
+    Instruction, IrType, PhiNode, Terminator, Value,
 };
+
 use super::abi;
+use super::encoding::{
+    phys_reg_to_encoding, I686Opcode, CC_A, CC_B, CC_BE, CC_E, CC_G, CC_GE, CC_L, CC_LE, CC_NB,
+    CC_NE, CC_NP, REG_EAX, REG_EBP, REG_EBX, REG_ECX, REG_EDI, REG_EDX, REG_ESI, REG_ESP,
+};
 
 // ===========================================================================
 // i686 Physical Register Constants
@@ -211,24 +209,18 @@ impl<'a> ISel<'a> {
 
     /// Get the machine operand for an IR value. Panics if the value is unmapped.
     fn operand_for(&self, val: Value) -> MachineOperand {
-        self.value_map
-            .get(&val)
-            .cloned()
-            .unwrap_or_else(|| {
-                // Fallback: treat the value as a virtual register derived from its ID.
-                MachineOperand::Register(PhysReg(val.0 as u16 + VREG_BASE))
-            })
+        self.value_map.get(&val).cloned().unwrap_or_else(|| {
+            // Fallback: treat the value as a virtual register derived from its ID.
+            MachineOperand::Register(PhysReg(val.0 as u16 + VREG_BASE))
+        })
     }
 
     /// Get the high-half operand for a 64-bit IR value.
     fn operand_hi_for(&self, val: Value) -> MachineOperand {
-        self.value_hi_map
-            .get(&val)
-            .cloned()
-            .unwrap_or_else(|| {
-                // Allocate a high-half register offset from the low half.
-                MachineOperand::Register(PhysReg(val.0 as u16 + VREG_BASE + 1000))
-            })
+        self.value_hi_map.get(&val).cloned().unwrap_or_else(|| {
+            // Allocate a high-half register offset from the low half.
+            MachineOperand::Register(PhysReg(val.0 as u16 + VREG_BASE + 1000))
+        })
     }
 
     /// Bind an IR value to a machine operand (low half for 64-bit).
@@ -270,7 +262,12 @@ impl<'a> ISel<'a> {
         }
 
         // Bind function parameters to stack locations (cdecl: all on stack).
-        let param_types: Vec<IrType> = self.function.params.iter().map(|(_, ty)| ty.clone()).collect();
+        let param_types: Vec<IrType> = self
+            .function
+            .params
+            .iter()
+            .map(|(_, ty)| ty.clone())
+            .collect();
         let arg_infos = abi::classify_arguments(&param_types, self.target);
         for (i, (_, param_ty)) in self.function.params.iter().enumerate() {
             if i < arg_infos.len() {
@@ -378,44 +375,109 @@ impl<'a> ISel<'a> {
 
         match instr {
             // === Arithmetic ===
-            Instruction::Add { result, lhs, rhs, ty } => {
+            Instruction::Add {
+                result,
+                lhs,
+                rhs,
+                ty,
+            } => {
                 self.select_binary_arith(*result, *lhs, *rhs, ty, I686Opcode::Add)?;
             }
-            Instruction::Sub { result, lhs, rhs, ty } => {
+            Instruction::Sub {
+                result,
+                lhs,
+                rhs,
+                ty,
+            } => {
                 self.select_binary_arith(*result, *lhs, *rhs, ty, I686Opcode::Sub)?;
             }
-            Instruction::Mul { result, lhs, rhs, ty } => {
+            Instruction::Mul {
+                result,
+                lhs,
+                rhs,
+                ty,
+            } => {
                 self.select_mul(*result, *lhs, *rhs, ty)?;
             }
-            Instruction::Div { result, lhs, rhs, ty, is_signed } => {
+            Instruction::Div {
+                result,
+                lhs,
+                rhs,
+                ty,
+                is_signed,
+            } => {
                 self.select_div_mod(*result, *lhs, *rhs, ty, *is_signed, true)?;
             }
-            Instruction::Mod { result, lhs, rhs, ty, is_signed } => {
+            Instruction::Mod {
+                result,
+                lhs,
+                rhs,
+                ty,
+                is_signed,
+            } => {
                 self.select_div_mod(*result, *lhs, *rhs, ty, *is_signed, false)?;
             }
 
             // === Bitwise ===
-            Instruction::And { result, lhs, rhs, ty } => {
+            Instruction::And {
+                result,
+                lhs,
+                rhs,
+                ty,
+            } => {
                 self.select_binary_arith(*result, *lhs, *rhs, ty, I686Opcode::And)?;
             }
-            Instruction::Or { result, lhs, rhs, ty } => {
+            Instruction::Or {
+                result,
+                lhs,
+                rhs,
+                ty,
+            } => {
                 self.select_binary_arith(*result, *lhs, *rhs, ty, I686Opcode::Or)?;
             }
-            Instruction::Xor { result, lhs, rhs, ty } => {
+            Instruction::Xor {
+                result,
+                lhs,
+                rhs,
+                ty,
+            } => {
                 self.select_binary_arith(*result, *lhs, *rhs, ty, I686Opcode::Xor)?;
             }
-            Instruction::Shl { result, lhs, rhs, ty } => {
+            Instruction::Shl {
+                result,
+                lhs,
+                rhs,
+                ty,
+            } => {
                 self.select_shift(*result, *lhs, *rhs, ty, false, false)?;
             }
-            Instruction::Shr { result, lhs, rhs, ty, is_arithmetic } => {
+            Instruction::Shr {
+                result,
+                lhs,
+                rhs,
+                ty,
+                is_arithmetic,
+            } => {
                 self.select_shift(*result, *lhs, *rhs, ty, true, *is_arithmetic)?;
             }
 
             // === Comparison ===
-            Instruction::ICmp { result, op, lhs, rhs, ty } => {
+            Instruction::ICmp {
+                result,
+                op,
+                lhs,
+                rhs,
+                ty,
+            } => {
                 self.select_icmp(*result, *op, *lhs, *rhs, ty)?;
             }
-            Instruction::FCmp { result, op, lhs, rhs, ty } => {
+            Instruction::FCmp {
+                result,
+                op,
+                lhs,
+                rhs,
+                ty,
+            } => {
                 self.select_fcmp(*result, *op, *lhs, *rhs, ty)?;
             }
 
@@ -429,36 +491,71 @@ impl<'a> ISel<'a> {
             Instruction::Store { value, ptr, .. } => {
                 self.select_store(*value, *ptr)?;
             }
-            Instruction::GetElementPtr { result, base_ty, ptr, indices, in_bounds: _ } => {
+            Instruction::GetElementPtr {
+                result,
+                base_ty,
+                ptr,
+                indices,
+                in_bounds: _,
+            } => {
                 self.select_gep(*result, base_ty, *ptr, indices)?;
             }
 
             // === Function call ===
-            Instruction::Call { result, callee, args, return_ty } => {
+            Instruction::Call {
+                result,
+                callee,
+                args,
+                return_ty,
+            } => {
                 self.select_call(result.as_ref(), callee, args, return_ty)?;
             }
 
             // === Type conversion ===
-            Instruction::Cast { result, op, value, from_ty, to_ty } => {
+            Instruction::Cast {
+                result,
+                op,
+                value,
+                from_ty,
+                to_ty,
+            } => {
                 self.select_cast(*result, *op, *value, from_ty, to_ty)?;
             }
-            Instruction::BitCast { result, value, from_ty: _, to_ty: _ } => {
+            Instruction::BitCast {
+                result,
+                value,
+                from_ty: _,
+                to_ty: _,
+            } => {
                 // Bitcast is a no-op reinterpretation — just alias the operand.
                 let src = self.operand_for(*value);
                 self.bind_value(*result, src);
             }
 
             // === Miscellaneous ===
-            Instruction::Const { result, value: constant } => {
+            Instruction::Const {
+                result,
+                value: constant,
+            } => {
                 self.select_const(*result, constant)?;
             }
             Instruction::Copy { result, source, ty } => {
                 self.select_copy(*result, *source, ty)?;
             }
-            Instruction::Select { result, condition, true_val, false_val, ty } => {
+            Instruction::Select {
+                result,
+                condition,
+                true_val,
+                false_val,
+                ty,
+            } => {
                 self.select_select(*result, *condition, *true_val, *false_val, ty)?;
             }
-            Instruction::Phi { result, ty, incoming: _ } => {
+            Instruction::Phi {
+                result,
+                ty,
+                incoming: _,
+            } => {
                 // Phi nodes are handled in select_block; if encountered here,
                 // just ensure the result is bound.
                 if !self.value_map.contains_key(result) {
@@ -503,16 +600,10 @@ impl<'a> ISel<'a> {
         let rhs_op = self.operand_for(rhs);
 
         // mov dst, lhs
-        self.emit_with(I686Opcode::Mov, vec![
-            MachineOperand::Register(dst),
-            lhs_op,
-        ]);
+        self.emit_with(I686Opcode::Mov, vec![MachineOperand::Register(dst), lhs_op]);
 
         // <opcode> dst, rhs
-        self.emit_with(opcode_32, vec![
-            MachineOperand::Register(dst),
-            rhs_op,
-        ]);
+        self.emit_with(opcode_32, vec![MachineOperand::Register(dst), rhs_op]);
 
         Ok(())
     }
@@ -536,32 +627,30 @@ impl<'a> ISel<'a> {
         let rhs_hi = self.operand_hi_for(rhs);
 
         // mov dst_lo, lhs_lo
-        self.emit_with(I686Opcode::Mov, vec![
-            MachineOperand::Register(dst_lo), lhs_lo,
-        ]);
+        self.emit_with(
+            I686Opcode::Mov,
+            vec![MachineOperand::Register(dst_lo), lhs_lo],
+        );
         // mov dst_hi, lhs_hi
-        self.emit_with(I686Opcode::Mov, vec![
-            MachineOperand::Register(dst_hi), lhs_hi,
-        ]);
+        self.emit_with(
+            I686Opcode::Mov,
+            vec![MachineOperand::Register(dst_hi), lhs_hi],
+        );
 
         // For add: add dst_lo, rhs_lo; adc dst_hi, rhs_hi
         // For sub: sub dst_lo, rhs_lo; sbb dst_hi, rhs_hi
         // For and/or/xor: same op on both halves
-        self.emit_with(opcode_32, vec![
-            MachineOperand::Register(dst_lo), rhs_lo,
-        ]);
+        self.emit_with(opcode_32, vec![MachineOperand::Register(dst_lo), rhs_lo]);
 
         // Determine the high-half opcode: ADC for add (carry propagation),
         // SBB for sub (borrow propagation), same op for bitwise (no carry needed).
         let hi_opcode = match opcode_32 {
             I686Opcode::Add => I686Opcode::Adc, // ADC propagates carry from low-half ADD
             I686Opcode::Sub => I686Opcode::Sbb, // SBB propagates borrow from low-half SUB
-            _ => opcode_32, // And, Or, Xor: same for both halves
+            _ => opcode_32,                     // And, Or, Xor: same for both halves
         };
 
-        self.emit_with(hi_opcode, vec![
-            MachineOperand::Register(dst_hi), rhs_hi,
-        ]);
+        self.emit_with(hi_opcode, vec![MachineOperand::Register(dst_hi), rhs_hi]);
 
         Ok(())
     }
@@ -592,22 +681,25 @@ impl<'a> ISel<'a> {
         let rhs_op = self.operand_for(rhs);
 
         // mov dst, lhs
-        self.emit_with(I686Opcode::Mov, vec![
-            MachineOperand::Register(dst), lhs_op.clone(),
-        ]);
+        self.emit_with(
+            I686Opcode::Mov,
+            vec![MachineOperand::Register(dst), lhs_op.clone()],
+        );
 
         // IMUL 2-operand form only supports r/m32 source.
         // For immediate source, use 3-operand form: imul dst, dst, imm
         match &rhs_op {
             MachineOperand::Immediate(_) => {
-                self.emit_with(I686Opcode::Imul, vec![
-                    MachineOperand::Register(dst), lhs_op, rhs_op,
-                ]);
+                self.emit_with(
+                    I686Opcode::Imul,
+                    vec![MachineOperand::Register(dst), lhs_op, rhs_op],
+                );
             }
             _ => {
-                self.emit_with(I686Opcode::Imul, vec![
-                    MachineOperand::Register(dst), rhs_op,
-                ]);
+                self.emit_with(
+                    I686Opcode::Imul,
+                    vec![MachineOperand::Register(dst), rhs_op],
+                );
             }
         }
 
@@ -618,12 +710,7 @@ impl<'a> ISel<'a> {
     /// result = lhs * rhs where both are 64-bit.
     /// result_lo = (lhs_lo * rhs_lo).lo
     /// result_hi = (lhs_lo * rhs_lo).hi + lhs_lo * rhs_hi + lhs_hi * rhs_lo
-    fn select_mul_64(
-        &mut self,
-        result: Value,
-        lhs: Value,
-        rhs: Value,
-    ) -> Result<(), CodeGenError> {
+    fn select_mul_64(&mut self, result: Value, lhs: Value, rhs: Value) -> Result<(), CodeGenError> {
         let dst_lo = self.bind_vreg(result);
         let dst_hi = self.alloc_vreg();
         self.bind_value_hi(result, MachineOperand::Register(dst_hi));
@@ -635,50 +722,67 @@ impl<'a> ISel<'a> {
 
         // Step 1: mul lhs_lo, rhs_lo -> edx:eax (full 64-bit product of low halves)
         // mov eax, lhs_lo
-        self.emit_with(I686Opcode::Mov, vec![
-            MachineOperand::Register(EAX), lhs_lo.clone(),
-        ]);
+        self.emit_with(
+            I686Opcode::Mov,
+            vec![MachineOperand::Register(EAX), lhs_lo.clone()],
+        );
         // mul rhs_lo -> edx:eax = lhs_lo * rhs_lo
         self.emit_with(I686Opcode::Mul, vec![rhs_lo.clone()]);
 
         // Save low result: mov dst_lo, eax
-        self.emit_with(I686Opcode::Mov, vec![
-            MachineOperand::Register(dst_lo),
-            MachineOperand::Register(EAX),
-        ]);
+        self.emit_with(
+            I686Opcode::Mov,
+            vec![
+                MachineOperand::Register(dst_lo),
+                MachineOperand::Register(EAX),
+            ],
+        );
         // Save high carry: mov dst_hi, edx
-        self.emit_with(I686Opcode::Mov, vec![
-            MachineOperand::Register(dst_hi),
-            MachineOperand::Register(EDX),
-        ]);
+        self.emit_with(
+            I686Opcode::Mov,
+            vec![
+                MachineOperand::Register(dst_hi),
+                MachineOperand::Register(EDX),
+            ],
+        );
 
         // Step 2: lhs_lo * rhs_hi (only low 32 bits matter)
         let tmp1 = self.alloc_vreg();
-        self.emit_with(I686Opcode::Mov, vec![
-            MachineOperand::Register(tmp1), lhs_lo,
-        ]);
-        self.emit_with(I686Opcode::Imul, vec![
-            MachineOperand::Register(tmp1), rhs_hi,
-        ]);
+        self.emit_with(
+            I686Opcode::Mov,
+            vec![MachineOperand::Register(tmp1), lhs_lo],
+        );
+        self.emit_with(
+            I686Opcode::Imul,
+            vec![MachineOperand::Register(tmp1), rhs_hi],
+        );
         // Add to dst_hi
-        self.emit_with(I686Opcode::Add, vec![
-            MachineOperand::Register(dst_hi),
-            MachineOperand::Register(tmp1),
-        ]);
+        self.emit_with(
+            I686Opcode::Add,
+            vec![
+                MachineOperand::Register(dst_hi),
+                MachineOperand::Register(tmp1),
+            ],
+        );
 
         // Step 3: lhs_hi * rhs_lo (only low 32 bits matter)
         let tmp2 = self.alloc_vreg();
-        self.emit_with(I686Opcode::Mov, vec![
-            MachineOperand::Register(tmp2), lhs_hi,
-        ]);
-        self.emit_with(I686Opcode::Imul, vec![
-            MachineOperand::Register(tmp2), rhs_lo,
-        ]);
+        self.emit_with(
+            I686Opcode::Mov,
+            vec![MachineOperand::Register(tmp2), lhs_hi],
+        );
+        self.emit_with(
+            I686Opcode::Imul,
+            vec![MachineOperand::Register(tmp2), rhs_lo],
+        );
         // Add to dst_hi
-        self.emit_with(I686Opcode::Add, vec![
-            MachineOperand::Register(dst_hi),
-            MachineOperand::Register(tmp2),
-        ]);
+        self.emit_with(
+            I686Opcode::Add,
+            vec![
+                MachineOperand::Register(dst_hi),
+                MachineOperand::Register(tmp2),
+            ],
+        );
 
         Ok(())
     }
@@ -699,7 +803,11 @@ impl<'a> ISel<'a> {
         is_quotient: bool,
     ) -> Result<(), CodeGenError> {
         if Self::is_float(ty) {
-            let float_op = if is_quotient { I686Opcode::Imul } else { I686Opcode::Imul };
+            let float_op = if is_quotient {
+                I686Opcode::Imul
+            } else {
+                I686Opcode::Imul
+            };
             return self.select_float_binop(result, lhs, rhs, ty, float_op);
         }
 
@@ -712,9 +820,7 @@ impl<'a> ISel<'a> {
         let rhs_op = self.operand_for(rhs);
 
         // Move dividend to eax
-        self.emit_with(I686Opcode::Mov, vec![
-            MachineOperand::Register(EAX), lhs_op,
-        ]);
+        self.emit_with(I686Opcode::Mov, vec![MachineOperand::Register(EAX), lhs_op]);
 
         if is_signed {
             // Sign-extend eax into edx:eax via cdq
@@ -723,10 +829,10 @@ impl<'a> ISel<'a> {
             self.emit_with(I686Opcode::Idiv, vec![rhs_op]);
         } else {
             // Zero-extend: xor edx, edx
-            self.emit_with(I686Opcode::Xor, vec![
-                MachineOperand::Register(EDX),
-                MachineOperand::Register(EDX),
-            ]);
+            self.emit_with(
+                I686Opcode::Xor,
+                vec![MachineOperand::Register(EDX), MachineOperand::Register(EDX)],
+            );
             // div divisor
             self.emit_with(I686Opcode::Div, vec![rhs_op]);
         }
@@ -734,10 +840,13 @@ impl<'a> ISel<'a> {
         // Result: quotient in eax, remainder in edx
         let dst = self.bind_vreg(result);
         let source_reg = if is_quotient { EAX } else { EDX };
-        self.emit_with(I686Opcode::Mov, vec![
-            MachineOperand::Register(dst),
-            MachineOperand::Register(source_reg),
-        ]);
+        self.emit_with(
+            I686Opcode::Mov,
+            vec![
+                MachineOperand::Register(dst),
+                MachineOperand::Register(source_reg),
+            ],
+        );
 
         Ok(())
     }
@@ -776,29 +885,36 @@ impl<'a> ISel<'a> {
         self.emit_with(I686Opcode::Push, vec![lhs_lo]);
 
         // Call helper
-        self.emit_with(I686Opcode::Call, vec![
-            MachineOperand::Symbol(helper_name.to_string()),
-        ]);
+        self.emit_with(
+            I686Opcode::Call,
+            vec![MachineOperand::Symbol(helper_name.to_string())],
+        );
 
         // Cleanup: add esp, 16
-        self.emit_with(I686Opcode::Add, vec![
-            MachineOperand::Register(ESP),
-            MachineOperand::Immediate(16),
-        ]);
+        self.emit_with(
+            I686Opcode::Add,
+            vec![MachineOperand::Register(ESP), MachineOperand::Immediate(16)],
+        );
 
         // Result in eax:edx
         let dst_lo = self.bind_vreg(result);
         let dst_hi = self.alloc_vreg();
         self.bind_value_hi(result, MachineOperand::Register(dst_hi));
 
-        self.emit_with(I686Opcode::Mov, vec![
-            MachineOperand::Register(dst_lo),
-            MachineOperand::Register(EAX),
-        ]);
-        self.emit_with(I686Opcode::Mov, vec![
-            MachineOperand::Register(dst_hi),
-            MachineOperand::Register(EDX),
-        ]);
+        self.emit_with(
+            I686Opcode::Mov,
+            vec![
+                MachineOperand::Register(dst_lo),
+                MachineOperand::Register(EAX),
+            ],
+        );
+        self.emit_with(
+            I686Opcode::Mov,
+            vec![
+                MachineOperand::Register(dst_hi),
+                MachineOperand::Register(EDX),
+            ],
+        );
 
         Ok(())
     }
@@ -826,14 +942,10 @@ impl<'a> ISel<'a> {
         let rhs_op = self.operand_for(rhs);
 
         // mov dst, lhs
-        self.emit_with(I686Opcode::Mov, vec![
-            MachineOperand::Register(dst), lhs_op,
-        ]);
+        self.emit_with(I686Opcode::Mov, vec![MachineOperand::Register(dst), lhs_op]);
 
         // Move shift count to ecx (shift count must be in cl on x86)
-        self.emit_with(I686Opcode::Mov, vec![
-            MachineOperand::Register(ECX), rhs_op,
-        ]);
+        self.emit_with(I686Opcode::Mov, vec![MachineOperand::Register(ECX), rhs_op]);
 
         let shift_opcode = if !is_right {
             I686Opcode::Shl
@@ -844,10 +956,10 @@ impl<'a> ISel<'a> {
         };
 
         // <shift> dst, cl
-        self.emit_with(shift_opcode, vec![
-            MachineOperand::Register(dst),
-            MachineOperand::Register(ECX),
-        ]);
+        self.emit_with(
+            shift_opcode,
+            vec![MachineOperand::Register(dst), MachineOperand::Register(ECX)],
+        );
 
         Ok(())
     }
@@ -870,49 +982,61 @@ impl<'a> ISel<'a> {
         let rhs_op = self.operand_for(rhs);
 
         // mov dst_lo, lhs_lo; mov dst_hi, lhs_hi
-        self.emit_with(I686Opcode::Mov, vec![
-            MachineOperand::Register(dst_lo), lhs_lo,
-        ]);
-        self.emit_with(I686Opcode::Mov, vec![
-            MachineOperand::Register(dst_hi), lhs_hi,
-        ]);
+        self.emit_with(
+            I686Opcode::Mov,
+            vec![MachineOperand::Register(dst_lo), lhs_lo],
+        );
+        self.emit_with(
+            I686Opcode::Mov,
+            vec![MachineOperand::Register(dst_hi), lhs_hi],
+        );
 
         // Move shift count to ecx
-        self.emit_with(I686Opcode::Mov, vec![
-            MachineOperand::Register(ECX), rhs_op,
-        ]);
+        self.emit_with(I686Opcode::Mov, vec![MachineOperand::Register(ECX), rhs_op]);
 
         if !is_right {
             // Left shift 64-bit:
             // shld dst_hi, dst_lo, cl  (shift high, filling from low)
             // shl dst_lo, cl           (shift low)
-            self.emit_with(I686Opcode::Shld, vec![
-                MachineOperand::Register(dst_hi),
-                MachineOperand::Register(dst_lo),
-                MachineOperand::Register(ECX),
-            ]);
-            self.emit_with(I686Opcode::Shl, vec![
-                MachineOperand::Register(dst_lo),
-                MachineOperand::Register(ECX),
-            ]);
+            self.emit_with(
+                I686Opcode::Shld,
+                vec![
+                    MachineOperand::Register(dst_hi),
+                    MachineOperand::Register(dst_lo),
+                    MachineOperand::Register(ECX),
+                ],
+            );
+            self.emit_with(
+                I686Opcode::Shl,
+                vec![
+                    MachineOperand::Register(dst_lo),
+                    MachineOperand::Register(ECX),
+                ],
+            );
         } else {
             // Right shift 64-bit:
             // shrd dst_lo, dst_hi, cl
             // sar/shr dst_hi, cl
-            self.emit_with(I686Opcode::Shrd, vec![
-                MachineOperand::Register(dst_lo),
-                MachineOperand::Register(dst_hi),
-                MachineOperand::Register(ECX),
-            ]);
+            self.emit_with(
+                I686Opcode::Shrd,
+                vec![
+                    MachineOperand::Register(dst_lo),
+                    MachineOperand::Register(dst_hi),
+                    MachineOperand::Register(ECX),
+                ],
+            );
             let hi_shift = if is_arithmetic {
                 I686Opcode::Sar
             } else {
                 I686Opcode::Shr
             };
-            self.emit_with(hi_shift, vec![
-                MachineOperand::Register(dst_hi),
-                MachineOperand::Register(ECX),
-            ]);
+            self.emit_with(
+                hi_shift,
+                vec![
+                    MachineOperand::Register(dst_hi),
+                    MachineOperand::Register(ECX),
+                ],
+            );
         }
 
         Ok(())
@@ -946,10 +1070,13 @@ impl<'a> ISel<'a> {
 
         // setcc result_reg
         let dst = self.bind_vreg(result);
-        self.emit_with(I686Opcode::Setcc, vec![
-            MachineOperand::Immediate(cc as i64),
-            MachineOperand::Register(dst),
-        ]);
+        self.emit_with(
+            I686Opcode::Setcc,
+            vec![
+                MachineOperand::Immediate(cc as i64),
+                MachineOperand::Register(dst),
+            ],
+        );
 
         Ok(())
     }
@@ -988,78 +1115,105 @@ impl<'a> ISel<'a> {
                 // cmp lo_lhs, lo_rhs; setne dst;
                 // or dst, tmp; (for NotEqual) or: and + sete (for Equal)
                 let tmp = self.alloc_vreg();
-                self.emit_with(I686Opcode::Setcc, vec![
-                    MachineOperand::Immediate(CC_NE as i64),
-                    MachineOperand::Register(tmp),
-                ]);
+                self.emit_with(
+                    I686Opcode::Setcc,
+                    vec![
+                        MachineOperand::Immediate(CC_NE as i64),
+                        MachineOperand::Register(tmp),
+                    ],
+                );
                 self.emit_with(I686Opcode::Cmp, vec![lhs_lo, rhs_lo]);
-                self.emit_with(I686Opcode::Setcc, vec![
-                    MachineOperand::Immediate(CC_NE as i64),
-                    MachineOperand::Register(dst),
-                ]);
-                self.emit_with(I686Opcode::Or, vec![
-                    MachineOperand::Register(dst),
-                    MachineOperand::Register(tmp),
-                ]);
+                self.emit_with(
+                    I686Opcode::Setcc,
+                    vec![
+                        MachineOperand::Immediate(CC_NE as i64),
+                        MachineOperand::Register(dst),
+                    ],
+                );
+                self.emit_with(
+                    I686Opcode::Or,
+                    vec![MachineOperand::Register(dst), MachineOperand::Register(tmp)],
+                );
                 if cmp_op == CompareOp::Equal {
                     // Invert: xor dst, 1
-                    self.emit_with(I686Opcode::Xor, vec![
-                        MachineOperand::Register(dst),
-                        MachineOperand::Immediate(1),
-                    ]);
+                    self.emit_with(
+                        I686Opcode::Xor,
+                        vec![MachineOperand::Register(dst), MachineOperand::Immediate(1)],
+                    );
                 }
             }
             _ => {
                 // Ordering comparison: use high comparison, fallthrough to low if equal.
                 // setcc(cc) on high comparison
-                self.emit_with(I686Opcode::Setcc, vec![
-                    MachineOperand::Immediate(cc as i64),
-                    MachineOperand::Register(dst),
-                ]);
+                self.emit_with(
+                    I686Opcode::Setcc,
+                    vec![
+                        MachineOperand::Immediate(cc as i64),
+                        MachineOperand::Register(dst),
+                    ],
+                );
                 // When high halves are equal, use low comparison with unsigned variant.
                 let lo_cc = compare_op_to_unsigned_cc(cmp_op);
                 let tmp = self.alloc_vreg();
                 self.emit_with(I686Opcode::Cmp, vec![lhs_lo.clone(), rhs_lo.clone()]);
-                self.emit_with(I686Opcode::Setcc, vec![
-                    MachineOperand::Immediate(lo_cc as i64),
-                    MachineOperand::Register(tmp),
-                ]);
+                self.emit_with(
+                    I686Opcode::Setcc,
+                    vec![
+                        MachineOperand::Immediate(lo_cc as i64),
+                        MachineOperand::Register(tmp),
+                    ],
+                );
                 // Combine: if high equal, use low result; else use high result.
                 // test high_eq
                 let eq_tmp = self.alloc_vreg();
-                self.emit_with(I686Opcode::Cmp, vec![
-                    self.operand_hi_for(lhs),
-                    self.operand_hi_for(rhs),
-                ]);
-                self.emit_with(I686Opcode::Setcc, vec![
-                    MachineOperand::Immediate(CC_E as i64),
-                    MachineOperand::Register(eq_tmp),
-                ]);
+                self.emit_with(
+                    I686Opcode::Cmp,
+                    vec![self.operand_hi_for(lhs), self.operand_hi_for(rhs)],
+                );
+                self.emit_with(
+                    I686Opcode::Setcc,
+                    vec![
+                        MachineOperand::Immediate(CC_E as i64),
+                        MachineOperand::Register(eq_tmp),
+                    ],
+                );
                 // Conditional move pattern: dst = eq_tmp ? tmp : dst
                 // On i686, we use: and tmp, eq_tmp; and dst, ~eq_tmp; or dst, tmp
                 // Simplified: test eq_tmp; cmovne dst, tmp (but cmov may not be available)
                 // Use arithmetic instead:
-                self.emit_with(I686Opcode::And, vec![
-                    MachineOperand::Register(tmp),
-                    MachineOperand::Register(eq_tmp),
-                ]);
+                self.emit_with(
+                    I686Opcode::And,
+                    vec![
+                        MachineOperand::Register(tmp),
+                        MachineOperand::Register(eq_tmp),
+                    ],
+                );
                 let neg_eq = self.alloc_vreg();
-                self.emit_with(I686Opcode::Mov, vec![
-                    MachineOperand::Register(neg_eq),
-                    MachineOperand::Register(eq_tmp),
-                ]);
-                self.emit_with(I686Opcode::Xor, vec![
-                    MachineOperand::Register(neg_eq),
-                    MachineOperand::Immediate(1),
-                ]);
-                self.emit_with(I686Opcode::And, vec![
-                    MachineOperand::Register(dst),
-                    MachineOperand::Register(neg_eq),
-                ]);
-                self.emit_with(I686Opcode::Or, vec![
-                    MachineOperand::Register(dst),
-                    MachineOperand::Register(tmp),
-                ]);
+                self.emit_with(
+                    I686Opcode::Mov,
+                    vec![
+                        MachineOperand::Register(neg_eq),
+                        MachineOperand::Register(eq_tmp),
+                    ],
+                );
+                self.emit_with(
+                    I686Opcode::Xor,
+                    vec![
+                        MachineOperand::Register(neg_eq),
+                        MachineOperand::Immediate(1),
+                    ],
+                );
+                self.emit_with(
+                    I686Opcode::And,
+                    vec![
+                        MachineOperand::Register(dst),
+                        MachineOperand::Register(neg_eq),
+                    ],
+                );
+                self.emit_with(
+                    I686Opcode::Or,
+                    vec![MachineOperand::Register(dst), MachineOperand::Register(tmp)],
+                );
             }
         }
 
@@ -1086,9 +1240,12 @@ impl<'a> ISel<'a> {
         let cmp_opcode = match ty {
             IrType::F32 => I686Opcode::Ucomiss,
             IrType::F64 => I686Opcode::Ucomisd,
-            _ => return Err(CodeGenError::UnsupportedInstruction(
-                format!("fcmp on non-float type {:?}", ty),
-            )),
+            _ => {
+                return Err(CodeGenError::UnsupportedInstruction(format!(
+                    "fcmp on non-float type {:?}",
+                    ty
+                )))
+            }
         };
         self.emit_with(cmp_opcode, vec![lhs_op, rhs_op]);
 
@@ -1107,25 +1264,37 @@ impl<'a> ISel<'a> {
             | FloatCompareOp::OrderedNotEqual => {
                 // Ordered: result = !NaN && cc
                 let np_tmp = self.alloc_vreg();
-                self.emit_with(I686Opcode::Setcc, vec![
-                    MachineOperand::Immediate(CC_NP as i64),
-                    MachineOperand::Register(np_tmp),
-                ]);
-                self.emit_with(I686Opcode::Setcc, vec![
-                    MachineOperand::Immediate(cc as i64),
-                    MachineOperand::Register(dst),
-                ]);
-                self.emit_with(I686Opcode::And, vec![
-                    MachineOperand::Register(dst),
-                    MachineOperand::Register(np_tmp),
-                ]);
+                self.emit_with(
+                    I686Opcode::Setcc,
+                    vec![
+                        MachineOperand::Immediate(CC_NP as i64),
+                        MachineOperand::Register(np_tmp),
+                    ],
+                );
+                self.emit_with(
+                    I686Opcode::Setcc,
+                    vec![
+                        MachineOperand::Immediate(cc as i64),
+                        MachineOperand::Register(dst),
+                    ],
+                );
+                self.emit_with(
+                    I686Opcode::And,
+                    vec![
+                        MachineOperand::Register(dst),
+                        MachineOperand::Register(np_tmp),
+                    ],
+                );
             }
             _ => {
                 // Unordered: just use setcc
-                self.emit_with(I686Opcode::Setcc, vec![
-                    MachineOperand::Immediate(cc as i64),
-                    MachineOperand::Register(dst),
-                ]);
+                self.emit_with(
+                    I686Opcode::Setcc,
+                    vec![
+                        MachineOperand::Immediate(cc as i64),
+                        MachineOperand::Register(dst),
+                    ],
+                );
             }
         }
 
@@ -1150,21 +1319,22 @@ impl<'a> ISel<'a> {
 
         // Emit a LEA to compute the address of the stack slot.
         // The actual offset will be patched during frame layout.
-        self.emit_with(I686Opcode::Lea, vec![
-            MachineOperand::Register(dst),
-            MachineOperand::Memory { base: EBP, offset: -(size.max(4)) },
-        ]);
+        self.emit_with(
+            I686Opcode::Lea,
+            vec![
+                MachineOperand::Register(dst),
+                MachineOperand::Memory {
+                    base: EBP,
+                    offset: -(size.max(4)),
+                },
+            ],
+        );
 
         Ok(())
     }
 
     /// Select a load instruction.
-    fn select_load(
-        &mut self,
-        result: Value,
-        ty: &IrType,
-        ptr: Value,
-    ) -> Result<(), CodeGenError> {
+    fn select_load(&mut self, result: Value, ty: &IrType, ptr: Value) -> Result<(), CodeGenError> {
         let ptr_op = self.operand_for(ptr);
 
         if Self::is_float(ty) {
@@ -1175,9 +1345,7 @@ impl<'a> ISel<'a> {
                 _ => unreachable!(),
             };
             let mem = ptr_to_mem(ptr_op);
-            self.emit_with(load_op, vec![
-                MachineOperand::Register(dst), mem,
-            ]);
+            self.emit_with(load_op, vec![MachineOperand::Register(dst), mem]);
             return Ok(());
         }
 
@@ -1190,12 +1358,14 @@ impl<'a> ISel<'a> {
             let mem_lo = ptr_to_mem(ptr_op.clone());
             let mem_hi = offset_mem(ptr_op, 4);
 
-            self.emit_with(I686Opcode::Mov, vec![
-                MachineOperand::Register(dst_lo), mem_lo,
-            ]);
-            self.emit_with(I686Opcode::Mov, vec![
-                MachineOperand::Register(dst_hi), mem_hi,
-            ]);
+            self.emit_with(
+                I686Opcode::Mov,
+                vec![MachineOperand::Register(dst_lo), mem_lo],
+            );
+            self.emit_with(
+                I686Opcode::Mov,
+                vec![MachineOperand::Register(dst_hi), mem_hi],
+            );
             return Ok(());
         }
 
@@ -1205,20 +1375,17 @@ impl<'a> ISel<'a> {
         match ty {
             IrType::I8 | IrType::I1 => {
                 // movzx for unsigned byte load
-                self.emit_with(I686Opcode::Movzx8, vec![
-                    MachineOperand::Register(dst), mem,
-                ]);
+                self.emit_with(I686Opcode::Movzx8, vec![MachineOperand::Register(dst), mem]);
             }
             IrType::I16 => {
-                self.emit_with(I686Opcode::Movzx16, vec![
-                    MachineOperand::Register(dst), mem,
-                ]);
+                self.emit_with(
+                    I686Opcode::Movzx16,
+                    vec![MachineOperand::Register(dst), mem],
+                );
             }
             _ => {
                 // 32-bit or pointer load
-                self.emit_with(I686Opcode::Mov, vec![
-                    MachineOperand::Register(dst), mem,
-                ]);
+                self.emit_with(I686Opcode::Mov, vec![MachineOperand::Register(dst), mem]);
             }
         }
 
@@ -1226,11 +1393,7 @@ impl<'a> ISel<'a> {
     }
 
     /// Select a store instruction.
-    fn select_store(
-        &mut self,
-        value: Value,
-        ptr: Value,
-    ) -> Result<(), CodeGenError> {
+    fn select_store(&mut self, value: Value, ptr: Value) -> Result<(), CodeGenError> {
         let val_op = self.operand_for(value);
         let ptr_op = self.operand_for(ptr);
 
@@ -1245,8 +1408,14 @@ impl<'a> ISel<'a> {
                 let tmp = self.alloc_vreg();
                 self.emit_with(I686Opcode::Mov, vec![MachineOperand::Register(tmp), val_op]);
                 let tmp2 = self.alloc_vreg();
-                self.emit_with(I686Opcode::Mov, vec![MachineOperand::Register(tmp2), val_hi]);
-                (MachineOperand::Register(tmp), MachineOperand::Register(tmp2))
+                self.emit_with(
+                    I686Opcode::Mov,
+                    vec![MachineOperand::Register(tmp2), val_hi],
+                );
+                (
+                    MachineOperand::Register(tmp),
+                    MachineOperand::Register(tmp2),
+                )
             } else {
                 (val_op, val_hi)
             };
@@ -1254,7 +1423,9 @@ impl<'a> ISel<'a> {
             self.emit_with(I686Opcode::Mov, vec![mem_hi, hi_op]);
         } else {
             // Prevent mem-to-mem MOV: if val_op is Memory, load to temp first.
-            let src_op = if matches!(val_op, MachineOperand::Memory { .. }) && matches!(mem, MachineOperand::Memory { .. }) {
+            let src_op = if matches!(val_op, MachineOperand::Memory { .. })
+                && matches!(mem, MachineOperand::Memory { .. })
+            {
                 let tmp = self.alloc_vreg();
                 self.emit_with(I686Opcode::Mov, vec![MachineOperand::Register(tmp), val_op]);
                 MachineOperand::Register(tmp)
@@ -1279,9 +1450,7 @@ impl<'a> ISel<'a> {
         let ptr_op = self.operand_for(ptr);
 
         // Start with the base pointer.
-        self.emit_with(I686Opcode::Mov, vec![
-            MachineOperand::Register(dst), ptr_op,
-        ]);
+        self.emit_with(I686Opcode::Mov, vec![MachineOperand::Register(dst), ptr_op]);
 
         // Compute the element size.
         let elem_size = base_ty.size(self.target) as i32;
@@ -1293,10 +1462,13 @@ impl<'a> ISel<'a> {
                 MachineOperand::Immediate(imm) => {
                     let offset = imm as i32 * elem_size;
                     if offset != 0 {
-                        self.emit_with(I686Opcode::Add, vec![
-                            MachineOperand::Register(dst),
-                            MachineOperand::Immediate(offset as i64),
-                        ]);
+                        self.emit_with(
+                            I686Opcode::Add,
+                            vec![
+                                MachineOperand::Register(dst),
+                                MachineOperand::Immediate(offset as i64),
+                            ],
+                        );
                     }
                 }
                 _ => {
@@ -1304,42 +1476,53 @@ impl<'a> ISel<'a> {
                     if elem_size == 1 || elem_size == 2 || elem_size == 4 || elem_size == 8 {
                         // Can use LEA with scale factor.
                         let scale = match elem_size {
-                            1 => 0, 2 => 1, 4 => 2, 8 => 3,
+                            1 => 0,
+                            2 => 1,
+                            4 => 2,
+                            8 => 3,
                             _ => unreachable!(),
                         };
                         let _ = scale; // Used conceptually; LEA encoding handled by encoder
-                        // For now, multiply and add.
+                                       // For now, multiply and add.
                         let tmp = self.alloc_vreg();
-                        self.emit_with(I686Opcode::Mov, vec![
-                            MachineOperand::Register(tmp), idx_op,
-                        ]);
+                        self.emit_with(
+                            I686Opcode::Mov,
+                            vec![MachineOperand::Register(tmp), idx_op],
+                        );
                         if elem_size > 1 {
                             // 3-operand IMUL: imul tmp, tmp, elem_size
-                            self.emit_with(I686Opcode::Imul, vec![
+                            self.emit_with(
+                                I686Opcode::Imul,
+                                vec![
+                                    MachineOperand::Register(tmp),
+                                    MachineOperand::Register(tmp),
+                                    MachineOperand::Immediate(elem_size as i64),
+                                ],
+                            );
+                        }
+                        self.emit_with(
+                            I686Opcode::Add,
+                            vec![MachineOperand::Register(dst), MachineOperand::Register(tmp)],
+                        );
+                    } else {
+                        let tmp = self.alloc_vreg();
+                        self.emit_with(
+                            I686Opcode::Mov,
+                            vec![MachineOperand::Register(tmp), idx_op],
+                        );
+                        // 3-operand IMUL: imul tmp, tmp, elem_size
+                        self.emit_with(
+                            I686Opcode::Imul,
+                            vec![
                                 MachineOperand::Register(tmp),
                                 MachineOperand::Register(tmp),
                                 MachineOperand::Immediate(elem_size as i64),
-                            ]);
-                        }
-                        self.emit_with(I686Opcode::Add, vec![
-                            MachineOperand::Register(dst),
-                            MachineOperand::Register(tmp),
-                        ]);
-                    } else {
-                        let tmp = self.alloc_vreg();
-                        self.emit_with(I686Opcode::Mov, vec![
-                            MachineOperand::Register(tmp), idx_op,
-                        ]);
-                        // 3-operand IMUL: imul tmp, tmp, elem_size
-                        self.emit_with(I686Opcode::Imul, vec![
-                            MachineOperand::Register(tmp),
-                            MachineOperand::Register(tmp),
-                            MachineOperand::Immediate(elem_size as i64),
-                        ]);
-                        self.emit_with(I686Opcode::Add, vec![
-                            MachineOperand::Register(dst),
-                            MachineOperand::Register(tmp),
-                        ]);
+                            ],
+                        );
+                        self.emit_with(
+                            I686Opcode::Add,
+                            vec![MachineOperand::Register(dst), MachineOperand::Register(tmp)],
+                        );
                     }
                 }
             }
@@ -1366,9 +1549,10 @@ impl<'a> ISel<'a> {
         // Collect argument types for call setup. Use the type_map to recover
         // the actual IR type of each argument so that 64-bit (long long, double)
         // values are correctly allocated two stack slots on i686 cdecl.
-        let arg_types: Vec<IrType> = args.iter().map(|v| {
-            self.type_map.get(v).cloned().unwrap_or(IrType::I32)
-        }).collect();
+        let arg_types: Vec<IrType> = args
+            .iter()
+            .map(|v| self.type_map.get(v).cloned().unwrap_or(IrType::I32))
+            .collect();
         let call_setup = abi::setup_call_arguments(args, &arg_types, self.target);
 
         // We emit our own push sequence using our value_map rather than
@@ -1379,10 +1563,13 @@ impl<'a> ISel<'a> {
 
         // Emit alignment padding if needed.
         if call_setup.alignment_padding > 0 {
-            self.emit_with(I686Opcode::Sub, vec![
-                MachineOperand::Register(ESP),
-                MachineOperand::Immediate(call_setup.alignment_padding as i64),
-            ]);
+            self.emit_with(
+                I686Opcode::Sub,
+                vec![
+                    MachineOperand::Register(ESP),
+                    MachineOperand::Immediate(call_setup.alignment_padding as i64),
+                ],
+            );
         }
 
         // Push args right-to-left (cdecl convention).
@@ -1394,9 +1581,7 @@ impl<'a> ISel<'a> {
         // Emit the call instruction.
         match callee {
             Callee::Direct(name) => {
-                self.emit_with(I686Opcode::Call, vec![
-                    MachineOperand::Symbol(name.clone()),
-                ]);
+                self.emit_with(I686Opcode::Call, vec![MachineOperand::Symbol(name.clone())]);
             }
             Callee::Indirect(ptr_val) => {
                 let ptr_op = self.operand_for(*ptr_val);
@@ -1406,10 +1591,13 @@ impl<'a> ISel<'a> {
 
         // Caller cleanup: add esp, total_push_size
         if total_push_size > 0 {
-            self.emit_with(I686Opcode::Add, vec![
-                MachineOperand::Register(ESP),
-                MachineOperand::Immediate(total_push_size as i64),
-            ]);
+            self.emit_with(
+                I686Opcode::Add,
+                vec![
+                    MachineOperand::Register(ESP),
+                    MachineOperand::Immediate(total_push_size as i64),
+                ],
+            );
         }
 
         // Handle return value.
@@ -1417,30 +1605,39 @@ impl<'a> ISel<'a> {
             match ret_info.location {
                 abi::ReturnLocation::Eax => {
                     let dst = self.bind_vreg(*res);
-                    self.emit_with(I686Opcode::Mov, vec![
-                        MachineOperand::Register(dst),
-                        MachineOperand::Register(EAX),
-                    ]);
+                    self.emit_with(
+                        I686Opcode::Mov,
+                        vec![MachineOperand::Register(dst), MachineOperand::Register(EAX)],
+                    );
                 }
                 abi::ReturnLocation::EaxEdx => {
                     let dst_lo = self.bind_vreg(*res);
                     let dst_hi = self.alloc_vreg();
                     self.bind_value_hi(*res, MachineOperand::Register(dst_hi));
-                    self.emit_with(I686Opcode::Mov, vec![
-                        MachineOperand::Register(dst_lo),
-                        MachineOperand::Register(EAX),
-                    ]);
-                    self.emit_with(I686Opcode::Mov, vec![
-                        MachineOperand::Register(dst_hi),
-                        MachineOperand::Register(EDX),
-                    ]);
+                    self.emit_with(
+                        I686Opcode::Mov,
+                        vec![
+                            MachineOperand::Register(dst_lo),
+                            MachineOperand::Register(EAX),
+                        ],
+                    );
+                    self.emit_with(
+                        I686Opcode::Mov,
+                        vec![
+                            MachineOperand::Register(dst_hi),
+                            MachineOperand::Register(EDX),
+                        ],
+                    );
                 }
                 abi::ReturnLocation::Xmm0 | abi::ReturnLocation::St0 => {
                     let dst = self.bind_vreg(*res);
-                    self.emit_with(I686Opcode::Movss, vec![
-                        MachineOperand::Register(dst),
-                        MachineOperand::Register(XMM0),
-                    ]);
+                    self.emit_with(
+                        I686Opcode::Movss,
+                        vec![
+                            MachineOperand::Register(dst),
+                            MachineOperand::Register(XMM0),
+                        ],
+                    );
                 }
                 abi::ReturnLocation::Memory | abi::ReturnLocation::Void => {
                     // No register return or void — bind to a dummy register.
@@ -1481,13 +1678,14 @@ impl<'a> ISel<'a> {
                 let conv_op = match to_ty {
                     IrType::F32 => I686Opcode::Cvtsi2ss,
                     IrType::F64 => I686Opcode::Cvtsi2sd,
-                    _ => return Err(CodeGenError::UnsupportedInstruction(
-                        format!("SIToFP to {:?}", to_ty),
-                    )),
+                    _ => {
+                        return Err(CodeGenError::UnsupportedInstruction(format!(
+                            "SIToFP to {:?}",
+                            to_ty
+                        )))
+                    }
                 };
-                self.emit_with(conv_op, vec![
-                    MachineOperand::Register(dst), src_op,
-                ]);
+                self.emit_with(conv_op, vec![MachineOperand::Register(dst), src_op]);
             }
             CastOp::UIToFP => {
                 // Unsigned int to float: convert via signed path for values < 2^31,
@@ -1497,13 +1695,14 @@ impl<'a> ISel<'a> {
                 let conv_op = match to_ty {
                     IrType::F32 => I686Opcode::Cvtsi2ss,
                     IrType::F64 => I686Opcode::Cvtsi2sd,
-                    _ => return Err(CodeGenError::UnsupportedInstruction(
-                        format!("UIToFP to {:?}", to_ty),
-                    )),
+                    _ => {
+                        return Err(CodeGenError::UnsupportedInstruction(format!(
+                            "UIToFP to {:?}",
+                            to_ty
+                        )))
+                    }
                 };
-                self.emit_with(conv_op, vec![
-                    MachineOperand::Register(dst), src_op,
-                ]);
+                self.emit_with(conv_op, vec![MachineOperand::Register(dst), src_op]);
             }
             CastOp::FPToSI => {
                 let dst = self.bind_vreg(result);
@@ -1511,13 +1710,14 @@ impl<'a> ISel<'a> {
                 let conv_op = match from_ty {
                     IrType::F32 => I686Opcode::Cvttss2si,
                     IrType::F64 => I686Opcode::Cvttsd2si,
-                    _ => return Err(CodeGenError::UnsupportedInstruction(
-                        format!("FPToSI from {:?}", from_ty),
-                    )),
+                    _ => {
+                        return Err(CodeGenError::UnsupportedInstruction(format!(
+                            "FPToSI from {:?}",
+                            from_ty
+                        )))
+                    }
                 };
-                self.emit_with(conv_op, vec![
-                    MachineOperand::Register(dst), src_op,
-                ]);
+                self.emit_with(conv_op, vec![MachineOperand::Register(dst), src_op]);
             }
             CastOp::FPToUI => {
                 // Truncating float to unsigned int.
@@ -1526,37 +1726,38 @@ impl<'a> ISel<'a> {
                 let conv_op = match from_ty {
                     IrType::F32 => I686Opcode::Cvttss2si,
                     IrType::F64 => I686Opcode::Cvttsd2si,
-                    _ => return Err(CodeGenError::UnsupportedInstruction(
-                        format!("FPToUI from {:?}", from_ty),
-                    )),
+                    _ => {
+                        return Err(CodeGenError::UnsupportedInstruction(format!(
+                            "FPToUI from {:?}",
+                            from_ty
+                        )))
+                    }
                 };
-                self.emit_with(conv_op, vec![
-                    MachineOperand::Register(dst), src_op,
-                ]);
+                self.emit_with(conv_op, vec![MachineOperand::Register(dst), src_op]);
             }
             CastOp::FPTrunc => {
                 // double -> float: cvtsd2ss
                 let dst = self.bind_vreg(result);
                 let src_op = self.operand_for(value);
-                self.emit_with(I686Opcode::Cvtsd2ss, vec![
-                    MachineOperand::Register(dst), src_op,
-                ]);
+                self.emit_with(
+                    I686Opcode::Cvtsd2ss,
+                    vec![MachineOperand::Register(dst), src_op],
+                );
             }
             CastOp::FPExt => {
                 // float -> double: cvtss2sd
                 let dst = self.bind_vreg(result);
                 let src_op = self.operand_for(value);
-                self.emit_with(I686Opcode::Cvtss2sd, vec![
-                    MachineOperand::Register(dst), src_op,
-                ]);
+                self.emit_with(
+                    I686Opcode::Cvtss2sd,
+                    vec![MachineOperand::Register(dst), src_op],
+                );
             }
             CastOp::PtrToInt | CastOp::IntToPtr => {
                 // On i686, pointers are 32-bit = same as i32. Just alias.
                 let src_op = self.operand_for(value);
                 let dst = self.bind_vreg(result);
-                self.emit_with(I686Opcode::Mov, vec![
-                    MachineOperand::Register(dst), src_op,
-                ]);
+                self.emit_with(I686Opcode::Mov, vec![MachineOperand::Register(dst), src_op]);
             }
         }
         Ok(())
@@ -1575,15 +1776,11 @@ impl<'a> ISel<'a> {
         if Self::is_i64(from_ty) {
             // I64 -> I32: just use the low register.
             let lo_op = self.operand_for(value);
-            self.emit_with(I686Opcode::Mov, vec![
-                MachineOperand::Register(dst), lo_op,
-            ]);
+            self.emit_with(I686Opcode::Mov, vec![MachineOperand::Register(dst), lo_op]);
         } else {
             // I32 -> I16/I8: just move (upper bits are ignored by caller).
             let src_op = self.operand_for(value);
-            self.emit_with(I686Opcode::Mov, vec![
-                MachineOperand::Register(dst), src_op,
-            ]);
+            self.emit_with(I686Opcode::Mov, vec![MachineOperand::Register(dst), src_op]);
         }
 
         Ok(())
@@ -1607,43 +1804,49 @@ impl<'a> ISel<'a> {
 
             match from_ty {
                 IrType::I8 | IrType::I1 => {
-                    self.emit_with(I686Opcode::Movzx8, vec![
-                        MachineOperand::Register(dst_lo), src_op,
-                    ]);
+                    self.emit_with(
+                        I686Opcode::Movzx8,
+                        vec![MachineOperand::Register(dst_lo), src_op],
+                    );
                 }
                 IrType::I16 => {
-                    self.emit_with(I686Opcode::Movzx16, vec![
-                        MachineOperand::Register(dst_lo), src_op,
-                    ]);
+                    self.emit_with(
+                        I686Opcode::Movzx16,
+                        vec![MachineOperand::Register(dst_lo), src_op],
+                    );
                 }
                 _ => {
-                    self.emit_with(I686Opcode::Mov, vec![
-                        MachineOperand::Register(dst_lo), src_op,
-                    ]);
+                    self.emit_with(
+                        I686Opcode::Mov,
+                        vec![MachineOperand::Register(dst_lo), src_op],
+                    );
                 }
             }
             // High half = 0
-            self.emit_with(I686Opcode::Xor, vec![
-                MachineOperand::Register(dst_hi),
-                MachineOperand::Register(dst_hi),
-            ]);
+            self.emit_with(
+                I686Opcode::Xor,
+                vec![
+                    MachineOperand::Register(dst_hi),
+                    MachineOperand::Register(dst_hi),
+                ],
+            );
         } else {
             let dst = self.bind_vreg(result);
             match from_ty {
                 IrType::I8 | IrType::I1 => {
-                    self.emit_with(I686Opcode::Movzx8, vec![
-                        MachineOperand::Register(dst), src_op,
-                    ]);
+                    self.emit_with(
+                        I686Opcode::Movzx8,
+                        vec![MachineOperand::Register(dst), src_op],
+                    );
                 }
                 IrType::I16 => {
-                    self.emit_with(I686Opcode::Movzx16, vec![
-                        MachineOperand::Register(dst), src_op,
-                    ]);
+                    self.emit_with(
+                        I686Opcode::Movzx16,
+                        vec![MachineOperand::Register(dst), src_op],
+                    );
                 }
                 _ => {
-                    self.emit_with(I686Opcode::Mov, vec![
-                        MachineOperand::Register(dst), src_op,
-                    ]);
+                    self.emit_with(I686Opcode::Mov, vec![MachineOperand::Register(dst), src_op]);
                 }
             }
         }
@@ -1668,49 +1871,55 @@ impl<'a> ISel<'a> {
 
             match from_ty {
                 IrType::I8 | IrType::I1 => {
-                    self.emit_with(I686Opcode::Movsx8, vec![
-                        MachineOperand::Register(EAX), src_op,
-                    ]);
+                    self.emit_with(
+                        I686Opcode::Movsx8,
+                        vec![MachineOperand::Register(EAX), src_op],
+                    );
                 }
                 IrType::I16 => {
-                    self.emit_with(I686Opcode::Movsx16, vec![
-                        MachineOperand::Register(EAX), src_op,
-                    ]);
+                    self.emit_with(
+                        I686Opcode::Movsx16,
+                        vec![MachineOperand::Register(EAX), src_op],
+                    );
                 }
                 _ => {
-                    self.emit_with(I686Opcode::Mov, vec![
-                        MachineOperand::Register(EAX), src_op,
-                    ]);
+                    self.emit_with(I686Opcode::Mov, vec![MachineOperand::Register(EAX), src_op]);
                 }
             }
             // CDQ: sign-extend eax into edx:eax
             self.emit_no_operands(I686Opcode::Cdq);
 
-            self.emit_with(I686Opcode::Mov, vec![
-                MachineOperand::Register(dst_lo),
-                MachineOperand::Register(EAX),
-            ]);
-            self.emit_with(I686Opcode::Mov, vec![
-                MachineOperand::Register(dst_hi),
-                MachineOperand::Register(EDX),
-            ]);
+            self.emit_with(
+                I686Opcode::Mov,
+                vec![
+                    MachineOperand::Register(dst_lo),
+                    MachineOperand::Register(EAX),
+                ],
+            );
+            self.emit_with(
+                I686Opcode::Mov,
+                vec![
+                    MachineOperand::Register(dst_hi),
+                    MachineOperand::Register(EDX),
+                ],
+            );
         } else {
             let dst = self.bind_vreg(result);
             match from_ty {
                 IrType::I8 | IrType::I1 => {
-                    self.emit_with(I686Opcode::Movsx8, vec![
-                        MachineOperand::Register(dst), src_op,
-                    ]);
+                    self.emit_with(
+                        I686Opcode::Movsx8,
+                        vec![MachineOperand::Register(dst), src_op],
+                    );
                 }
                 IrType::I16 => {
-                    self.emit_with(I686Opcode::Movsx16, vec![
-                        MachineOperand::Register(dst), src_op,
-                    ]);
+                    self.emit_with(
+                        I686Opcode::Movsx16,
+                        vec![MachineOperand::Register(dst), src_op],
+                    );
                 }
                 _ => {
-                    self.emit_with(I686Opcode::Mov, vec![
-                        MachineOperand::Register(dst), src_op,
-                    ]);
+                    self.emit_with(I686Opcode::Mov, vec![MachineOperand::Register(dst), src_op]);
                 }
             }
         }
@@ -1722,11 +1931,7 @@ impl<'a> ISel<'a> {
     // -----------------------------------------------------------------------
 
     /// Select a constant materialization instruction.
-    fn select_const(
-        &mut self,
-        result: Value,
-        constant: &Constant,
-    ) -> Result<(), CodeGenError> {
+    fn select_const(&mut self, result: Value, constant: &Constant) -> Result<(), CodeGenError> {
         // The IR builder emits placeholder Const instructions for function
         // parameters (value = param index).  select_all() already bound
         // these Values to their cdecl stack locations.  Skip the const
@@ -1746,41 +1951,56 @@ impl<'a> ISel<'a> {
 
                     if lo == 0 {
                         // xor reg, reg for zero
-                        self.emit_with(I686Opcode::Xor, vec![
-                            MachineOperand::Register(dst_lo),
-                            MachineOperand::Register(dst_lo),
-                        ]);
+                        self.emit_with(
+                            I686Opcode::Xor,
+                            vec![
+                                MachineOperand::Register(dst_lo),
+                                MachineOperand::Register(dst_lo),
+                            ],
+                        );
                     } else {
-                        self.emit_with(I686Opcode::Mov, vec![
-                            MachineOperand::Register(dst_lo),
-                            MachineOperand::Immediate(lo as i64),
-                        ]);
+                        self.emit_with(
+                            I686Opcode::Mov,
+                            vec![
+                                MachineOperand::Register(dst_lo),
+                                MachineOperand::Immediate(lo as i64),
+                            ],
+                        );
                     }
 
                     if hi == 0 {
-                        self.emit_with(I686Opcode::Xor, vec![
-                            MachineOperand::Register(dst_hi),
-                            MachineOperand::Register(dst_hi),
-                        ]);
+                        self.emit_with(
+                            I686Opcode::Xor,
+                            vec![
+                                MachineOperand::Register(dst_hi),
+                                MachineOperand::Register(dst_hi),
+                            ],
+                        );
                     } else {
-                        self.emit_with(I686Opcode::Mov, vec![
-                            MachineOperand::Register(dst_hi),
-                            MachineOperand::Immediate(hi as i64),
-                        ]);
+                        self.emit_with(
+                            I686Opcode::Mov,
+                            vec![
+                                MachineOperand::Register(dst_hi),
+                                MachineOperand::Immediate(hi as i64),
+                            ],
+                        );
                     }
                 } else {
                     let dst = self.bind_vreg(result);
                     if *value == 0 {
                         // xor reg, reg — shorter encoding than mov reg, 0
-                        self.emit_with(I686Opcode::Xor, vec![
-                            MachineOperand::Register(dst),
-                            MachineOperand::Register(dst),
-                        ]);
+                        self.emit_with(
+                            I686Opcode::Xor,
+                            vec![MachineOperand::Register(dst), MachineOperand::Register(dst)],
+                        );
                     } else {
-                        self.emit_with(I686Opcode::Mov, vec![
-                            MachineOperand::Register(dst),
-                            MachineOperand::Immediate(*value),
-                        ]);
+                        self.emit_with(
+                            I686Opcode::Mov,
+                            vec![
+                                MachineOperand::Register(dst),
+                                MachineOperand::Immediate(*value),
+                            ],
+                        );
                     }
                 }
             }
@@ -1795,22 +2015,29 @@ impl<'a> ISel<'a> {
                     // F32: push 4 bytes, load via MOVSS, pop cleanup
                     let bits = (*fval as f32).to_bits() as i64;
                     let tmp = self.alloc_vreg();
-                    self.emit_with(I686Opcode::Mov, vec![
-                        MachineOperand::Register(tmp),
-                        MachineOperand::Immediate(bits),
-                    ]);
-                    self.emit_with(I686Opcode::Push, vec![
-                        MachineOperand::Register(tmp),
-                    ]);
-                    self.emit_with(I686Opcode::Movss, vec![
-                        MachineOperand::Register(dst),
-                        MachineOperand::Memory { base: ESP, offset: 0 },
-                    ]);
+                    self.emit_with(
+                        I686Opcode::Mov,
+                        vec![
+                            MachineOperand::Register(tmp),
+                            MachineOperand::Immediate(bits),
+                        ],
+                    );
+                    self.emit_with(I686Opcode::Push, vec![MachineOperand::Register(tmp)]);
+                    self.emit_with(
+                        I686Opcode::Movss,
+                        vec![
+                            MachineOperand::Register(dst),
+                            MachineOperand::Memory {
+                                base: ESP,
+                                offset: 0,
+                            },
+                        ],
+                    );
                     // Restore stack: add esp, 4
-                    self.emit_with(I686Opcode::Add, vec![
-                        MachineOperand::Register(ESP),
-                        MachineOperand::Immediate(4),
-                    ]);
+                    self.emit_with(
+                        I686Opcode::Add,
+                        vec![MachineOperand::Register(ESP), MachineOperand::Immediate(4)],
+                    );
                 } else {
                     // F64: push 8 bytes (hi then lo for correct byte order),
                     // load via MOVSD, then clean up stack.
@@ -1819,81 +2046,89 @@ impl<'a> ISel<'a> {
                     let hi = (bits >> 32) as u32 as i64;
                     let tmp = self.alloc_vreg();
                     // Push high 32 bits first (grows downward)
-                    self.emit_with(I686Opcode::Mov, vec![
-                        MachineOperand::Register(tmp),
-                        MachineOperand::Immediate(hi),
-                    ]);
-                    self.emit_with(I686Opcode::Push, vec![
-                        MachineOperand::Register(tmp),
-                    ]);
+                    self.emit_with(
+                        I686Opcode::Mov,
+                        vec![MachineOperand::Register(tmp), MachineOperand::Immediate(hi)],
+                    );
+                    self.emit_with(I686Opcode::Push, vec![MachineOperand::Register(tmp)]);
                     // Push low 32 bits
-                    self.emit_with(I686Opcode::Mov, vec![
-                        MachineOperand::Register(tmp),
-                        MachineOperand::Immediate(lo),
-                    ]);
-                    self.emit_with(I686Opcode::Push, vec![
-                        MachineOperand::Register(tmp),
-                    ]);
+                    self.emit_with(
+                        I686Opcode::Mov,
+                        vec![MachineOperand::Register(tmp), MachineOperand::Immediate(lo)],
+                    );
+                    self.emit_with(I686Opcode::Push, vec![MachineOperand::Register(tmp)]);
                     // Load 64-bit double from [esp]
-                    self.emit_with(I686Opcode::Movsd, vec![
-                        MachineOperand::Register(dst),
-                        MachineOperand::Memory { base: ESP, offset: 0 },
-                    ]);
+                    self.emit_with(
+                        I686Opcode::Movsd,
+                        vec![
+                            MachineOperand::Register(dst),
+                            MachineOperand::Memory {
+                                base: ESP,
+                                offset: 0,
+                            },
+                        ],
+                    );
                     // Restore stack: add esp, 8
-                    self.emit_with(I686Opcode::Add, vec![
-                        MachineOperand::Register(ESP),
-                        MachineOperand::Immediate(8),
-                    ]);
+                    self.emit_with(
+                        I686Opcode::Add,
+                        vec![MachineOperand::Register(ESP), MachineOperand::Immediate(8)],
+                    );
                 }
             }
             Constant::Bool(b) => {
                 let dst = self.bind_vreg(result);
                 let val = if *b { 1i64 } else { 0i64 };
                 if val == 0 {
-                    self.emit_with(I686Opcode::Xor, vec![
-                        MachineOperand::Register(dst),
-                        MachineOperand::Register(dst),
-                    ]);
+                    self.emit_with(
+                        I686Opcode::Xor,
+                        vec![MachineOperand::Register(dst), MachineOperand::Register(dst)],
+                    );
                 } else {
-                    self.emit_with(I686Opcode::Mov, vec![
-                        MachineOperand::Register(dst),
-                        MachineOperand::Immediate(val),
-                    ]);
+                    self.emit_with(
+                        I686Opcode::Mov,
+                        vec![
+                            MachineOperand::Register(dst),
+                            MachineOperand::Immediate(val),
+                        ],
+                    );
                 }
             }
             Constant::Null(_) => {
                 let dst = self.bind_vreg(result);
                 // Null pointer = 0
-                self.emit_with(I686Opcode::Xor, vec![
-                    MachineOperand::Register(dst),
-                    MachineOperand::Register(dst),
-                ]);
+                self.emit_with(
+                    I686Opcode::Xor,
+                    vec![MachineOperand::Register(dst), MachineOperand::Register(dst)],
+                );
             }
             Constant::GlobalRef(name) => {
                 let dst = self.bind_vreg(result);
                 // Load address of global symbol via R_386_32 relocation.
-                self.emit_with(I686Opcode::Mov, vec![
-                    MachineOperand::Register(dst),
-                    MachineOperand::Symbol(name.clone()),
-                ]);
+                self.emit_with(
+                    I686Opcode::Mov,
+                    vec![
+                        MachineOperand::Register(dst),
+                        MachineOperand::Symbol(name.clone()),
+                    ],
+                );
             }
             Constant::String(bytes) => {
                 let dst = self.bind_vreg(result);
                 // String literals are placed in .rodata; reference via symbol.
                 let label = format!(".Lstr_{}", result.0);
                 let _ = bytes; // Bytes stored in data section, not inline
-                self.emit_with(I686Opcode::Mov, vec![
-                    MachineOperand::Register(dst),
-                    MachineOperand::Symbol(label),
-                ]);
+                self.emit_with(
+                    I686Opcode::Mov,
+                    vec![MachineOperand::Register(dst), MachineOperand::Symbol(label)],
+                );
             }
             Constant::Undef(_) | Constant::ZeroInit(_) => {
                 // Undefined or zero-initialized: produce zero.
                 let dst = self.bind_vreg(result);
-                self.emit_with(I686Opcode::Xor, vec![
-                    MachineOperand::Register(dst),
-                    MachineOperand::Register(dst),
-                ]);
+                self.emit_with(
+                    I686Opcode::Xor,
+                    vec![MachineOperand::Register(dst), MachineOperand::Register(dst)],
+                );
             }
         }
         Ok(())
@@ -1916,18 +2151,18 @@ impl<'a> ISel<'a> {
             self.bind_value_hi(result, MachineOperand::Register(dst_hi));
             let src_lo = self.operand_for(source);
             let src_hi = self.operand_hi_for(source);
-            self.emit_with(I686Opcode::Mov, vec![
-                MachineOperand::Register(dst_lo), src_lo,
-            ]);
-            self.emit_with(I686Opcode::Mov, vec![
-                MachineOperand::Register(dst_hi), src_hi,
-            ]);
+            self.emit_with(
+                I686Opcode::Mov,
+                vec![MachineOperand::Register(dst_lo), src_lo],
+            );
+            self.emit_with(
+                I686Opcode::Mov,
+                vec![MachineOperand::Register(dst_hi), src_hi],
+            );
         } else {
             let dst = self.bind_vreg(result);
             let src_op = self.operand_for(source);
-            self.emit_with(I686Opcode::Mov, vec![
-                MachineOperand::Register(dst), src_op,
-            ]);
+            self.emit_with(I686Opcode::Mov, vec![MachineOperand::Register(dst), src_op]);
         }
         Ok(())
     }
@@ -1947,25 +2182,28 @@ impl<'a> ISel<'a> {
         let false_op = self.operand_for(false_val);
 
         // mov dst, false_val
-        self.emit_with(I686Opcode::Mov, vec![
-            MachineOperand::Register(dst), false_op,
-        ]);
+        self.emit_with(
+            I686Opcode::Mov,
+            vec![MachineOperand::Register(dst), false_op],
+        );
         // test cond, cond
         self.emit_with(I686Opcode::Test, vec![cond_op.clone(), cond_op]);
         // Emit conditional jump over the mov:
         // jz skip_label; mov dst, true_val; skip_label:
         let skip_label = self.next_label;
         self.next_label += 1;
-        self.emit_with(I686Opcode::Jcc, vec![
-            MachineOperand::Immediate(CC_E as i64),
-            MachineOperand::Label(skip_label),
-        ]);
-        self.emit_with(I686Opcode::Mov, vec![
-            MachineOperand::Register(dst), true_op,
-        ]);
-        self.emit_with(I686Opcode::Label, vec![
-            MachineOperand::Label(skip_label),
-        ]);
+        self.emit_with(
+            I686Opcode::Jcc,
+            vec![
+                MachineOperand::Immediate(CC_E as i64),
+                MachineOperand::Label(skip_label),
+            ],
+        );
+        self.emit_with(
+            I686Opcode::Mov,
+            vec![MachineOperand::Register(dst), true_op],
+        );
+        self.emit_with(I686Opcode::Label, vec![MachineOperand::Label(skip_label)]);
 
         Ok(())
     }
@@ -1991,22 +2229,46 @@ impl<'a> ISel<'a> {
 
         // Map the arithmetic opcode to the correct SSE instruction.
         let sse_op = match arith_opcode {
-            I686Opcode::Add => if is_f32 { I686Opcode::Addss } else { I686Opcode::Addsd },
-            I686Opcode::Sub => if is_f32 { I686Opcode::Subss } else { I686Opcode::Subsd },
-            I686Opcode::Imul => if is_f32 { I686Opcode::Mulss } else { I686Opcode::Mulsd },
-            _ => if is_f32 { I686Opcode::Divss } else { I686Opcode::Divsd },
+            I686Opcode::Add => {
+                if is_f32 {
+                    I686Opcode::Addss
+                } else {
+                    I686Opcode::Addsd
+                }
+            }
+            I686Opcode::Sub => {
+                if is_f32 {
+                    I686Opcode::Subss
+                } else {
+                    I686Opcode::Subsd
+                }
+            }
+            I686Opcode::Imul => {
+                if is_f32 {
+                    I686Opcode::Mulss
+                } else {
+                    I686Opcode::Mulsd
+                }
+            }
+            _ => {
+                if is_f32 {
+                    I686Opcode::Divss
+                } else {
+                    I686Opcode::Divsd
+                }
+            }
         };
 
         // movss/movsd dst, lhs
-        let mov_op = if is_f32 { I686Opcode::Movss } else { I686Opcode::Movsd };
-        self.emit_with(mov_op, vec![
-            MachineOperand::Register(dst), lhs_op,
-        ]);
+        let mov_op = if is_f32 {
+            I686Opcode::Movss
+        } else {
+            I686Opcode::Movsd
+        };
+        self.emit_with(mov_op, vec![MachineOperand::Register(dst), lhs_op]);
 
         // addss/subss/mulss/divss dst, rhs
-        self.emit_with(sse_op, vec![
-            MachineOperand::Register(dst), rhs_op,
-        ]);
+        self.emit_with(sse_op, vec![MachineOperand::Register(dst), rhs_op]);
 
         Ok(())
     }
@@ -2022,7 +2284,11 @@ impl<'a> ISel<'a> {
                 let label = self.block_label(*target);
                 self.emit_with(I686Opcode::Jmp, vec![MachineOperand::Label(label)]);
             }
-            Terminator::CondBranch { condition, true_block, false_block } => {
+            Terminator::CondBranch {
+                condition,
+                true_block,
+                false_block,
+            } => {
                 let cond_op = self.operand_for(*condition);
 
                 // test cond, cond
@@ -2032,52 +2298,54 @@ impl<'a> ISel<'a> {
                 let false_label = self.block_label(*false_block);
 
                 // jne true_block
-                self.emit_with(I686Opcode::Jcc, vec![
-                    MachineOperand::Immediate(CC_NE as i64),
-                    MachineOperand::Label(true_label),
-                ]);
+                self.emit_with(
+                    I686Opcode::Jcc,
+                    vec![
+                        MachineOperand::Immediate(CC_NE as i64),
+                        MachineOperand::Label(true_label),
+                    ],
+                );
                 // jmp false_block
-                self.emit_with(I686Opcode::Jmp, vec![
-                    MachineOperand::Label(false_label),
-                ]);
+                self.emit_with(I686Opcode::Jmp, vec![MachineOperand::Label(false_label)]);
             }
             Terminator::Return { value } => {
                 if let Some(ret_val) = value {
                     // Move return value to eax (or eax:edx for 64-bit).
                     let val_op = self.operand_for(*ret_val);
-                    self.emit_with(I686Opcode::Mov, vec![
-                        MachineOperand::Register(EAX), val_op,
-                    ]);
+                    self.emit_with(I686Opcode::Mov, vec![MachineOperand::Register(EAX), val_op]);
                     if self.value_hi_map.contains_key(ret_val) {
                         let hi_op = self.operand_hi_for(*ret_val);
-                        self.emit_with(I686Opcode::Mov, vec![
-                            MachineOperand::Register(EDX), hi_op,
-                        ]);
+                        self.emit_with(I686Opcode::Mov, vec![MachineOperand::Register(EDX), hi_op]);
                     }
                 }
                 self.emit_no_operands(I686Opcode::Ret);
             }
-            Terminator::Switch { value, default, cases } => {
+            Terminator::Switch {
+                value,
+                default,
+                cases,
+            } => {
                 let val_op = self.operand_for(*value);
                 let default_label = self.block_label(*default);
 
                 // Emit a series of cmp + je for each case.
                 for (case_val, case_target) in cases {
                     let target_label = self.block_label(*case_target);
-                    self.emit_with(I686Opcode::Cmp, vec![
-                        val_op.clone(),
-                        MachineOperand::Immediate(*case_val),
-                    ]);
-                    self.emit_with(I686Opcode::Jcc, vec![
-                        MachineOperand::Immediate(CC_E as i64),
-                        MachineOperand::Label(target_label),
-                    ]);
+                    self.emit_with(
+                        I686Opcode::Cmp,
+                        vec![val_op.clone(), MachineOperand::Immediate(*case_val)],
+                    );
+                    self.emit_with(
+                        I686Opcode::Jcc,
+                        vec![
+                            MachineOperand::Immediate(CC_E as i64),
+                            MachineOperand::Label(target_label),
+                        ],
+                    );
                 }
 
                 // Fall through to default.
-                self.emit_with(I686Opcode::Jmp, vec![
-                    MachineOperand::Label(default_label),
-                ]);
+                self.emit_with(I686Opcode::Jmp, vec![MachineOperand::Label(default_label)]);
             }
             Terminator::Unreachable => {
                 // Emit a trap-like instruction (int3 or nop).
@@ -2137,18 +2405,33 @@ fn float_compare_op_to_cc(op: FloatCompareOp) -> u8 {
 /// If it is already a Memory operand, returns it unchanged.
 fn ptr_to_mem(op: MachineOperand) -> MachineOperand {
     match op {
-        MachineOperand::Register(reg) => MachineOperand::Memory { base: reg, offset: 0 },
+        MachineOperand::Register(reg) => MachineOperand::Memory {
+            base: reg,
+            offset: 0,
+        },
         MachineOperand::Memory { .. } => op,
-        _ => MachineOperand::Memory { base: EBP, offset: 0 }, // fallback
+        _ => MachineOperand::Memory {
+            base: EBP,
+            offset: 0,
+        }, // fallback
     }
 }
 
 /// Offset a pointer operand by the given number of bytes.
 fn offset_mem(op: MachineOperand, additional: i32) -> MachineOperand {
     match op {
-        MachineOperand::Register(reg) => MachineOperand::Memory { base: reg, offset: additional },
-        MachineOperand::Memory { base, offset } => MachineOperand::Memory { base, offset: offset + additional },
-        _ => MachineOperand::Memory { base: EBP, offset: additional },
+        MachineOperand::Register(reg) => MachineOperand::Memory {
+            base: reg,
+            offset: additional,
+        },
+        MachineOperand::Memory { base, offset } => MachineOperand::Memory {
+            base,
+            offset: offset + additional,
+        },
+        _ => MachineOperand::Memory {
+            base: EBP,
+            offset: additional,
+        },
     }
 }
 
@@ -2209,13 +2492,12 @@ mod tests {
     use super::*;
     use crate::codegen::regalloc::PhysReg;
     use crate::driver::target::TargetConfig;
+    use crate::ir::builder::Function;
     use crate::ir::cfg::{BasicBlock, Terminator};
     use crate::ir::instructions::{
-        BlockId, Callee, CastOp, CompareOp, Constant, FloatCompareOp,
-        Instruction, Value,
+        BlockId, Callee, CastOp, CompareOp, Constant, FloatCompareOp, Instruction, Value,
     };
     use crate::ir::types::IrType;
-    use crate::ir::builder::Function;
 
     /// Create an i686 target for testing.
     fn i686_target() -> TargetConfig {
@@ -2241,8 +2523,11 @@ mod tests {
             blocks: vec![block],
             entry_block: BlockId(0),
             is_definition: true,
-is_static: false,
-is_weak: false,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         }
     }
 
@@ -2254,7 +2539,10 @@ is_weak: false,
 
     /// Helper to count how many instructions have a given opcode.
     fn count_opcode(instrs: &[MachineInstr], expected: I686Opcode) -> usize {
-        instrs.iter().filter(|i| i.opcode == expected as u32).count()
+        instrs
+            .iter()
+            .filter(|i| i.opcode == expected as u32)
+            .count()
     }
 
     // -------------------------------------------------------------------
@@ -2284,14 +2572,44 @@ is_weak: false,
     fn test_add_i32() {
         let target = i686_target();
         let instrs = vec![
-            Instruction::Const { result: Value(10), value: Constant::Integer { value: 5, ty: IrType::I32 } },
-            Instruction::Const { result: Value(11), value: Constant::Integer { value: 3, ty: IrType::I32 } },
-            Instruction::Add { result: Value(12), lhs: Value(10), rhs: Value(11), ty: IrType::I32 },
+            Instruction::Const {
+                result: Value(10),
+                value: Constant::Integer {
+                    value: 5,
+                    ty: IrType::I32,
+                },
+            },
+            Instruction::Const {
+                result: Value(11),
+                value: Constant::Integer {
+                    value: 3,
+                    ty: IrType::I32,
+                },
+            },
+            Instruction::Add {
+                result: Value(12),
+                lhs: Value(10),
+                rhs: Value(11),
+                ty: IrType::I32,
+            },
         ];
-        let func = make_function("test_add", vec![], instrs, Terminator::Return { value: Some(Value(12)) });
+        let func = make_function(
+            "test_add",
+            vec![],
+            instrs,
+            Terminator::Return {
+                value: Some(Value(12)),
+            },
+        );
         let result = select_instructions(&func, &target).unwrap();
-        assert!(has_opcode(&result, I686Opcode::Add), "should contain Add instruction");
-        assert!(has_opcode(&result, I686Opcode::Mov), "should contain Mov instruction");
+        assert!(
+            has_opcode(&result, I686Opcode::Add),
+            "should contain Add instruction"
+        );
+        assert!(
+            has_opcode(&result, I686Opcode::Mov),
+            "should contain Mov instruction"
+        );
     }
 
     // -------------------------------------------------------------------
@@ -2302,13 +2620,40 @@ is_weak: false,
     fn test_mul_i32() {
         let target = i686_target();
         let instrs = vec![
-            Instruction::Const { result: Value(10), value: Constant::Integer { value: 5, ty: IrType::I32 } },
-            Instruction::Const { result: Value(11), value: Constant::Integer { value: 3, ty: IrType::I32 } },
-            Instruction::Mul { result: Value(12), lhs: Value(10), rhs: Value(11), ty: IrType::I32 },
+            Instruction::Const {
+                result: Value(10),
+                value: Constant::Integer {
+                    value: 5,
+                    ty: IrType::I32,
+                },
+            },
+            Instruction::Const {
+                result: Value(11),
+                value: Constant::Integer {
+                    value: 3,
+                    ty: IrType::I32,
+                },
+            },
+            Instruction::Mul {
+                result: Value(12),
+                lhs: Value(10),
+                rhs: Value(11),
+                ty: IrType::I32,
+            },
         ];
-        let func = make_function("test_mul", vec![], instrs, Terminator::Return { value: Some(Value(12)) });
+        let func = make_function(
+            "test_mul",
+            vec![],
+            instrs,
+            Terminator::Return {
+                value: Some(Value(12)),
+            },
+        );
         let result = select_instructions(&func, &target).unwrap();
-        assert!(has_opcode(&result, I686Opcode::Imul), "should contain Imul for signed multiply");
+        assert!(
+            has_opcode(&result, I686Opcode::Imul),
+            "should contain Imul for signed multiply"
+        );
     }
 
     // -------------------------------------------------------------------
@@ -2319,18 +2664,50 @@ is_weak: false,
     fn test_add_i64() {
         let target = i686_target();
         let instrs = vec![
-            Instruction::Const { result: Value(10), value: Constant::Integer { value: 100, ty: IrType::I64 } },
-            Instruction::Const { result: Value(11), value: Constant::Integer { value: 200, ty: IrType::I64 } },
-            Instruction::Add { result: Value(12), lhs: Value(10), rhs: Value(11), ty: IrType::I64 },
+            Instruction::Const {
+                result: Value(10),
+                value: Constant::Integer {
+                    value: 100,
+                    ty: IrType::I64,
+                },
+            },
+            Instruction::Const {
+                result: Value(11),
+                value: Constant::Integer {
+                    value: 200,
+                    ty: IrType::I64,
+                },
+            },
+            Instruction::Add {
+                result: Value(12),
+                lhs: Value(10),
+                rhs: Value(11),
+                ty: IrType::I64,
+            },
         ];
-        let func = make_function("test_add64", vec![], instrs, Terminator::Return { value: Some(Value(12)) });
+        let func = make_function(
+            "test_add64",
+            vec![],
+            instrs,
+            Terminator::Return {
+                value: Some(Value(12)),
+            },
+        );
         let result = select_instructions(&func, &target).unwrap();
         // 64-bit add should produce one Add (low half) and one Adc (high half
         // with carry propagation).
         let add_count = count_opcode(&result, I686Opcode::Add);
         let adc_count = count_opcode(&result, I686Opcode::Adc);
-        assert!(add_count >= 1, "64-bit add should produce at least 1 Add instruction (low half), got {}", add_count);
-        assert!(adc_count >= 1, "64-bit add should produce at least 1 Adc instruction (high half with carry), got {}", adc_count);
+        assert!(
+            add_count >= 1,
+            "64-bit add should produce at least 1 Add instruction (low half), got {}",
+            add_count
+        );
+        assert!(
+            adc_count >= 1,
+            "64-bit add should produce at least 1 Adc instruction (high half with carry), got {}",
+            adc_count
+        );
     }
 
     // -------------------------------------------------------------------
@@ -2341,14 +2718,44 @@ is_weak: false,
     fn test_shl_i64() {
         let target = i686_target();
         let instrs = vec![
-            Instruction::Const { result: Value(10), value: Constant::Integer { value: 1, ty: IrType::I64 } },
-            Instruction::Const { result: Value(11), value: Constant::Integer { value: 5, ty: IrType::I32 } },
-            Instruction::Shl { result: Value(12), lhs: Value(10), rhs: Value(11), ty: IrType::I64 },
+            Instruction::Const {
+                result: Value(10),
+                value: Constant::Integer {
+                    value: 1,
+                    ty: IrType::I64,
+                },
+            },
+            Instruction::Const {
+                result: Value(11),
+                value: Constant::Integer {
+                    value: 5,
+                    ty: IrType::I32,
+                },
+            },
+            Instruction::Shl {
+                result: Value(12),
+                lhs: Value(10),
+                rhs: Value(11),
+                ty: IrType::I64,
+            },
         ];
-        let func = make_function("test_shl64", vec![], instrs, Terminator::Return { value: Some(Value(12)) });
+        let func = make_function(
+            "test_shl64",
+            vec![],
+            instrs,
+            Terminator::Return {
+                value: Some(Value(12)),
+            },
+        );
         let result = select_instructions(&func, &target).unwrap();
-        assert!(has_opcode(&result, I686Opcode::Shld), "64-bit left shift should use Shld");
-        assert!(has_opcode(&result, I686Opcode::Shl), "64-bit left shift should use Shl");
+        assert!(
+            has_opcode(&result, I686Opcode::Shld),
+            "64-bit left shift should use Shld"
+        );
+        assert!(
+            has_opcode(&result, I686Opcode::Shl),
+            "64-bit left shift should use Shl"
+        );
     }
 
     // -------------------------------------------------------------------
@@ -2359,14 +2766,45 @@ is_weak: false,
     fn test_div_i32() {
         let target = i686_target();
         let instrs = vec![
-            Instruction::Const { result: Value(10), value: Constant::Integer { value: 10, ty: IrType::I32 } },
-            Instruction::Const { result: Value(11), value: Constant::Integer { value: 3, ty: IrType::I32 } },
-            Instruction::Div { result: Value(12), lhs: Value(10), rhs: Value(11), ty: IrType::I32, is_signed: true },
+            Instruction::Const {
+                result: Value(10),
+                value: Constant::Integer {
+                    value: 10,
+                    ty: IrType::I32,
+                },
+            },
+            Instruction::Const {
+                result: Value(11),
+                value: Constant::Integer {
+                    value: 3,
+                    ty: IrType::I32,
+                },
+            },
+            Instruction::Div {
+                result: Value(12),
+                lhs: Value(10),
+                rhs: Value(11),
+                ty: IrType::I32,
+                is_signed: true,
+            },
         ];
-        let func = make_function("test_div", vec![], instrs, Terminator::Return { value: Some(Value(12)) });
+        let func = make_function(
+            "test_div",
+            vec![],
+            instrs,
+            Terminator::Return {
+                value: Some(Value(12)),
+            },
+        );
         let result = select_instructions(&func, &target).unwrap();
-        assert!(has_opcode(&result, I686Opcode::Cdq), "signed div should use Cdq");
-        assert!(has_opcode(&result, I686Opcode::Idiv), "signed div should use Idiv");
+        assert!(
+            has_opcode(&result, I686Opcode::Cdq),
+            "signed div should use Cdq"
+        );
+        assert!(
+            has_opcode(&result, I686Opcode::Idiv),
+            "signed div should use Idiv"
+        );
     }
 
     // -------------------------------------------------------------------
@@ -2377,11 +2815,26 @@ is_weak: false,
     fn test_icmp_and_branch() {
         let target = i686_target();
         let instrs = vec![
-            Instruction::Const { result: Value(10), value: Constant::Integer { value: 5, ty: IrType::I32 } },
-            Instruction::Const { result: Value(11), value: Constant::Integer { value: 3, ty: IrType::I32 } },
+            Instruction::Const {
+                result: Value(10),
+                value: Constant::Integer {
+                    value: 5,
+                    ty: IrType::I32,
+                },
+            },
+            Instruction::Const {
+                result: Value(11),
+                value: Constant::Integer {
+                    value: 3,
+                    ty: IrType::I32,
+                },
+            },
             Instruction::ICmp {
-                result: Value(12), op: CompareOp::Equal,
-                lhs: Value(10), rhs: Value(11), ty: IrType::I32,
+                result: Value(12),
+                op: CompareOp::Equal,
+                lhs: Value(10),
+                rhs: Value(11),
+                ty: IrType::I32,
             },
         ];
         let mut block0 = BasicBlock::new(BlockId(0), "entry".to_string());
@@ -2403,13 +2856,25 @@ is_weak: false,
             blocks: vec![block0, b1],
             entry_block: BlockId(0),
             is_definition: true,
-is_static: false,
-is_weak: false,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         };
         let result = select_instructions(&func, &target).unwrap();
-        assert!(has_opcode(&result, I686Opcode::Cmp), "should have Cmp instruction");
-        assert!(has_opcode(&result, I686Opcode::Setcc), "should have Setcc instruction");
-        assert!(has_opcode(&result, I686Opcode::Jcc), "should have Jcc (conditional jump)");
+        assert!(
+            has_opcode(&result, I686Opcode::Cmp),
+            "should have Cmp instruction"
+        );
+        assert!(
+            has_opcode(&result, I686Opcode::Setcc),
+            "should have Setcc instruction"
+        );
+        assert!(
+            has_opcode(&result, I686Opcode::Jcc),
+            "should have Jcc (conditional jump)"
+        );
     }
 
     // -------------------------------------------------------------------
@@ -2419,10 +2884,21 @@ is_weak: false,
     #[test]
     fn test_const_zero_uses_xor() {
         let target = i686_target();
-        let instrs = vec![
-            Instruction::Const { result: Value(10), value: Constant::Integer { value: 0, ty: IrType::I32 } },
-        ];
-        let func = make_function("test_zero", vec![], instrs, Terminator::Return { value: Some(Value(10)) });
+        let instrs = vec![Instruction::Const {
+            result: Value(10),
+            value: Constant::Integer {
+                value: 0,
+                ty: IrType::I32,
+            },
+        }];
+        let func = make_function(
+            "test_zero",
+            vec![],
+            instrs,
+            Terminator::Return {
+                value: Some(Value(10)),
+            },
+        );
         let result = select_instructions(&func, &target).unwrap();
         // The xor-for-zero pattern: find an Xor where both operands are the same register.
         let has_xor_zero = result.iter().any(|i| {
@@ -2431,7 +2907,10 @@ is_weak: false,
                 && matches!((&i.operands[0], &i.operands[1]),
                     (MachineOperand::Register(a), MachineOperand::Register(b)) if a == b)
         });
-        assert!(has_xor_zero, "constant 0 should be materialized via xor reg, reg");
+        assert!(
+            has_xor_zero,
+            "constant 0 should be materialized via xor reg, reg"
+        );
     }
 
     // -------------------------------------------------------------------
@@ -2442,7 +2921,13 @@ is_weak: false,
     fn test_call_direct() {
         let target = i686_target();
         let instrs = vec![
-            Instruction::Const { result: Value(10), value: Constant::Integer { value: 42, ty: IrType::I32 } },
+            Instruction::Const {
+                result: Value(10),
+                value: Constant::Integer {
+                    value: 42,
+                    ty: IrType::I32,
+                },
+            },
             Instruction::Call {
                 result: Some(Value(11)),
                 callee: Callee::Direct("puts".to_string()),
@@ -2450,14 +2935,26 @@ is_weak: false,
                 return_ty: IrType::I32,
             },
         ];
-        let func = make_function("test_call", vec![], instrs, Terminator::Return { value: Some(Value(11)) });
+        let func = make_function(
+            "test_call",
+            vec![],
+            instrs,
+            Terminator::Return {
+                value: Some(Value(11)),
+            },
+        );
         let result = select_instructions(&func, &target).unwrap();
         assert!(has_opcode(&result, I686Opcode::Push), "should push args");
-        assert!(has_opcode(&result, I686Opcode::Call), "should have Call instruction");
+        assert!(
+            has_opcode(&result, I686Opcode::Call),
+            "should have Call instruction"
+        );
         // Should have a call to "puts"
         let has_puts_call = result.iter().any(|i| {
             i.opcode == I686Opcode::Call as u32
-                && i.operands.iter().any(|op| matches!(op, MachineOperand::Symbol(name) if name == "puts"))
+                && i.operands
+                    .iter()
+                    .any(|op| matches!(op, MachineOperand::Symbol(name) if name == "puts"))
         });
         assert!(has_puts_call, "should call 'puts' symbol");
     }
@@ -2470,24 +2967,64 @@ is_weak: false,
     fn test_load_i32() {
         let target = i686_target();
         let instrs = vec![
-            Instruction::Const { result: Value(10), value: Constant::Integer { value: 0x1000, ty: IrType::I32 } },
-            Instruction::Load { result: Value(11), ty: IrType::I32, ptr: Value(10) },
+            Instruction::Const {
+                result: Value(10),
+                value: Constant::Integer {
+                    value: 0x1000,
+                    ty: IrType::I32,
+                },
+            },
+            Instruction::Load {
+                result: Value(11),
+                ty: IrType::I32,
+                ptr: Value(10),
+            },
         ];
-        let func = make_function("test_load", vec![], instrs, Terminator::Return { value: Some(Value(11)) });
+        let func = make_function(
+            "test_load",
+            vec![],
+            instrs,
+            Terminator::Return {
+                value: Some(Value(11)),
+            },
+        );
         let result = select_instructions(&func, &target).unwrap();
-        assert!(has_opcode(&result, I686Opcode::Mov), "should have Mov for i32 load");
+        assert!(
+            has_opcode(&result, I686Opcode::Mov),
+            "should have Mov for i32 load"
+        );
     }
 
     #[test]
     fn test_load_i8() {
         let target = i686_target();
         let instrs = vec![
-            Instruction::Const { result: Value(10), value: Constant::Integer { value: 0x1000, ty: IrType::I32 } },
-            Instruction::Load { result: Value(11), ty: IrType::I8, ptr: Value(10) },
+            Instruction::Const {
+                result: Value(10),
+                value: Constant::Integer {
+                    value: 0x1000,
+                    ty: IrType::I32,
+                },
+            },
+            Instruction::Load {
+                result: Value(11),
+                ty: IrType::I8,
+                ptr: Value(10),
+            },
         ];
-        let func = make_function("test_load_i8", vec![], instrs, Terminator::Return { value: Some(Value(11)) });
+        let func = make_function(
+            "test_load_i8",
+            vec![],
+            instrs,
+            Terminator::Return {
+                value: Some(Value(11)),
+            },
+        );
         let result = select_instructions(&func, &target).unwrap();
-        assert!(has_opcode(&result, I686Opcode::Movzx8), "should have Movzx8 for byte load");
+        assert!(
+            has_opcode(&result, I686Opcode::Movzx8),
+            "should have Movzx8 for byte load"
+        );
     }
 
     // -------------------------------------------------------------------
@@ -2498,46 +3035,103 @@ is_weak: false,
     fn test_zext_i8_to_i32() {
         let target = i686_target();
         let instrs = vec![
-            Instruction::Const { result: Value(10), value: Constant::Integer { value: 42, ty: IrType::I8 } },
+            Instruction::Const {
+                result: Value(10),
+                value: Constant::Integer {
+                    value: 42,
+                    ty: IrType::I8,
+                },
+            },
             Instruction::Cast {
-                result: Value(11), op: CastOp::ZExt,
-                value: Value(10), from_ty: IrType::I8, to_ty: IrType::I32,
+                result: Value(11),
+                op: CastOp::ZExt,
+                value: Value(10),
+                from_ty: IrType::I8,
+                to_ty: IrType::I32,
             },
         ];
-        let func = make_function("test_zext", vec![], instrs, Terminator::Return { value: Some(Value(11)) });
+        let func = make_function(
+            "test_zext",
+            vec![],
+            instrs,
+            Terminator::Return {
+                value: Some(Value(11)),
+            },
+        );
         let result = select_instructions(&func, &target).unwrap();
-        assert!(has_opcode(&result, I686Opcode::Movzx8), "zext i8->i32 should use Movzx8");
+        assert!(
+            has_opcode(&result, I686Opcode::Movzx8),
+            "zext i8->i32 should use Movzx8"
+        );
     }
 
     #[test]
     fn test_sext_i8_to_i32() {
         let target = i686_target();
         let instrs = vec![
-            Instruction::Const { result: Value(10), value: Constant::Integer { value: -1, ty: IrType::I8 } },
+            Instruction::Const {
+                result: Value(10),
+                value: Constant::Integer {
+                    value: -1,
+                    ty: IrType::I8,
+                },
+            },
             Instruction::Cast {
-                result: Value(11), op: CastOp::SExt,
-                value: Value(10), from_ty: IrType::I8, to_ty: IrType::I32,
+                result: Value(11),
+                op: CastOp::SExt,
+                value: Value(10),
+                from_ty: IrType::I8,
+                to_ty: IrType::I32,
             },
         ];
-        let func = make_function("test_sext", vec![], instrs, Terminator::Return { value: Some(Value(11)) });
+        let func = make_function(
+            "test_sext",
+            vec![],
+            instrs,
+            Terminator::Return {
+                value: Some(Value(11)),
+            },
+        );
         let result = select_instructions(&func, &target).unwrap();
-        assert!(has_opcode(&result, I686Opcode::Movsx8), "sext i8->i32 should use Movsx8");
+        assert!(
+            has_opcode(&result, I686Opcode::Movsx8),
+            "sext i8->i32 should use Movsx8"
+        );
     }
 
     #[test]
     fn test_trunc_i64_to_i32() {
         let target = i686_target();
         let instrs = vec![
-            Instruction::Const { result: Value(10), value: Constant::Integer { value: 0x1_0000_0000i64, ty: IrType::I64 } },
+            Instruction::Const {
+                result: Value(10),
+                value: Constant::Integer {
+                    value: 0x1_0000_0000i64,
+                    ty: IrType::I64,
+                },
+            },
             Instruction::Cast {
-                result: Value(11), op: CastOp::Trunc,
-                value: Value(10), from_ty: IrType::I64, to_ty: IrType::I32,
+                result: Value(11),
+                op: CastOp::Trunc,
+                value: Value(10),
+                from_ty: IrType::I64,
+                to_ty: IrType::I32,
             },
         ];
-        let func = make_function("test_trunc", vec![], instrs, Terminator::Return { value: Some(Value(11)) });
+        let func = make_function(
+            "test_trunc",
+            vec![],
+            instrs,
+            Terminator::Return {
+                value: Some(Value(11)),
+            },
+        );
         let result = select_instructions(&func, &target).unwrap();
         // Truncation I64->I32 just takes the low register, which is a Mov.
-        assert!(has_opcode(&result, I686Opcode::Mov), "trunc i64->i32 should use Mov");
+        assert!(
+            has_opcode(&result, I686Opcode::Mov),
+            "trunc i64->i32 should use Mov"
+        );
     }
 
     // -------------------------------------------------------------------
@@ -2555,11 +3149,17 @@ is_weak: false,
             blocks: vec![],
             entry_block: BlockId(0),
             is_definition: false,
-is_static: false,
-is_weak: false,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         };
         let result = select_instructions(&func, &target).unwrap();
-        assert!(result.is_empty(), "non-definition should produce empty output");
+        assert!(
+            result.is_empty(),
+            "non-definition should produce empty output"
+        );
     }
 
     // -------------------------------------------------------------------
@@ -2570,26 +3170,80 @@ is_weak: false,
     fn test_float_add() {
         let target = i686_target();
         let instrs = vec![
-            Instruction::Const { result: Value(10), value: Constant::Float { value: 1.0, ty: IrType::F32 } },
-            Instruction::Const { result: Value(11), value: Constant::Float { value: 2.0, ty: IrType::F32 } },
-            Instruction::Add { result: Value(12), lhs: Value(10), rhs: Value(11), ty: IrType::F32 },
+            Instruction::Const {
+                result: Value(10),
+                value: Constant::Float {
+                    value: 1.0,
+                    ty: IrType::F32,
+                },
+            },
+            Instruction::Const {
+                result: Value(11),
+                value: Constant::Float {
+                    value: 2.0,
+                    ty: IrType::F32,
+                },
+            },
+            Instruction::Add {
+                result: Value(12),
+                lhs: Value(10),
+                rhs: Value(11),
+                ty: IrType::F32,
+            },
         ];
-        let func = make_function("test_fadd", vec![], instrs, Terminator::Return { value: Some(Value(12)) });
+        let func = make_function(
+            "test_fadd",
+            vec![],
+            instrs,
+            Terminator::Return {
+                value: Some(Value(12)),
+            },
+        );
         let result = select_instructions(&func, &target).unwrap();
-        assert!(has_opcode(&result, I686Opcode::Addss), "float add should use Addss");
+        assert!(
+            has_opcode(&result, I686Opcode::Addss),
+            "float add should use Addss"
+        );
     }
 
     #[test]
     fn test_double_add() {
         let target = i686_target();
         let instrs = vec![
-            Instruction::Const { result: Value(10), value: Constant::Float { value: 1.0, ty: IrType::F64 } },
-            Instruction::Const { result: Value(11), value: Constant::Float { value: 2.0, ty: IrType::F64 } },
-            Instruction::Add { result: Value(12), lhs: Value(10), rhs: Value(11), ty: IrType::F64 },
+            Instruction::Const {
+                result: Value(10),
+                value: Constant::Float {
+                    value: 1.0,
+                    ty: IrType::F64,
+                },
+            },
+            Instruction::Const {
+                result: Value(11),
+                value: Constant::Float {
+                    value: 2.0,
+                    ty: IrType::F64,
+                },
+            },
+            Instruction::Add {
+                result: Value(12),
+                lhs: Value(10),
+                rhs: Value(11),
+                ty: IrType::F64,
+            },
         ];
-        let func = make_function("test_dadd", vec![], instrs, Terminator::Return { value: Some(Value(12)) });
+        let func = make_function(
+            "test_dadd",
+            vec![],
+            instrs,
+            Terminator::Return {
+                value: Some(Value(12)),
+            },
+        );
         let result = select_instructions(&func, &target).unwrap();
-        assert!(has_opcode(&result, I686Opcode::Addsd), "double add should use Addsd");
+        assert!(
+            has_opcode(&result, I686Opcode::Addsd),
+            "double add should use Addsd"
+        );
     }
 
     // -------------------------------------------------------------------

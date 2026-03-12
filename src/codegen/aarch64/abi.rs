@@ -294,9 +294,7 @@ pub const FLOAT_ARG_REGS: [PhysReg; 8] = [V0, V1, V2, V3, V4, V5, V6, V7];
 
 /// Callee-saved GPRs: x19-x28 (10 registers).
 /// These must be preserved by the called function.
-pub const CALLEE_SAVED_GPRS: [PhysReg; 10] = [
-    X19, X20, X21, X22, X23, X24, X25, X26, X27, X28,
-];
+pub const CALLEE_SAVED_GPRS: [PhysReg; 10] = [X19, X20, X21, X22, X23, X24, X25, X26, X27, X28];
 
 /// Callee-saved FP registers: d8-d15 (lower 64 bits of v8-v15).
 /// Only the lower 64 bits (Dn view) are callee-saved per AAPCS64.
@@ -1003,10 +1001,7 @@ pub fn generate_prologue(
         if layout.uses_frame_pointer {
             instrs.push(MachineInstr::with_operands(
                 OP_MOV_RR,
-                vec![
-                    MachineOperand::Register(FP),
-                    MachineOperand::Register(SP),
-                ],
+                vec![MachineOperand::Register(FP), MachineOperand::Register(SP)],
             ));
         }
     } else if layout.frame_size <= 4095 {
@@ -1599,9 +1594,9 @@ fn find_allocated_reg(alloc_result: &AllocationResult, value: Value) -> Option<P
 mod tests {
     use super::*;
     use crate::driver::target::TargetConfig;
-    use crate::ir::types::IrType;
     use crate::ir::cfg::BasicBlock;
     use crate::ir::instructions::BlockId;
+    use crate::ir::types::IrType;
 
     /// Creates a default AArch64 target configuration for testing.
     fn test_target() -> TargetConfig {
@@ -1622,8 +1617,11 @@ mod tests {
             blocks: vec![BasicBlock::new(BlockId(0), "entry".to_string())],
             entry_block: BlockId(0),
             is_definition: true,
-is_static: false,
-is_weak: false,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         }
     }
 
@@ -1670,9 +1668,8 @@ is_weak: false,
     #[test]
     fn test_eight_integer_args() {
         let target = test_target();
-        let params: Vec<(String, IrType)> = (0..8)
-            .map(|i| (format!("arg{}", i), IrType::I64))
-            .collect();
+        let params: Vec<(String, IrType)> =
+            (0..8).map(|i| (format!("arg{}", i), IrType::I64)).collect();
         let result = classify_arguments(&params, &target);
         assert_eq!(result.len(), 8);
         for i in 0..8 {
@@ -1683,9 +1680,8 @@ is_weak: false,
     #[test]
     fn test_nine_integer_args_overflow() {
         let target = test_target();
-        let params: Vec<(String, IrType)> = (0..9)
-            .map(|i| (format!("arg{}", i), IrType::I64))
-            .collect();
+        let params: Vec<(String, IrType)> =
+            (0..9).map(|i| (format!("arg{}", i), IrType::I64)).collect();
         let result = classify_arguments(&params, &target);
         assert_eq!(result.len(), 9);
         for i in 0..8 {
@@ -1697,9 +1693,8 @@ is_weak: false,
     #[test]
     fn test_eight_float_args() {
         let target = test_target();
-        let params: Vec<(String, IrType)> = (0..8)
-            .map(|i| (format!("arg{}", i), IrType::F64))
-            .collect();
+        let params: Vec<(String, IrType)> =
+            (0..8).map(|i| (format!("arg{}", i), IrType::F64)).collect();
         let result = classify_arguments(&params, &target);
         assert_eq!(result.len(), 8);
         for i in 0..8 {
@@ -1720,9 +1715,9 @@ is_weak: false,
         let result = classify_arguments(&params, &target);
         assert_eq!(result.len(), 4);
         assert_eq!(result[0], ArgClass::IntegerReg(X0)); // NGRN=0 → x0
-        assert_eq!(result[1], ArgClass::FloatReg(V0));    // NSRN=0 → v0
+        assert_eq!(result[1], ArgClass::FloatReg(V0)); // NSRN=0 → v0
         assert_eq!(result[2], ArgClass::IntegerReg(X1)); // NGRN=1 → x1
-        assert_eq!(result[3], ArgClass::FloatReg(V1));    // NSRN=1 → v1
+        assert_eq!(result[3], ArgClass::FloatReg(V1)); // NSRN=1 → v1
     }
 
     #[test]
@@ -1930,7 +1925,11 @@ is_weak: false,
         let target = test_target();
         let ty = IrType::Struct {
             fields: vec![
-                IrType::F32, IrType::F32, IrType::F32, IrType::F32, IrType::F32,
+                IrType::F32,
+                IrType::F32,
+                IrType::F32,
+                IrType::F32,
+                IrType::F32,
             ],
             packed: false,
         };
@@ -1984,7 +1983,11 @@ is_weak: false,
         let alloc = alloc_with_callee_saved(vec![X19, X20, X21]);
         let layout = compute_frame_layout(&func, &alloc, &target);
 
-        assert!(layout.frame_size % 16 == 0, "Frame size {} not 16-byte aligned", layout.frame_size);
+        assert!(
+            layout.frame_size % 16 == 0,
+            "Frame size {} not 16-byte aligned",
+            layout.frame_size
+        );
     }
 
     #[test]
@@ -2013,11 +2016,17 @@ is_weak: false,
         assert!(!prologue.is_empty(), "Prologue should not be empty");
 
         // First instruction should be STP (pre-indexed) for small frames.
-        assert_eq!(prologue[0].opcode, OP_STP_PRE, "First instr should be STP pre-indexed");
+        assert_eq!(
+            prologue[0].opcode, OP_STP_PRE,
+            "First instr should be STP pre-indexed"
+        );
 
         // Second instruction should be MOV x29, sp (frame pointer setup).
         if prologue.len() > 1 {
-            assert_eq!(prologue[1].opcode, OP_MOV_RR, "Second instr should be MOV FP, SP");
+            assert_eq!(
+                prologue[1].opcode, OP_MOV_RR,
+                "Second instr should be MOV FP, SP"
+            );
         }
     }
 
@@ -2032,7 +2041,10 @@ is_weak: false,
 
         // Last instruction should be RET.
         let last = epilogue.last().unwrap();
-        assert_eq!(last.opcode, OP_RET, "Last epilogue instruction should be RET");
+        assert_eq!(
+            last.opcode, OP_RET,
+            "Last epilogue instruction should be RET"
+        );
     }
 
     #[test]
@@ -2091,10 +2103,7 @@ is_weak: false,
 
     #[test]
     fn test_callee_saved_fprs() {
-        assert_eq!(
-            CALLEE_SAVED_FPRS,
-            [V8, V9, V10, V11, V12, V13, V14, V15]
-        );
+        assert_eq!(CALLEE_SAVED_FPRS, [V8, V9, V10, V11, V12, V13, V14, V15]);
     }
 
     #[test]

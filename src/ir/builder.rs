@@ -53,15 +53,13 @@ use crate::ir::instructions::{
     BlockId, Callee, CastOp, CompareOp, Constant, FloatCompareOp, Instruction, Value,
 };
 use crate::ir::types::IrType;
-use crate::sema::types::{
-    ArraySize as SemaArraySize, CType, FloatKind, IntegerKind,
-};
+use crate::sema::types::{ArraySize as SemaArraySize, CType, FloatKind, IntegerKind};
 use crate::sema::{TypedDeclaration, TypedTranslationUnit};
 
 // Re-import AST types for pattern matching during lowering.
 use crate::frontend::parser::ast::{
-    AssignmentOp, BinaryOp, BlockItem, Declaration, Expression, FloatSuffix, ForInit,
-    FunctionDef, InitDeclarator, Initializer, Statement, StorageClass, UnaryOp,
+    AssignmentOp, BinaryOp, BlockItem, Declaration, Expression, FloatSuffix, ForInit, FunctionDef,
+    InitDeclarator, Initializer, Statement, StorageClass, UnaryOp,
 };
 
 // ===========================================================================
@@ -126,6 +124,13 @@ pub struct Function {
     pub is_static: bool,
     /// `true` if declared with `__attribute__((weak))` (weak binding).
     pub is_weak: bool,
+    /// Optional section override from `__attribute__((section("name")))`.
+    pub section_override: Option<String>,
+    /// Visibility from `__attribute__((visibility("...")))`.
+    /// Values: "default", "hidden", "protected", "internal".
+    pub visibility: Option<String>,
+    /// `true` if `__attribute__((used))` — prevents dead-stripping even if unreferenced.
+    pub is_used: bool,
 }
 
 // ===========================================================================
@@ -148,6 +153,14 @@ pub struct GlobalVariable {
     pub is_extern: bool,
     /// `true` if declared with `static` (internal linkage).
     pub is_static: bool,
+    /// `true` if declared with `__attribute__((weak))` (weak binding).
+    pub is_weak: bool,
+    /// Optional section override from `__attribute__((section("name")))`.
+    pub section_override: Option<String>,
+    /// Visibility from `__attribute__((visibility("...")))`.
+    pub visibility: Option<String>,
+    /// `true` if `__attribute__((used))` — prevents dead-stripping even if unreferenced.
+    pub is_used: bool,
 }
 
 // ===========================================================================
@@ -187,7 +200,12 @@ struct FunctionBuilder {
 
 impl FunctionBuilder {
     /// Creates a new function builder with the given name, return type, and params.
-    fn new(name: String, return_type: IrType, params: Vec<(String, IrType)>, entry_id: BlockId) -> Self {
+    fn new(
+        name: String,
+        return_type: IrType,
+        params: Vec<(String, IrType)>,
+        entry_id: BlockId,
+    ) -> Self {
         let entry_block = BasicBlock::new(entry_id, "entry".to_string());
         FunctionBuilder {
             name,
@@ -439,7 +457,8 @@ impl<'a> IrBuilder<'a> {
             }
 
             CType::Struct(st) => {
-                let field_types: Vec<IrType> = st.fields.iter().map(|f| self.map_type(&f.ty)).collect();
+                let field_types: Vec<IrType> =
+                    st.fields.iter().map(|f| self.map_type(&f.ty)).collect();
                 IrType::Struct {
                     fields: field_types,
                     packed: st.is_packed,
@@ -503,11 +522,16 @@ impl<'a> IrBuilder<'a> {
     /// Inspects the type specifiers in the TypeName to determine the base C type,
     /// then computes the target-specific size. Handles pointers via abstract
     /// declarator inspection.
-    fn resolve_sizeof_type_name(&mut self, type_name: &crate::frontend::parser::ast::TypeName) -> i64 {
+    fn resolve_sizeof_type_name(
+        &mut self,
+        type_name: &crate::frontend::parser::ast::TypeName,
+    ) -> i64 {
         use crate::frontend::parser::ast::TypeSpecifier;
 
         // Check if the abstract declarator makes this a pointer type.
-        let has_pointer = type_name.abstract_declarator.as_ref()
+        let has_pointer = type_name
+            .abstract_declarator
+            .as_ref()
             .map(|ad| !ad.pointer.is_empty())
             .unwrap_or(false);
         if has_pointer {
@@ -519,7 +543,10 @@ impl<'a> IrBuilder<'a> {
     }
 
     /// Resolves a TypeSpecifier to a byte size for sizeof evaluation.
-    fn resolve_sizeof_type_specifier(&mut self, spec: &crate::frontend::parser::ast::TypeSpecifier) -> i64 {
+    fn resolve_sizeof_type_specifier(
+        &mut self,
+        spec: &crate::frontend::parser::ast::TypeSpecifier,
+    ) -> i64 {
         use crate::frontend::parser::ast::TypeSpecifier;
         match spec {
             TypeSpecifier::Void => 0, // sizeof(void) is 0 (GCC extension: 1, but 0 is standard)
@@ -544,7 +571,11 @@ impl<'a> IrBuilder<'a> {
                 let ctype = self.specifier_to_ctype(spec);
                 let ir_ty = self.map_type(&ctype);
                 let size = ir_ty.size(&self.target) as i64;
-                if size == 0 { self.target.pointer_size as i64 } else { size }
+                if size == 0 {
+                    self.target.pointer_size as i64
+                } else {
+                    size
+                }
             }
             TypeSpecifier::Enum(_) => 4, // Enum underlying type is always int
             TypeSpecifier::StructRef { .. } | TypeSpecifier::UnionRef { .. } => {
@@ -553,14 +584,22 @@ impl<'a> IrBuilder<'a> {
                 let ctype = self.specifier_to_ctype(spec);
                 let ir_ty = self.map_type(&ctype);
                 let size = ir_ty.size(&self.target) as i64;
-                if size == 0 { self.target.pointer_size as i64 } else { size }
+                if size == 0 {
+                    self.target.pointer_size as i64
+                } else {
+                    size
+                }
             }
             TypeSpecifier::EnumRef { .. } => 4, // enum is always int-sized
             TypeSpecifier::Union(def) => {
                 let ctype = self.specifier_to_ctype(spec);
                 let ir_ty = self.map_type(&ctype);
                 let size = ir_ty.size(&self.target) as i64;
-                if size == 0 { self.target.pointer_size as i64 } else { size }
+                if size == 0 {
+                    self.target.pointer_size as i64
+                } else {
+                    size
+                }
             }
             TypeSpecifier::TypedefName { .. } => self.target.pointer_size as i64,
             TypeSpecifier::Typeof { .. } | TypeSpecifier::TypeofType { .. } => {
@@ -571,9 +610,14 @@ impl<'a> IrBuilder<'a> {
     }
 
     /// Resolves a TypeName AST node to an alignment for _Alignof evaluation.
-    fn resolve_alignof_type_name(&mut self, type_name: &crate::frontend::parser::ast::TypeName) -> i64 {
+    fn resolve_alignof_type_name(
+        &mut self,
+        type_name: &crate::frontend::parser::ast::TypeName,
+    ) -> i64 {
         // For pointer types, alignment = pointer alignment
-        let has_pointer = type_name.abstract_declarator.as_ref()
+        let has_pointer = type_name
+            .abstract_declarator
+            .as_ref()
             .map(|ad| !ad.pointer.is_empty())
             .unwrap_or(false);
         if has_pointer {
@@ -581,7 +625,11 @@ impl<'a> IrBuilder<'a> {
         }
         // For most types, alignment = min(size, max_alignment)
         let size = self.resolve_sizeof_type_specifier(&type_name.specifiers.type_specifier);
-        if size == 0 { 1 } else { size.min(self.target.max_alignment as i64) }
+        if size == 0 {
+            1
+        } else {
+            size.min(self.target.max_alignment as i64)
+        }
     }
 
     /// Resolves a TypeName AST node to an IrType for cast expressions.
@@ -617,7 +665,7 @@ impl<'a> IrBuilder<'a> {
         base_ir: IrType,
         direct: &crate::frontend::parser::ast::DirectAbstractDeclarator,
     ) -> IrType {
-        use crate::frontend::parser::ast::{DirectAbstractDeclarator, ArraySize as AstArraySize};
+        use crate::frontend::parser::ast::{ArraySize as AstArraySize, DirectAbstractDeclarator};
         match direct {
             DirectAbstractDeclarator::Parenthesized(inner) => {
                 let mut result = base_ir;
@@ -660,10 +708,7 @@ impl<'a> IrBuilder<'a> {
     ///
     /// Used to determine whether to emit ZExt (unsigned) or SExt (signed) for
     /// integer widening cast operations.
-    fn is_unsigned_specifier(
-        &self,
-        spec: &crate::frontend::parser::ast::TypeSpecifier,
-    ) -> bool {
+    fn is_unsigned_specifier(&self, spec: &crate::frontend::parser::ast::TypeSpecifier) -> bool {
         use crate::frontend::parser::ast::TypeSpecifier;
         match spec {
             TypeSpecifier::Unsigned(_) => true,
@@ -692,9 +737,7 @@ impl<'a> IrBuilder<'a> {
             TypeSpecifier::Char => IrType::I8,
             TypeSpecifier::Short => IrType::I16,
             TypeSpecifier::Int => IrType::I32,
-            TypeSpecifier::Long => {
-                IrType::int_type_for_size(self.target.long_size as usize)
-            }
+            TypeSpecifier::Long => IrType::int_type_for_size(self.target.long_size as usize),
             TypeSpecifier::LongLong => IrType::I64,
             TypeSpecifier::Float => IrType::F32,
             TypeSpecifier::Double => IrType::F64,
@@ -702,9 +745,7 @@ impl<'a> IrBuilder<'a> {
             TypeSpecifier::Signed(inner)
             | TypeSpecifier::Unsigned(inner)
             | TypeSpecifier::Atomic(inner)
-            | TypeSpecifier::Qualified { inner, .. } => {
-                self.resolve_specifier_to_ir_type(inner)
-            }
+            | TypeSpecifier::Qualified { inner, .. } => self.resolve_specifier_to_ir_type(inner),
             TypeSpecifier::Complex(inner) => {
                 // Simplify: treat _Complex as just the base type
                 self.resolve_specifier_to_ir_type(inner)
@@ -713,13 +754,19 @@ impl<'a> IrBuilder<'a> {
             TypeSpecifier::Struct(def) => {
                 self.register_struct_def(def);
                 let fields: Vec<IrType> = self.get_struct_ir_fields(def);
-                IrType::Struct { fields, packed: false }
+                IrType::Struct {
+                    fields,
+                    packed: false,
+                }
             }
             TypeSpecifier::StructRef { tag, .. } => {
                 let tag = self.interner.resolve(*tag).to_string();
                 if let Some(field_info) = self.struct_field_names.get(&tag) {
                     let fields: Vec<IrType> = field_info.iter().map(|(_, ty)| ty.clone()).collect();
-                    IrType::Struct { fields, packed: false }
+                    IrType::Struct {
+                        fields,
+                        packed: false,
+                    }
                 } else {
                     // Unknown struct ref — treat as opaque pointer-sized
                     IrType::I32
@@ -730,7 +777,10 @@ impl<'a> IrBuilder<'a> {
                 let mut max_size: usize = 0;
                 let mut max_ty = IrType::I32;
                 for member in &def.members {
-                    if let crate::frontend::parser::ast::StructMember::Field { specifiers, .. } = member {
+                    if let crate::frontend::parser::ast::StructMember::Field {
+                        specifiers, ..
+                    } = member
+                    {
                         let ty = self.resolve_specifier_to_ir_type(&specifiers.type_specifier);
                         let sz = Self::approx_ir_type_size(&ty);
                         if sz > max_size {
@@ -760,17 +810,26 @@ impl<'a> IrBuilder<'a> {
     }
 
     /// Extract field name+type pairs from a struct definition.
-    fn get_struct_field_info(&mut self, def: &crate::frontend::parser::ast::StructDef) -> Vec<(String, IrType)> {
+    fn get_struct_field_info(
+        &mut self,
+        def: &crate::frontend::parser::ast::StructDef,
+    ) -> Vec<(String, IrType)> {
         let mut fields = Vec::new();
         for member in &def.members {
-            if let crate::frontend::parser::ast::StructMember::Field { specifiers, declarators, .. } = member {
+            if let crate::frontend::parser::ast::StructMember::Field {
+                specifiers,
+                declarators,
+                ..
+            } = member
+            {
                 let base_ty = self.resolve_specifier_to_ir_type(&specifiers.type_specifier);
                 if declarators.is_empty() {
                     fields.push(("".to_string(), base_ty));
                 } else {
                     for decl in declarators {
                         if let Some(ref declarator) = decl.declarator {
-                            let field_ty = self.resolve_declarator_ir_type(base_ty.clone(), declarator);
+                            let field_ty =
+                                self.resolve_declarator_ir_type(base_ty.clone(), declarator);
                             let name = Self::extract_declarator_name(declarator, self.interner);
                             fields.push((name, field_ty));
                         } else {
@@ -784,8 +843,14 @@ impl<'a> IrBuilder<'a> {
     }
 
     /// Get the IR field types for a struct definition.
-    fn get_struct_ir_fields(&mut self, def: &crate::frontend::parser::ast::StructDef) -> Vec<IrType> {
-        self.get_struct_field_info(def).into_iter().map(|(_, ty)| ty).collect()
+    fn get_struct_ir_fields(
+        &mut self,
+        def: &crate::frontend::parser::ast::StructDef,
+    ) -> Vec<IrType> {
+        self.get_struct_field_info(def)
+            .into_iter()
+            .map(|(_, ty)| ty)
+            .collect()
     }
 
     /// Infer the store type for an assignment target expression.
@@ -798,12 +863,19 @@ impl<'a> IrBuilder<'a> {
                 let (_, field_ty) = self.compute_struct_member_offset(object, &member_name);
                 Some(field_ty)
             }
-            Expression::ArrowAccess { pointer, member, .. } => {
+            Expression::ArrowAccess {
+                pointer, member, ..
+            } => {
                 let member_name = self.interner.resolve(*member).to_string();
-                let (_, field_ty) = self.compute_struct_member_offset_from_ptr(pointer, &member_name);
+                let (_, field_ty) =
+                    self.compute_struct_member_offset_from_ptr(pointer, &member_name);
                 Some(field_ty)
             }
-            Expression::UnaryPrefix { op: crate::frontend::parser::ast::UnaryOp::Dereference, operand, .. } => {
+            Expression::UnaryPrefix {
+                op: crate::frontend::parser::ast::UnaryOp::Dereference,
+                operand,
+                ..
+            } => {
                 // For *p = val, infer pointee type from the pointer expression
                 if let Expression::Identifier { name, .. } = operand.as_ref() {
                     if let Some(ref fb) = self.current_function {
@@ -821,14 +893,19 @@ impl<'a> IrBuilder<'a> {
     }
 
     /// Register struct field names from a TypeSpecifier if it contains a struct definition.
-    fn try_register_struct_from_specifier(&mut self, spec: &crate::frontend::parser::ast::TypeSpecifier) {
+    fn try_register_struct_from_specifier(
+        &mut self,
+        spec: &crate::frontend::parser::ast::TypeSpecifier,
+    ) {
         use crate::frontend::parser::ast::TypeSpecifier;
         match spec {
             TypeSpecifier::Struct(def) => {
                 self.register_struct_def(def);
             }
-            TypeSpecifier::Signed(inner) | TypeSpecifier::Unsigned(inner) |
-            TypeSpecifier::Qualified { inner, .. } | TypeSpecifier::Atomic(inner) => {
+            TypeSpecifier::Signed(inner)
+            | TypeSpecifier::Unsigned(inner)
+            | TypeSpecifier::Qualified { inner, .. }
+            | TypeSpecifier::Atomic(inner) => {
                 self.try_register_struct_from_specifier(inner);
             }
             _ => {}
@@ -864,7 +941,7 @@ impl<'a> IrBuilder<'a> {
         base_ir: IrType,
         direct: &crate::frontend::parser::ast::DirectDeclarator,
     ) -> IrType {
-        use crate::frontend::parser::ast::{DirectDeclarator, ArraySize as AstArraySize};
+        use crate::frontend::parser::ast::{ArraySize as AstArraySize, DirectDeclarator};
         match direct {
             DirectDeclarator::Identifier(_) | DirectDeclarator::Abstract => base_ir,
             DirectDeclarator::Parenthesized(inner) => {
@@ -917,7 +994,12 @@ impl<'a> IrBuilder<'a> {
                 declarators,
                 span,
             } => {
-                self.lower_global_variable_declaration(specifiers, declarators, *span, &typed_decl.resolved_type);
+                self.lower_global_variable_declaration(
+                    specifiers,
+                    declarators,
+                    *span,
+                    &typed_decl.resolved_type,
+                );
             }
 
             Declaration::Function(func_def) => {
@@ -932,6 +1014,11 @@ impl<'a> IrBuilder<'a> {
 
             // Empty declarations produce no IR.
             Declaration::Empty { .. } => {}
+
+            // Top-level asm declarations are passed through as-is.
+            // They produce no IR currently — the linker/codegen would
+            // need to handle them if we want to emit the assembly text.
+            Declaration::TopLevelAsm { .. } => {}
         }
     }
 
@@ -966,10 +1053,19 @@ impl<'a> IrBuilder<'a> {
             // even without an explicit `extern` keyword.
             if Self::is_function_declarator(&init_decl.declarator) {
                 // Create an extern function stub (no body).
+                let fwd_spec_attrs =
+                    Self::extract_elf_attributes(&specifiers.attributes, self.interner);
+                let fwd_decl_attrs =
+                    Self::extract_elf_attributes(&init_decl.declarator.attributes, self.interner);
+                let (fwd_sec, fwd_vis, fwd_used, fwd_weak) =
+                    Self::merge_elf_attributes(&[fwd_spec_attrs, fwd_decl_attrs]);
                 let func = Function {
                     name: name.clone(),
                     return_type: self.map_type(
-                        &resolved_type.as_ref().cloned().unwrap_or(CType::Integer(IntegerKind::Int))
+                        &resolved_type
+                            .as_ref()
+                            .cloned()
+                            .unwrap_or(CType::Integer(IntegerKind::Int)),
                     ),
                     params: Vec::new(),
                     param_values: Vec::new(),
@@ -977,7 +1073,10 @@ impl<'a> IrBuilder<'a> {
                     entry_block: BlockId(0),
                     is_definition: false,
                     is_static: is_static,
-                    is_weak: false,
+                    is_weak: fwd_weak,
+                    section_override: fwd_sec,
+                    visibility: fwd_vis,
+                    is_used: fwd_used,
                 };
                 self.module.functions.push(func);
                 continue;
@@ -994,9 +1093,18 @@ impl<'a> IrBuilder<'a> {
             };
 
             // Lower the initializer if present
-            let initializer = init_decl.initializer.as_ref().and_then(|init| {
-                self.lower_constant_initializer(init, &ir_type)
-            });
+            let initializer = init_decl
+                .initializer
+                .as_ref()
+                .and_then(|init| self.lower_constant_initializer(init, &ir_type));
+
+            // Extract ELF-related attributes (section, visibility, used, weak)
+            // from both the declaration specifiers and the individual declarator.
+            let spec_attrs = Self::extract_elf_attributes(&specifiers.attributes, self.interner);
+            let decl_attrs =
+                Self::extract_elf_attributes(&init_decl.declarator.attributes, self.interner);
+            let (section_override, visibility, is_used, is_weak_var) =
+                Self::merge_elf_attributes(&[spec_attrs, decl_attrs]);
 
             // For file-scope variable declarations without explicit `extern`,
             // check if implicit extern applies (declaration without initializer
@@ -1007,6 +1115,10 @@ impl<'a> IrBuilder<'a> {
                 initializer,
                 is_extern,
                 is_static,
+                is_weak: is_weak_var,
+                section_override,
+                visibility,
+                is_used,
             });
 
             // Register the global variable's type so that Identifier
@@ -1036,34 +1148,27 @@ impl<'a> IrBuilder<'a> {
     /// Attempts to evaluate an expression as a compile-time constant.
     fn try_eval_constant_expr(&self, expr: &Expression) -> Option<Constant> {
         match expr {
-            Expression::IntegerLiteral { value, .. } => {
-                Some(Constant::Integer {
-                    value: *value as i64,
-                    ty: IrType::I32,
-                })
-            }
+            Expression::IntegerLiteral { value, .. } => Some(Constant::Integer {
+                value: *value as i64,
+                ty: IrType::I32,
+            }),
             Expression::FloatLiteral { value, suffix, .. } => {
                 let ty = if *suffix == FloatSuffix::Float {
                     IrType::F32
                 } else {
                     IrType::F64
                 };
-                Some(Constant::Float {
-                    value: *value,
-                    ty,
-                })
+                Some(Constant::Float { value: *value, ty })
             }
             Expression::StringLiteral { value, .. } => {
                 let mut bytes = value.as_bytes().to_vec();
                 bytes.push(0); // null terminator
                 Some(Constant::String(bytes))
             }
-            Expression::CharLiteral { value, .. } => {
-                Some(Constant::Integer {
-                    value: *value as i64,
-                    ty: IrType::I8,
-                })
-            }
+            Expression::CharLiteral { value, .. } => Some(Constant::Integer {
+                value: *value as i64,
+                ty: IrType::I8,
+            }),
             _ => None,
         }
     }
@@ -1266,12 +1371,23 @@ impl<'a> IrBuilder<'a> {
         let fb = self.current_function.take().unwrap();
         let is_static_fn = func_def.specifiers.storage_class
             == Some(crate::frontend::parser::ast::StorageClass::Static);
-        let is_weak_fn = if let Some(weak_id) = self.interner.get("weak") {
-            func_def.attributes.iter().any(|attr| attr.name == weak_id)
-                || func_def.specifiers.attributes.iter().any(|attr| attr.name == weak_id)
-        } else {
-            false
-        };
+        // Extract ELF attributes from function attributes and declaration specifiers
+        let fn_spec_attrs =
+            Self::extract_elf_attributes(&func_def.specifiers.attributes, self.interner);
+        let fn_decl_attrs = Self::extract_elf_attributes(&func_def.attributes, self.interner);
+        let (fn_section, fn_vis, fn_used, fn_weak) =
+            Self::merge_elf_attributes(&[fn_spec_attrs, fn_decl_attrs]);
+        let is_weak_fn = fn_weak
+            || if let Some(weak_id) = self.interner.get("weak") {
+                func_def.attributes.iter().any(|attr| attr.name == weak_id)
+                    || func_def
+                        .specifiers
+                        .attributes
+                        .iter()
+                        .any(|attr| attr.name == weak_id)
+            } else {
+                false
+            };
         let function = Function {
             name: fb.name,
             return_type: fb.return_type,
@@ -1282,6 +1398,9 @@ impl<'a> IrBuilder<'a> {
             is_definition: true,
             is_static: is_static_fn,
             is_weak: is_weak_fn,
+            section_override: fn_section,
+            visibility: fn_vis,
+            is_used: fn_used,
         };
 
         self.module.functions.push(function);
@@ -1325,22 +1444,28 @@ impl<'a> IrBuilder<'a> {
 
         let params: Vec<(String, CType)> = match param_list {
             Some(pl) => {
-                pl.params.iter().enumerate().map(|(i, pd)| {
-                    // Extract parameter name from its declarator
-                    let name = pd.declarator.as_ref()
-                        .map(|d| Self::extract_declarator_name(d, self.interner))
-                        .unwrap_or_else(|| format!("__param_{}", i));
+                pl.params
+                    .iter()
+                    .enumerate()
+                    .map(|(i, pd)| {
+                        // Extract parameter name from its declarator
+                        let name = pd
+                            .declarator
+                            .as_ref()
+                            .map(|d| Self::extract_declarator_name(d, self.interner))
+                            .unwrap_or_else(|| format!("__param_{}", i));
 
-                    // Convert parameter type specifier to CType, then apply
-                    // pointer/array modifiers from the declarator
-                    let base_ctype = self.specifier_to_ctype(&pd.specifiers.type_specifier);
-                    let ctype = if let Some(ref d) = pd.declarator {
-                        self.apply_declarator_to_ctype(base_ctype, d)
-                    } else {
-                        base_ctype
-                    };
-                    (name, ctype)
-                }).collect()
+                        // Convert parameter type specifier to CType, then apply
+                        // pointer/array modifiers from the declarator
+                        let base_ctype = self.specifier_to_ctype(&pd.specifiers.type_specifier);
+                        let ctype = if let Some(ref d) = pd.declarator {
+                            self.apply_declarator_to_ctype(base_ctype, d)
+                        } else {
+                            base_ctype
+                        };
+                        (name, ctype)
+                    })
+                    .collect()
             }
             None => Vec::new(),
         };
@@ -1366,19 +1491,14 @@ impl<'a> IrBuilder<'a> {
             DirectDeclarator::Parenthesized(inner) => {
                 Self::extract_param_list_from_declarator(inner)
             }
-            DirectDeclarator::Array { base, .. } => {
-                Self::extract_param_list_from_direct(base)
-            }
+            DirectDeclarator::Array { base, .. } => Self::extract_param_list_from_direct(base),
             _ => None,
         }
     }
 
     /// Converts a TypeSpecifier to a CType for the AST-based fallback path
     /// in resolve_function_signature.
-    fn specifier_to_ctype(
-        &self,
-        spec: &crate::frontend::parser::ast::TypeSpecifier,
-    ) -> CType {
+    fn specifier_to_ctype(&self, spec: &crate::frontend::parser::ast::TypeSpecifier) -> CType {
         use crate::frontend::parser::ast::TypeSpecifier;
         match spec {
             TypeSpecifier::Void => CType::Void,
@@ -1392,16 +1512,16 @@ impl<'a> IrBuilder<'a> {
             TypeSpecifier::Double => CType::Float(FloatKind::Double),
             TypeSpecifier::LongDouble => CType::Float(FloatKind::LongDouble),
             TypeSpecifier::Signed(inner) => self.specifier_to_ctype(inner),
-            TypeSpecifier::Unsigned(inner) => {
-                match self.specifier_to_ctype(inner) {
-                    CType::Integer(IntegerKind::Char) => CType::Integer(IntegerKind::UnsignedChar),
-                    CType::Integer(IntegerKind::Short) => CType::Integer(IntegerKind::UnsignedShort),
-                    CType::Integer(IntegerKind::Int) => CType::Integer(IntegerKind::UnsignedInt),
-                    CType::Integer(IntegerKind::Long) => CType::Integer(IntegerKind::UnsignedLong),
-                    CType::Integer(IntegerKind::LongLong) => CType::Integer(IntegerKind::UnsignedLongLong),
-                    other => other,
+            TypeSpecifier::Unsigned(inner) => match self.specifier_to_ctype(inner) {
+                CType::Integer(IntegerKind::Char) => CType::Integer(IntegerKind::UnsignedChar),
+                CType::Integer(IntegerKind::Short) => CType::Integer(IntegerKind::UnsignedShort),
+                CType::Integer(IntegerKind::Int) => CType::Integer(IntegerKind::UnsignedInt),
+                CType::Integer(IntegerKind::Long) => CType::Integer(IntegerKind::UnsignedLong),
+                CType::Integer(IntegerKind::LongLong) => {
+                    CType::Integer(IntegerKind::UnsignedLongLong)
                 }
-            }
+                other => other,
+            },
             TypeSpecifier::Atomic(inner) | TypeSpecifier::Qualified { inner, .. } => {
                 self.specifier_to_ctype(inner)
             }
@@ -1411,29 +1531,38 @@ impl<'a> IrBuilder<'a> {
             }
             TypeSpecifier::Struct(def) => {
                 // Build CType::Struct from the struct definition
-                let fields: Vec<crate::sema::types::StructField> = def.members.iter().flat_map(|m| {
-                    match m {
-                        crate::frontend::parser::ast::StructMember::Field { specifiers, declarators, .. } => {
+                let fields: Vec<crate::sema::types::StructField> = def
+                    .members
+                    .iter()
+                    .flat_map(|m| match m {
+                        crate::frontend::parser::ast::StructMember::Field {
+                            specifiers,
+                            declarators,
+                            ..
+                        } => {
                             let base = self.specifier_to_ctype(&specifiers.type_specifier);
-                            declarators.iter().map(|sd| {
-                                let (name, ty) = if let Some(ref d) = sd.declarator {
-                                    let n = Self::extract_declarator_name(d, self.interner);
-                                    let t = self.apply_declarator_to_ctype(base.clone(), d);
-                                    (n, t)
-                                } else {
-                                    (String::new(), base.clone())
-                                };
-                                crate::sema::types::StructField {
-                                    name: Some(name),
-                                    ty,
-                                    bit_width: None,
-                                    offset: 0,
-                                }
-                            }).collect::<Vec<_>>()
+                            declarators
+                                .iter()
+                                .map(|sd| {
+                                    let (name, ty) = if let Some(ref d) = sd.declarator {
+                                        let n = Self::extract_declarator_name(d, self.interner);
+                                        let t = self.apply_declarator_to_ctype(base.clone(), d);
+                                        (n, t)
+                                    } else {
+                                        (String::new(), base.clone())
+                                    };
+                                    crate::sema::types::StructField {
+                                        name: Some(name),
+                                        ty,
+                                        bit_width: None,
+                                        offset: 0,
+                                    }
+                                })
+                                .collect::<Vec<_>>()
                         }
                         _ => Vec::new(),
-                    }
-                }).collect();
+                    })
+                    .collect();
                 CType::Struct(crate::sema::types::StructType {
                     tag: def.tag.map(|id| self.interner.resolve(id).to_string()),
                     fields,
@@ -1451,14 +1580,15 @@ impl<'a> IrBuilder<'a> {
                 // (field_name, IrType) pairs.  Convert each IrType back to
                 // CType so that map_type round-trips correctly.
                 if let Some(field_info) = self.struct_field_names.get(&tag_name) {
-                    let fields: Vec<crate::sema::types::StructField> = field_info.iter().map(|(name, ir_ty)| {
-                        crate::sema::types::StructField {
+                    let fields: Vec<crate::sema::types::StructField> = field_info
+                        .iter()
+                        .map(|(name, ir_ty)| crate::sema::types::StructField {
                             name: Some(name.clone()),
                             ty: Self::ir_type_to_approx_ctype(ir_ty),
                             bit_width: None,
                             offset: 0,
-                        }
-                    }).collect();
+                        })
+                        .collect();
                     CType::Struct(crate::sema::types::StructType {
                         tag: Some(tag_name),
                         fields,
@@ -1476,7 +1606,10 @@ impl<'a> IrBuilder<'a> {
                 let mut largest = CType::Integer(IntegerKind::Int);
                 let mut max_size: usize = 4;
                 for member in &def.members {
-                    if let crate::frontend::parser::ast::StructMember::Field { specifiers, .. } = member {
+                    if let crate::frontend::parser::ast::StructMember::Field {
+                        specifiers, ..
+                    } = member
+                    {
                         let ty = self.specifier_to_ctype(&specifiers.type_specifier);
                         let ir_ty = self.map_type(&ty);
                         let sz = IrBuilder::approx_ir_type_size(&ir_ty);
@@ -1517,13 +1650,15 @@ impl<'a> IrBuilder<'a> {
         base: CType,
         direct: &crate::frontend::parser::ast::DirectDeclarator,
     ) -> CType {
-        use crate::frontend::parser::ast::{DirectDeclarator, ArraySize as AstArraySize};
+        use crate::frontend::parser::ast::{ArraySize as AstArraySize, DirectDeclarator};
         match direct {
             DirectDeclarator::Identifier(_) | DirectDeclarator::Abstract => base,
-            DirectDeclarator::Parenthesized(inner) => {
-                self.apply_declarator_to_ctype(base, inner)
-            }
-            DirectDeclarator::Array { base: dd_base, size, .. } => {
+            DirectDeclarator::Parenthesized(inner) => self.apply_declarator_to_ctype(base, inner),
+            DirectDeclarator::Array {
+                base: dd_base,
+                size,
+                ..
+            } => {
                 let inner = self.apply_direct_decl_to_ctype(base, dd_base);
                 let count = match size {
                     AstArraySize::Fixed(expr) => {
@@ -1564,9 +1699,13 @@ impl<'a> IrBuilder<'a> {
             Statement::Compound { items, .. } => {
                 // Save current scope state so inner declarations don't
                 // leak into the outer scope (C block scoping semantics).
-                let saved_local_values = self.current_function.as_ref()
+                let saved_local_values = self
+                    .current_function
+                    .as_ref()
                     .map(|fb| fb.local_values.clone());
-                let saved_local_types = self.current_function.as_ref()
+                let saved_local_types = self
+                    .current_function
+                    .as_ref()
                     .map(|fb| fb.local_types.clone());
 
                 for item in items {
@@ -1647,7 +1786,11 @@ impl<'a> IrBuilder<'a> {
                 self.lower_switch_statement(expr, body);
             }
 
-            Statement::Case { value: _value, body, .. } => {
+            Statement::Case {
+                value: _value,
+                body,
+                ..
+            } => {
                 // Case labels are handled within switch lowering.
                 // If we encounter one outside, just lower the body.
                 self.lower_statement(body);
@@ -1662,8 +1805,7 @@ impl<'a> IrBuilder<'a> {
                 if let Some(target) = self.break_targets.last().copied() {
                     if let Some(ref mut fb) = self.current_function {
                         if !fb.current_block_terminated() {
-                            fb.current_block_mut().terminator =
-                                Some(Terminator::Branch { target });
+                            fb.current_block_mut().terminator = Some(Terminator::Branch { target });
                         }
                     }
                 }
@@ -1673,8 +1815,7 @@ impl<'a> IrBuilder<'a> {
                 if let Some(target) = self.continue_targets.last().copied() {
                     if let Some(ref mut fb) = self.current_function {
                         if !fb.current_block_terminated() {
-                            fb.current_block_mut().terminator =
-                                Some(Terminator::Branch { target });
+                            fb.current_block_mut().terminator = Some(Terminator::Branch { target });
                         }
                     }
                 }
@@ -1684,8 +1825,7 @@ impl<'a> IrBuilder<'a> {
                 let target = self.get_or_create_label_block(*label);
                 if let Some(ref mut fb) = self.current_function {
                     if !fb.current_block_terminated() {
-                        fb.current_block_mut().terminator =
-                            Some(Terminator::Branch { target });
+                        fb.current_block_mut().terminator = Some(Terminator::Branch { target });
                     }
                 }
             }
@@ -1695,8 +1835,9 @@ impl<'a> IrBuilder<'a> {
                 // Branch from current block to the label block
                 if let Some(ref mut fb) = self.current_function {
                     if !fb.current_block_terminated() {
-                        fb.current_block_mut().terminator =
-                            Some(Terminator::Branch { target: label_block });
+                        fb.current_block_mut().terminator = Some(Terminator::Branch {
+                            target: label_block,
+                        });
                     }
                 }
                 self.set_insert_point(label_block);
@@ -1768,8 +1909,9 @@ impl<'a> IrBuilder<'a> {
         self.lower_statement(then_branch);
         if let Some(ref mut fb) = self.current_function {
             if !fb.current_block_terminated() {
-                fb.current_block_mut().terminator =
-                    Some(Terminator::Branch { target: merge_block });
+                fb.current_block_mut().terminator = Some(Terminator::Branch {
+                    target: merge_block,
+                });
             }
         }
 
@@ -1779,8 +1921,9 @@ impl<'a> IrBuilder<'a> {
             self.lower_statement(else_stmt);
             if let Some(ref mut fb) = self.current_function {
                 if !fb.current_block_terminated() {
-                    fb.current_block_mut().terminator =
-                        Some(Terminator::Branch { target: merge_block });
+                    fb.current_block_mut().terminator = Some(Terminator::Branch {
+                        target: merge_block,
+                    });
                 }
             }
         }
@@ -1798,8 +1941,7 @@ impl<'a> IrBuilder<'a> {
         // Branch to condition block
         if let Some(ref mut fb) = self.current_function {
             if !fb.current_block_terminated() {
-                fb.current_block_mut().terminator =
-                    Some(Terminator::Branch { target: cond_block });
+                fb.current_block_mut().terminator = Some(Terminator::Branch { target: cond_block });
             }
         }
 
@@ -1824,8 +1966,7 @@ impl<'a> IrBuilder<'a> {
         self.lower_statement(body);
         if let Some(ref mut fb) = self.current_function {
             if !fb.current_block_terminated() {
-                fb.current_block_mut().terminator =
-                    Some(Terminator::Branch { target: cond_block });
+                fb.current_block_mut().terminator = Some(Terminator::Branch { target: cond_block });
             }
         }
         self.break_targets.pop();
@@ -1844,8 +1985,7 @@ impl<'a> IrBuilder<'a> {
         // Branch to body block
         if let Some(ref mut fb) = self.current_function {
             if !fb.current_block_terminated() {
-                fb.current_block_mut().terminator =
-                    Some(Terminator::Branch { target: body_block });
+                fb.current_block_mut().terminator = Some(Terminator::Branch { target: body_block });
             }
         }
 
@@ -1856,8 +1996,7 @@ impl<'a> IrBuilder<'a> {
         self.lower_statement(body);
         if let Some(ref mut fb) = self.current_function {
             if !fb.current_block_terminated() {
-                fb.current_block_mut().terminator =
-                    Some(Terminator::Branch { target: cond_block });
+                fb.current_block_mut().terminator = Some(Terminator::Branch { target: cond_block });
             }
         }
         self.break_targets.pop();
@@ -1907,8 +2046,7 @@ impl<'a> IrBuilder<'a> {
         // Branch to condition
         if let Some(ref mut fb) = self.current_function {
             if !fb.current_block_terminated() {
-                fb.current_block_mut().terminator =
-                    Some(Terminator::Branch { target: cond_block });
+                fb.current_block_mut().terminator = Some(Terminator::Branch { target: cond_block });
             }
         }
 
@@ -1943,8 +2081,7 @@ impl<'a> IrBuilder<'a> {
         self.lower_statement(body);
         if let Some(ref mut fb) = self.current_function {
             if !fb.current_block_terminated() {
-                fb.current_block_mut().terminator =
-                    Some(Terminator::Branch { target: incr_block });
+                fb.current_block_mut().terminator = Some(Terminator::Branch { target: incr_block });
             }
         }
         self.break_targets.pop();
@@ -1957,8 +2094,7 @@ impl<'a> IrBuilder<'a> {
         }
         if let Some(ref mut fb) = self.current_function {
             if !fb.current_block_terminated() {
-                fb.current_block_mut().terminator =
-                    Some(Terminator::Branch { target: cond_block });
+                fb.current_block_mut().terminator = Some(Terminator::Branch { target: cond_block });
             }
         }
 
@@ -1975,7 +2111,8 @@ impl<'a> IrBuilder<'a> {
         // Collect case values and create blocks for them
         let cases = self.collect_switch_cases(body);
         let mut case_entries: Vec<(i64, BlockId)> = Vec::new();
-        let mut case_map: std::collections::HashMap<i64, BlockId> = std::collections::HashMap::new();
+        let mut case_map: std::collections::HashMap<i64, BlockId> =
+            std::collections::HashMap::new();
 
         for case_val in &cases {
             let case_block = self.create_block(&format!("switch.case.{}", case_val));
@@ -2077,17 +2214,23 @@ impl<'a> IrBuilder<'a> {
         match stmt {
             Statement::Case { value, body, .. } => {
                 // Determine which block this case value maps to
-                let target_block = if let Expression::IntegerLiteral { value: v, .. } = value.as_ref() {
-                    case_map.get(&(*v as i64)).copied()
-                } else if let Expression::UnaryPrefix { op: UnaryOp::Negate, operand, .. } = value.as_ref() {
-                    if let Expression::IntegerLiteral { value: v, .. } = operand.as_ref() {
-                        case_map.get(&(-(*v as i64))).copied()
+                let target_block =
+                    if let Expression::IntegerLiteral { value: v, .. } = value.as_ref() {
+                        case_map.get(&(*v as i64)).copied()
+                    } else if let Expression::UnaryPrefix {
+                        op: UnaryOp::Negate,
+                        operand,
+                        ..
+                    } = value.as_ref()
+                    {
+                        if let Expression::IntegerLiteral { value: v, .. } = operand.as_ref() {
+                            case_map.get(&(-(*v as i64))).copied()
+                        } else {
+                            None
+                        }
                     } else {
                         None
-                    }
-                } else {
-                    None
-                };
+                    };
                 if let Some(block_id) = target_block {
                     // Fall-through: branch from previous block to this case block
                     if let Some(ref mut fb) = self.current_function {
@@ -2105,8 +2248,9 @@ impl<'a> IrBuilder<'a> {
                 // Fall-through: branch from previous block to default block
                 if let Some(ref mut fb) = self.current_function {
                     if !fb.current_block_terminated() {
-                        fb.current_block_mut().terminator =
-                            Some(Terminator::Branch { target: default_block });
+                        fb.current_block_mut().terminator = Some(Terminator::Branch {
+                            target: default_block,
+                        });
                     }
                 }
                 self.set_insert_point(default_block);
@@ -2179,7 +2323,8 @@ impl<'a> IrBuilder<'a> {
                 self.try_register_struct_from_specifier(&_specifiers.type_specifier);
 
                 for init_decl in declarators {
-                    let var_name = Self::extract_declarator_name(&init_decl.declarator, self.interner);
+                    let var_name =
+                        Self::extract_declarator_name(&init_decl.declarator, self.interner);
                     if var_name.is_empty() {
                         continue;
                     }
@@ -2187,13 +2332,8 @@ impl<'a> IrBuilder<'a> {
                     // Resolve the variable's type from the declaration specifiers
                     // and declarator, so arrays (e.g. char buf[8192]) get their
                     // full size allocated on the stack.
-                    let base_ir = self.resolve_specifier_to_ir_type(
-                        &_specifiers.type_specifier,
-                    );
-                    let var_type = self.resolve_declarator_ir_type(
-                        base_ir,
-                        &init_decl.declarator,
-                    );
+                    let base_ir = self.resolve_specifier_to_ir_type(&_specifiers.type_specifier);
+                    let var_type = self.resolve_declarator_ir_type(base_ir, &init_decl.declarator);
 
                     // Allocate stack space
                     let alloca_val = self.new_value(var_type.clone().pointer_to());
@@ -2303,6 +2443,10 @@ impl<'a> IrBuilder<'a> {
                     initializer: Some(Constant::String(bytes)),
                     is_extern: false,
                     is_static: true,
+                    is_weak: false,
+                    section_override: None,
+                    visibility: None,
+                    is_used: false,
                 });
 
                 // Return a pointer to the global string
@@ -2409,7 +2553,11 @@ impl<'a> IrBuilder<'a> {
                 }
 
                 // Check if this is a function name (for function pointer expressions).
-                let is_function = self.module.functions.iter().any(|f| f.name == resolved_name);
+                let is_function = self
+                    .module
+                    .functions
+                    .iter()
+                    .any(|f| f.name == resolved_name);
                 if is_function {
                     let result = self.new_value(IrType::I64);
                     let inst = Instruction::Const {
@@ -2443,18 +2591,12 @@ impl<'a> IrBuilder<'a> {
             }
 
             // === Post-increment/decrement ===
-            Expression::PostIncrement { operand, .. } => {
-                self.lower_post_increment(operand, true)
-            }
+            Expression::PostIncrement { operand, .. } => self.lower_post_increment(operand, true),
 
-            Expression::PostDecrement { operand, .. } => {
-                self.lower_post_increment(operand, false)
-            }
+            Expression::PostDecrement { operand, .. } => self.lower_post_increment(operand, false),
 
             // === Function call ===
-            Expression::Call { callee, args, .. } => {
-                self.lower_function_call(callee, args)
-            }
+            Expression::Call { callee, args, .. } => self.lower_function_call(callee, args),
 
             // === Array subscript ===
             Expression::Subscript { array, index, .. } => {
@@ -2483,7 +2625,8 @@ impl<'a> IrBuilder<'a> {
             Expression::MemberAccess { object, member, .. } => {
                 // Get field address via lvalue path then load
                 let member_name = self.interner.resolve(*member).to_string();
-                let (byte_offset, field_ty) = self.compute_struct_member_offset(object, &member_name);
+                let (byte_offset, field_ty) =
+                    self.compute_struct_member_offset(object, &member_name);
                 let obj_addr = self.get_lvalue_address(object);
                 if let Some(base) = obj_addr {
                     let field_ptr = if byte_offset == 0 {
@@ -2500,7 +2643,8 @@ impl<'a> IrBuilder<'a> {
                         };
                         self.emit_instruction(gep);
                         if let Some(ref mut fb) = self.current_function {
-                            fb.value_types.insert(gep_result, field_ty.clone().pointer_to());
+                            fb.value_types
+                                .insert(gep_result, field_ty.clone().pointer_to());
                         }
                         gep_result
                     };
@@ -2528,7 +2672,8 @@ impl<'a> IrBuilder<'a> {
                 // Load the pointer, then add byte offset, then load field
                 let ptr_val = self.lower_expression(pointer);
                 let member_name = self.interner.resolve(*member).to_string();
-                let (byte_offset, field_ty) = self.compute_struct_member_offset_from_ptr(pointer, &member_name);
+                let (byte_offset, field_ty) =
+                    self.compute_struct_member_offset_from_ptr(pointer, &member_name);
                 let field_ptr = if byte_offset == 0 {
                     ptr_val
                 } else {
@@ -2580,14 +2725,18 @@ impl<'a> IrBuilder<'a> {
             }
 
             // === Cast ===
-            Expression::Cast { type_name, operand, .. } => {
+            Expression::Cast {
+                type_name, operand, ..
+            } => {
                 let operand_val = self.lower_expression(operand);
 
                 // Resolve target type from the TypeName
                 let to_ty = self.resolve_type_name_to_ir_type(type_name);
 
                 // Determine source type from value_types or value_type()
-                let from_ty = self.current_function.as_ref()
+                let from_ty = self
+                    .current_function
+                    .as_ref()
                     .and_then(|fb| fb.value_types.get(&operand_val).cloned())
                     .unwrap_or_else(|| self.value_type(operand_val));
 
@@ -2880,9 +3029,13 @@ impl<'a> IrBuilder<'a> {
         // defaulting to I32.  Float operands require F32/F64 so that the
         // codegen emits SSE instructions instead of integer ALU ops.
         let ty = {
-            let lhs_inferred = self.current_function.as_ref()
+            let lhs_inferred = self
+                .current_function
+                .as_ref()
                 .and_then(|fb| fb.value_types.get(&lhs).cloned());
-            let rhs_inferred = self.current_function.as_ref()
+            let rhs_inferred = self
+                .current_function
+                .as_ref()
                 .and_then(|fb| fb.value_types.get(&rhs).cloned());
             match (&lhs_inferred, &rhs_inferred) {
                 (Some(t), _) if t.is_float() => t.clone(),
@@ -2900,10 +3053,14 @@ impl<'a> IrBuilder<'a> {
         // C's "usual arithmetic conversions" for mixed int/float expressions
         // like `double_var < 0`.
         let (lhs, rhs) = if ty.is_float() {
-            let lhs_is_float = self.current_function.as_ref()
+            let lhs_is_float = self
+                .current_function
+                .as_ref()
                 .and_then(|fb| fb.value_types.get(&lhs).cloned())
                 .map_or(false, |t| t.is_float());
-            let rhs_is_float = self.current_function.as_ref()
+            let rhs_is_float = self
+                .current_function
+                .as_ref()
                 .and_then(|fb| fb.value_types.get(&rhs).cloned())
                 .map_or(false, |t| t.is_float());
             let new_lhs = if !lhs_is_float {
@@ -2949,8 +3106,14 @@ impl<'a> IrBuilder<'a> {
         // In C, `ptr + n` and `n + ptr` scale n by sizeof(pointee).
         // Detect this by checking value_types for pointer types and emit
         // a GEP instead of a plain Add.
-        let lhs_ty = self.current_function.as_ref().and_then(|fb| fb.value_types.get(&lhs).cloned());
-        let rhs_ty = self.current_function.as_ref().and_then(|fb| fb.value_types.get(&rhs).cloned());
+        let lhs_ty = self
+            .current_function
+            .as_ref()
+            .and_then(|fb| fb.value_types.get(&lhs).cloned());
+        let rhs_ty = self
+            .current_function
+            .as_ref()
+            .and_then(|fb| fb.value_types.get(&rhs).cloned());
 
         let is_ptr_add = matches!(op, BinaryOp::Add)
             && (lhs_ty.as_ref().map_or(false, |t| t.is_pointer())
@@ -2960,8 +3123,6 @@ impl<'a> IrBuilder<'a> {
         let is_ptr_ptr_sub = matches!(op, BinaryOp::Sub)
             && lhs_ty.as_ref().map_or(false, |t| t.is_pointer())
             && rhs_ty.as_ref().map_or(false, |t| t.is_pointer());
-
-
 
         let is_ptr_sub = matches!(op, BinaryOp::Sub)
             && lhs_ty.as_ref().map_or(false, |t| t.is_pointer())
@@ -3192,13 +3353,17 @@ impl<'a> IrBuilder<'a> {
                     self.emit_instruction(Instruction::FCmp {
                         result,
                         op: FloatCompareOp::OrderedEqual,
-                        lhs, rhs, ty,
+                        lhs,
+                        rhs,
+                        ty,
                     });
                 } else {
                     self.emit_instruction(Instruction::ICmp {
                         result,
                         op: CompareOp::Equal,
-                        lhs, rhs, ty,
+                        lhs,
+                        rhs,
+                        ty,
                     });
                 }
                 result
@@ -3209,13 +3374,17 @@ impl<'a> IrBuilder<'a> {
                     self.emit_instruction(Instruction::FCmp {
                         result,
                         op: FloatCompareOp::OrderedNotEqual,
-                        lhs, rhs, ty,
+                        lhs,
+                        rhs,
+                        ty,
                     });
                 } else {
                     self.emit_instruction(Instruction::ICmp {
                         result,
                         op: CompareOp::NotEqual,
-                        lhs, rhs, ty,
+                        lhs,
+                        rhs,
+                        ty,
                     });
                 }
                 result
@@ -3226,13 +3395,17 @@ impl<'a> IrBuilder<'a> {
                     self.emit_instruction(Instruction::FCmp {
                         result,
                         op: FloatCompareOp::OrderedLess,
-                        lhs, rhs, ty,
+                        lhs,
+                        rhs,
+                        ty,
                     });
                 } else {
                     self.emit_instruction(Instruction::ICmp {
                         result,
                         op: CompareOp::SignedLess,
-                        lhs, rhs, ty,
+                        lhs,
+                        rhs,
+                        ty,
                     });
                 }
                 result
@@ -3243,13 +3416,17 @@ impl<'a> IrBuilder<'a> {
                     self.emit_instruction(Instruction::FCmp {
                         result,
                         op: FloatCompareOp::OrderedGreater,
-                        lhs, rhs, ty,
+                        lhs,
+                        rhs,
+                        ty,
                     });
                 } else {
                     self.emit_instruction(Instruction::ICmp {
                         result,
                         op: CompareOp::SignedGreater,
-                        lhs, rhs, ty,
+                        lhs,
+                        rhs,
+                        ty,
                     });
                 }
                 result
@@ -3260,13 +3437,17 @@ impl<'a> IrBuilder<'a> {
                     self.emit_instruction(Instruction::FCmp {
                         result,
                         op: FloatCompareOp::OrderedLessEqual,
-                        lhs, rhs, ty,
+                        lhs,
+                        rhs,
+                        ty,
                     });
                 } else {
                     self.emit_instruction(Instruction::ICmp {
                         result,
                         op: CompareOp::SignedLessEqual,
-                        lhs, rhs, ty,
+                        lhs,
+                        rhs,
+                        ty,
                     });
                 }
                 result
@@ -3277,13 +3458,17 @@ impl<'a> IrBuilder<'a> {
                     self.emit_instruction(Instruction::FCmp {
                         result,
                         op: FloatCompareOp::OrderedGreaterEqual,
-                        lhs, rhs, ty,
+                        lhs,
+                        rhs,
+                        ty,
                     });
                 } else {
                     self.emit_instruction(Instruction::ICmp {
                         result,
                         op: CompareOp::SignedGreaterEqual,
-                        lhs, rhs, ty,
+                        lhs,
+                        rhs,
+                        ty,
                     });
                 }
                 result
@@ -3302,7 +3487,11 @@ impl<'a> IrBuilder<'a> {
 
         let rhs_block = self.create_block("land.rhs");
         let merge_block = self.create_block("land.merge");
-        let current_block_id = self.current_function.as_ref().map(|fb| fb.current_block).unwrap_or(BlockId(0));
+        let current_block_id = self
+            .current_function
+            .as_ref()
+            .map(|fb| fb.current_block)
+            .unwrap_or(BlockId(0));
 
         // If LHS is false, skip RHS
         if let Some(ref mut fb) = self.current_function {
@@ -3319,12 +3508,17 @@ impl<'a> IrBuilder<'a> {
         self.set_insert_point(rhs_block);
         let rhs = self.lower_expression(right);
         let rhs_bool = self.ensure_boolean(rhs);
-        let rhs_end_block = self.current_function.as_ref().map(|fb| fb.current_block).unwrap_or(BlockId(0));
+        let rhs_end_block = self
+            .current_function
+            .as_ref()
+            .map(|fb| fb.current_block)
+            .unwrap_or(BlockId(0));
 
         if let Some(ref mut fb) = self.current_function {
             if !fb.current_block_terminated() {
-                fb.current_block_mut().terminator =
-                    Some(Terminator::Branch { target: merge_block });
+                fb.current_block_mut().terminator = Some(Terminator::Branch {
+                    target: merge_block,
+                });
             }
         }
 
@@ -3335,10 +3529,7 @@ impl<'a> IrBuilder<'a> {
         let phi = Instruction::Phi {
             result,
             ty: IrType::I1,
-            incoming: vec![
-                (false_val, current_block_id),
-                (rhs_bool, rhs_end_block),
-            ],
+            incoming: vec![(false_val, current_block_id), (rhs_bool, rhs_end_block)],
         };
         self.emit_instruction(phi);
         result
@@ -3353,7 +3544,11 @@ impl<'a> IrBuilder<'a> {
 
         let rhs_block = self.create_block("lor.rhs");
         let merge_block = self.create_block("lor.merge");
-        let current_block_id = self.current_function.as_ref().map(|fb| fb.current_block).unwrap_or(BlockId(0));
+        let current_block_id = self
+            .current_function
+            .as_ref()
+            .map(|fb| fb.current_block)
+            .unwrap_or(BlockId(0));
 
         // If LHS is true, skip RHS
         if let Some(ref mut fb) = self.current_function {
@@ -3370,12 +3565,17 @@ impl<'a> IrBuilder<'a> {
         self.set_insert_point(rhs_block);
         let rhs = self.lower_expression(right);
         let rhs_bool = self.ensure_boolean(rhs);
-        let rhs_end_block = self.current_function.as_ref().map(|fb| fb.current_block).unwrap_or(BlockId(0));
+        let rhs_end_block = self
+            .current_function
+            .as_ref()
+            .map(|fb| fb.current_block)
+            .unwrap_or(BlockId(0));
 
         if let Some(ref mut fb) = self.current_function {
             if !fb.current_block_terminated() {
-                fb.current_block_mut().terminator =
-                    Some(Terminator::Branch { target: merge_block });
+                fb.current_block_mut().terminator = Some(Terminator::Branch {
+                    target: merge_block,
+                });
             }
         }
 
@@ -3386,10 +3586,7 @@ impl<'a> IrBuilder<'a> {
         let phi = Instruction::Phi {
             result,
             ty: IrType::I1,
-            incoming: vec![
-                (true_val, current_block_id),
-                (rhs_bool, rhs_end_block),
-            ],
+            incoming: vec![(true_val, current_block_id), (rhs_bool, rhs_end_block)],
         };
         self.emit_instruction(phi);
         result
@@ -3501,12 +3698,8 @@ impl<'a> IrBuilder<'a> {
                     self.emit_const_int(0, IrType::I64)
                 }
             }
-            UnaryOp::PreIncrement => {
-                self.lower_pre_increment(operand, true)
-            }
-            UnaryOp::PreDecrement => {
-                self.lower_pre_increment(operand, false)
-            }
+            UnaryOp::PreIncrement => self.lower_pre_increment(operand, true),
+            UnaryOp::PreDecrement => self.lower_pre_increment(operand, false),
         }
     }
 
@@ -3516,7 +3709,9 @@ impl<'a> IrBuilder<'a> {
         let val = self.lower_expression(operand);
 
         // Determine the type of the operand to handle pointer increment correctly.
-        let val_ty = self.current_function.as_ref()
+        let val_ty = self
+            .current_function
+            .as_ref()
             .and_then(|fb| fb.value_types.get(&val).cloned())
             .unwrap_or(IrType::I32);
 
@@ -3541,14 +3736,28 @@ impl<'a> IrBuilder<'a> {
             let one = self.emit_const_int(1, val_ty.clone());
             let r = self.new_value(val_ty.clone());
             if is_increment {
-                self.emit_instruction(Instruction::Add { result: r, lhs: val, rhs: one, ty: val_ty });
+                self.emit_instruction(Instruction::Add {
+                    result: r,
+                    lhs: val,
+                    rhs: one,
+                    ty: val_ty,
+                });
             } else {
-                self.emit_instruction(Instruction::Sub { result: r, lhs: val, rhs: one, ty: val_ty });
+                self.emit_instruction(Instruction::Sub {
+                    result: r,
+                    lhs: val,
+                    rhs: one,
+                    ty: val_ty,
+                });
             }
             r
         };
         if let Some(ptr) = addr {
-            self.emit_instruction(Instruction::Store { value: result, ptr, store_ty: None });
+            self.emit_instruction(Instruction::Store {
+                value: result,
+                ptr,
+                store_ty: None,
+            });
         }
         result
     }
@@ -3559,7 +3768,9 @@ impl<'a> IrBuilder<'a> {
         let original = self.lower_expression(operand);
 
         // Determine the type of the operand to handle pointer increment correctly.
-        let val_ty = self.current_function.as_ref()
+        let val_ty = self
+            .current_function
+            .as_ref()
             .and_then(|fb| fb.value_types.get(&original).cloned())
             .unwrap_or(IrType::I32);
 
@@ -3584,14 +3795,28 @@ impl<'a> IrBuilder<'a> {
             let one = self.emit_const_int(1, val_ty.clone());
             let r = self.new_value(val_ty.clone());
             if is_increment {
-                self.emit_instruction(Instruction::Add { result: r, lhs: original, rhs: one, ty: val_ty });
+                self.emit_instruction(Instruction::Add {
+                    result: r,
+                    lhs: original,
+                    rhs: one,
+                    ty: val_ty,
+                });
             } else {
-                self.emit_instruction(Instruction::Sub { result: r, lhs: original, rhs: one, ty: val_ty });
+                self.emit_instruction(Instruction::Sub {
+                    result: r,
+                    lhs: original,
+                    rhs: one,
+                    ty: val_ty,
+                });
             }
             r
         };
         if let Some(ptr) = addr {
-            self.emit_instruction(Instruction::Store { value: new_val, ptr, store_ty: None });
+            self.emit_instruction(Instruction::Store {
+                value: new_val,
+                ptr,
+                store_ty: None,
+            });
         }
         original
     }
@@ -3750,22 +3975,32 @@ impl<'a> IrBuilder<'a> {
         // Then
         self.set_insert_point(then_block);
         let then_val = self.lower_expression(then_expr);
-        let then_end_block = self.current_function.as_ref().map(|fb| fb.current_block).unwrap_or(BlockId(0));
+        let then_end_block = self
+            .current_function
+            .as_ref()
+            .map(|fb| fb.current_block)
+            .unwrap_or(BlockId(0));
         if let Some(ref mut fb) = self.current_function {
             if !fb.current_block_terminated() {
-                fb.current_block_mut().terminator =
-                    Some(Terminator::Branch { target: merge_block });
+                fb.current_block_mut().terminator = Some(Terminator::Branch {
+                    target: merge_block,
+                });
             }
         }
 
         // Else
         self.set_insert_point(else_block);
         let else_val = self.lower_expression(else_expr);
-        let else_end_block = self.current_function.as_ref().map(|fb| fb.current_block).unwrap_or(BlockId(0));
+        let else_end_block = self
+            .current_function
+            .as_ref()
+            .map(|fb| fb.current_block)
+            .unwrap_or(BlockId(0));
         if let Some(ref mut fb) = self.current_function {
             if !fb.current_block_terminated() {
-                fb.current_block_mut().terminator =
-                    Some(Terminator::Branch { target: merge_block });
+                fb.current_block_mut().terminator = Some(Terminator::Branch {
+                    target: merge_block,
+                });
             }
         }
 
@@ -3775,20 +4010,23 @@ impl<'a> IrBuilder<'a> {
         self.set_insert_point(merge_block);
         // First try the value_types map (tracks explicit float types from literals,
         // loads, etc.), then fall back to instruction search, then default to I32.
-        let phi_ty = self.current_function.as_ref()
+        let phi_ty = self
+            .current_function
+            .as_ref()
             .and_then(|fb| fb.value_types.get(&then_val).cloned())
             .unwrap_or_else(|| {
                 let t = self.value_type(then_val);
-                if t == IrType::Void { IrType::I32 } else { t }
+                if t == IrType::Void {
+                    IrType::I32
+                } else {
+                    t
+                }
             });
         let result = self.new_value(phi_ty.clone());
         let phi = Instruction::Phi {
             result,
             ty: phi_ty,
-            incoming: vec![
-                (then_val, then_end_block),
-                (else_val, else_end_block),
-            ],
+            incoming: vec![(then_val, then_end_block), (else_val, else_end_block)],
         };
         self.emit_instruction(phi);
         result
@@ -3806,31 +4044,33 @@ impl<'a> IrBuilder<'a> {
         // passed by hidden pointer.  The callee copies the struct from the
         // pointer into a local alloca (see build_function parameter handling).
         // Small structs (≤8 bytes) continue to be passed by value in a register.
-        let arg_values: Vec<Value> = args.iter().map(|a| {
-            // Check if this argument is a large struct by looking at the lvalue type
-            let is_large_struct_arg = if let Expression::Identifier { name, .. } = a {
-                if let Some(ref fb) = self.current_function {
-                    fb.local_types.get(name).map_or(false, |ty| {
-                        matches!(ty, IrType::Struct { .. })
-                            && Self::approx_ir_type_size(ty) > 8
-                    })
+        let arg_values: Vec<Value> = args
+            .iter()
+            .map(|a| {
+                // Check if this argument is a large struct by looking at the lvalue type
+                let is_large_struct_arg = if let Expression::Identifier { name, .. } = a {
+                    if let Some(ref fb) = self.current_function {
+                        fb.local_types.get(name).map_or(false, |ty| {
+                            matches!(ty, IrType::Struct { .. }) && Self::approx_ir_type_size(ty) > 8
+                        })
+                    } else {
+                        false
+                    }
                 } else {
                     false
-                }
-            } else {
-                false
-            };
-            if is_large_struct_arg {
-                // Pass the address of the struct (LEA of alloca) rather than loading the value
-                if let Some(addr) = self.get_lvalue_address(a) {
-                    addr
+                };
+                if is_large_struct_arg {
+                    // Pass the address of the struct (LEA of alloca) rather than loading the value
+                    if let Some(addr) = self.get_lvalue_address(a) {
+                        addr
+                    } else {
+                        self.lower_expression(a)
+                    }
                 } else {
                     self.lower_expression(a)
                 }
-            } else {
-                self.lower_expression(a)
-            }
-        }).collect();
+            })
+            .collect();
 
         let callee_ir = match callee {
             Expression::Identifier { name, .. } => {
@@ -3862,12 +4102,13 @@ impl<'a> IrBuilder<'a> {
         // Determine the actual return type by looking up the called
         // function in the module.  Falls back to I32 for unknown callees.
         let return_ty = match &callee_ir {
-            Callee::Direct(ref name) => {
-                self.module.functions.iter()
-                    .find(|f| f.name == *name)
-                    .map(|f| f.return_type.clone())
-                    .unwrap_or(IrType::I32)
-            }
+            Callee::Direct(ref name) => self
+                .module
+                .functions
+                .iter()
+                .find(|f| f.name == *name)
+                .map(|f| f.return_type.clone())
+                .unwrap_or(IrType::I32),
             Callee::Indirect(_) => {
                 // For indirect calls through function pointers, try to
                 // retrieve the type from the callee expression's type.
@@ -3929,9 +4170,7 @@ impl<'a> IrBuilder<'a> {
                 }
                 None
             }
-            Expression::UnaryPrefix { op, operand, .. }
-                if *op == UnaryOp::Dereference =>
-            {
+            Expression::UnaryPrefix { op, operand, .. } if *op == UnaryOp::Dereference => {
                 // *ptr — the address is the value of the pointer expression.
                 Some(self.lower_expression(operand))
             }
@@ -3955,7 +4194,8 @@ impl<'a> IrBuilder<'a> {
                 let obj_addr = self.get_lvalue_address(object);
                 if let Some(base) = obj_addr {
                     let member_name = self.interner.resolve(*member).to_string();
-                    let (byte_offset, field_ty) = self.compute_struct_member_offset(object, &member_name);
+                    let (byte_offset, field_ty) =
+                        self.compute_struct_member_offset(object, &member_name);
                     if byte_offset == 0 {
                         // Field is at the base of the struct — just cast pointer type.
                         let result_ty = field_ty.pointer_to();
@@ -3984,11 +4224,14 @@ impl<'a> IrBuilder<'a> {
                     None
                 }
             }
-            Expression::ArrowAccess { pointer, member, .. } => {
+            Expression::ArrowAccess {
+                pointer, member, ..
+            } => {
                 // ptr->field — load pointer then add byte offset.
                 let ptr_val = self.lower_expression(pointer);
                 let member_name = self.interner.resolve(*member).to_string();
-                let (byte_offset, field_ty) = self.compute_struct_member_offset_from_ptr(pointer, &member_name);
+                let (byte_offset, field_ty) =
+                    self.compute_struct_member_offset_from_ptr(pointer, &member_name);
                 if byte_offset == 0 {
                     if let Some(ref mut fb) = self.current_function {
                         fb.value_types.insert(ptr_val, field_ty.pointer_to());
@@ -4034,7 +4277,11 @@ impl<'a> IrBuilder<'a> {
 
     /// Compute byte offset and field type for a struct member access (object.member).
     /// Uses the object expression's type to look up struct field info.
-    fn compute_struct_member_offset(&self, object: &Expression, member_name: &str) -> (usize, IrType) {
+    fn compute_struct_member_offset(
+        &self,
+        object: &Expression,
+        member_name: &str,
+    ) -> (usize, IrType) {
         // Try to find the struct tag from the object's type
         let struct_tag = self.infer_struct_tag_from_expr(object);
         if let Some(tag) = struct_tag {
@@ -4053,7 +4300,11 @@ impl<'a> IrBuilder<'a> {
     }
 
     /// Compute byte offset and field type for an arrow access (ptr->member).
-    fn compute_struct_member_offset_from_ptr(&self, pointer: &Expression, member_name: &str) -> (usize, IrType) {
+    fn compute_struct_member_offset_from_ptr(
+        &self,
+        pointer: &Expression,
+        member_name: &str,
+    ) -> (usize, IrType) {
         // For arrow access, the pointer points to a struct
         let struct_tag = self.infer_struct_tag_from_ptr_expr(pointer);
         if let Some(tag) = struct_tag {
@@ -4098,8 +4349,9 @@ impl<'a> IrBuilder<'a> {
         if let IrType::Struct { fields, .. } = ty {
             for (tag, field_info) in &self.struct_field_names {
                 if field_info.len() == fields.len() {
-                    let matches = field_info.iter().zip(fields.iter())
-                        .all(|((_, ft), f)| Self::approx_ir_type_size(ft) == Self::approx_ir_type_size(f));
+                    let matches = field_info.iter().zip(fields.iter()).all(|((_, ft), f)| {
+                        Self::approx_ir_type_size(ft) == Self::approx_ir_type_size(f)
+                    });
                     if matches {
                         return Some(tag.clone());
                     }
@@ -4241,7 +4493,10 @@ impl<'a> IrBuilder<'a> {
     /// Extracts the identifier name from a declarator, returning an empty string
     /// if no name is found (abstract declarators). Uses the interner to resolve
     /// InternId values to actual string names.
-    fn extract_declarator_name(declarator: &crate::frontend::parser::ast::Declarator, interner: &Interner) -> String {
+    fn extract_declarator_name(
+        declarator: &crate::frontend::parser::ast::Declarator,
+        interner: &Interner,
+    ) -> String {
         match &declarator.direct {
             crate::frontend::parser::ast::DirectDeclarator::Identifier(id) => {
                 interner.resolve(*id).to_string()
@@ -4257,6 +4512,73 @@ impl<'a> IrBuilder<'a> {
             }
             crate::frontend::parser::ast::DirectDeclarator::Abstract => String::new(),
         }
+    }
+
+    /// Extracts section, visibility, and used attribute metadata from a list of GCC attributes.
+    ///
+    /// Returns `(section_override, visibility, is_used, is_weak)`.
+    fn extract_elf_attributes(
+        attrs: &[crate::frontend::parser::ast::GccAttribute],
+        interner: &Interner,
+    ) -> (Option<String>, Option<String>, bool, bool) {
+        let mut section_override = None;
+        let mut visibility = None;
+        let mut is_used = false;
+        let mut is_weak = false;
+
+        for attr in attrs {
+            let name = interner.resolve(attr.name);
+            match name {
+                "section" | "__section__" => {
+                    if let Some(crate::frontend::parser::ast::AttributeArg::String(ref s)) =
+                        attr.args.first()
+                    {
+                        section_override = Some(s.clone());
+                    }
+                }
+                "visibility" | "__visibility__" => {
+                    if let Some(crate::frontend::parser::ast::AttributeArg::String(ref s)) =
+                        attr.args.first()
+                    {
+                        visibility = Some(s.clone());
+                    }
+                }
+                "used" | "__used__" => {
+                    is_used = true;
+                }
+                "weak" | "__weak__" => {
+                    is_weak = true;
+                }
+                _ => {}
+            }
+        }
+
+        (section_override, visibility, is_used, is_weak)
+    }
+
+    /// Merges attribute metadata from multiple sources (specifiers, declarator, function attrs).
+    fn merge_elf_attributes(
+        sources: &[(Option<String>, Option<String>, bool, bool)],
+    ) -> (Option<String>, Option<String>, bool, bool) {
+        let mut section = None;
+        let mut vis = None;
+        let mut used = false;
+        let mut weak = false;
+        for (s, v, u, w) in sources {
+            if s.is_some() {
+                section = s.clone();
+            }
+            if v.is_some() {
+                vis = v.clone();
+            }
+            if *u {
+                used = true;
+            }
+            if *w {
+                weak = true;
+            }
+        }
+        (section, vis, used, weak)
     }
 
     /// Helper to extract name from a DirectDeclarator. Uses the interner to resolve

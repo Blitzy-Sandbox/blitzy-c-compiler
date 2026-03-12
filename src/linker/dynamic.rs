@@ -745,7 +745,11 @@ pub fn generate_plt_relocations(
     let is_64bit = target.is_64bit();
     let got_entry_size: u64 = if is_64bit { 8 } else { 4 };
     // Skip null symbol at index 0
-    let num_dynamic_syms = if symbols.len() > 1 { symbols.len() - 1 } else { 0 };
+    let num_dynamic_syms = if symbols.len() > 1 {
+        symbols.len() - 1
+    } else {
+        0
+    };
 
     let reloc_type = match target.arch {
         Architecture::X86_64 => relocations::R_X86_64_JUMP_SLOT,
@@ -842,6 +846,7 @@ pub fn generate_dynamic_sections(
         // Convert SymbolVisibility to ELF visibility value
         let visibility = match sym.visibility {
             SymbolVisibility::Default => elf::STV_DEFAULT,
+            SymbolVisibility::Internal => elf::STV_INTERNAL,
             SymbolVisibility::Hidden => elf::STV_HIDDEN,
             SymbolVisibility::Protected => elf::STV_PROTECTED,
         };
@@ -897,12 +902,8 @@ pub fn generate_dynamic_sections(
         plt_rel_size: plt_relocs.len() as u64,
     };
 
-    let mut dynamic = DynamicSection::build_for_shared_library(
-        needed_libraries,
-        soname,
-        &dynstr,
-        &addresses,
-    );
+    let mut dynamic =
+        DynamicSection::build_for_shared_library(needed_libraries, soname, &dynstr, &addresses);
 
     // Fix up DT_SYMENT to correct entry size based on target
     // We need to find and replace the DT_SYMENT entry
@@ -1421,7 +1422,10 @@ mod tests {
 
         // Check r_info contains R_X86_64_JUMP_SLOT (7) and sym index 1
         let r_info = u64::from_le_bytes(relocs[8..16].try_into().unwrap());
-        assert_eq!(r_info, elf::elf64_r_info(1, relocations::R_X86_64_JUMP_SLOT));
+        assert_eq!(
+            r_info,
+            elf::elf64_r_info(1, relocations::R_X86_64_JUMP_SLOT)
+        );
     }
 
     #[test]
@@ -1580,35 +1584,19 @@ mod tests {
         };
 
         let libs = vec!["libc.so.6".to_string(), "libm.so.6".to_string()];
-        let ds = DynamicSection::build_for_shared_library(
-            &libs,
-            Some("libtest.so.1"),
-            &dynstr,
-            &addrs,
-        );
+        let ds =
+            DynamicSection::build_for_shared_library(&libs, Some("libtest.so.1"), &dynstr, &addrs);
 
         // Should contain DT_NEEDED entries
-        let needed_entries: Vec<_> = ds
-            .entries
-            .iter()
-            .filter(|e| e.tag == DT_NEEDED)
-            .collect();
+        let needed_entries: Vec<_> = ds.entries.iter().filter(|e| e.tag == DT_NEEDED).collect();
         assert_eq!(needed_entries.len(), 2);
 
         // Should contain DT_SONAME
-        let soname_entries: Vec<_> = ds
-            .entries
-            .iter()
-            .filter(|e| e.tag == DT_SONAME)
-            .collect();
+        let soname_entries: Vec<_> = ds.entries.iter().filter(|e| e.tag == DT_SONAME).collect();
         assert_eq!(soname_entries.len(), 1);
 
         // Should contain DT_STRTAB
-        let strtab_entries: Vec<_> = ds
-            .entries
-            .iter()
-            .filter(|e| e.tag == DT_STRTAB)
-            .collect();
+        let strtab_entries: Vec<_> = ds.entries.iter().filter(|e| e.tag == DT_STRTAB).collect();
         assert_eq!(strtab_entries.len(), 1);
         assert_eq!(strtab_entries[0].value, 0x1000);
 

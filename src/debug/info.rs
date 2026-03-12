@@ -41,37 +41,89 @@ use crate::codegen::Architecture;
 #[allow(unused_imports)]
 use crate::debug::dwarf::{
     // LEB128 encoding utilities
-    encode_sleb128_to, encode_uleb128_to,
+    encode_sleb128_to,
+    encode_uleb128_to,
     // Byte writing helpers
-    write_address, write_string, write_u8, write_u16_le, write_u32_le, write_u64_le,
+    write_address,
+    write_string,
+    write_u16_le,
+    write_u32_le,
+    write_u64_le,
+    write_u8,
     // Abbreviation and string table types
-    AbbreviationEntry, AbbreviationTable, StringTable,
+    AbbreviationEntry,
+    AbbreviationTable,
     // Children flag constants
-    DW_CHILDREN_no, DW_CHILDREN_yes,
-    // DWARF tag constants
-    DW_TAG_ARRAY_TYPE, DW_TAG_BASE_TYPE, DW_TAG_COMPILE_UNIT, DW_TAG_CONST_TYPE,
-    DW_TAG_ENUMERATION_TYPE, DW_TAG_ENUMERATOR, DW_TAG_FORMAL_PARAMETER,
-    DW_TAG_LEXICAL_BLOCK, DW_TAG_MEMBER, DW_TAG_POINTER_TYPE,
-    DW_TAG_STRUCTURE_TYPE, DW_TAG_SUBPROGRAM, DW_TAG_SUBRANGE_TYPE,
-    DW_TAG_TYPEDEF, DW_TAG_UNION_TYPE, DW_TAG_UNSPECIFIED_PARAMETERS,
-    DW_TAG_VARIABLE, DW_TAG_VOLATILE_TYPE,
-    // DWARF attribute constants
-    DW_AT_BYTE_SIZE, DW_AT_COMP_DIR, DW_AT_DATA_MEMBER_LOCATION,
-    DW_AT_DECL_FILE, DW_AT_DECL_LINE, DW_AT_ENCODING, DW_AT_EXTERNAL,
-    DW_AT_FRAME_BASE, DW_AT_LANGUAGE, DW_AT_LOCATION, DW_AT_LOW_PC,
-    DW_AT_HIGH_PC, DW_AT_NAME, DW_AT_PRODUCER, DW_AT_PROTOTYPED,
-    DW_AT_STMT_LIST, DW_AT_TYPE, DW_AT_UPPER_BOUND,
-    // DWARF form constants
-    DW_FORM_ADDR, DW_FORM_DATA1, DW_FORM_DATA2, DW_FORM_DATA4, DW_FORM_DATA8,
-    DW_FORM_EXPRLOC, DW_FORM_FLAG_PRESENT, DW_FORM_REF4, DW_FORM_SDATA,
-    DW_FORM_SEC_OFFSET, DW_FORM_STRP, DW_FORM_STRING, DW_FORM_UDATA,
+    DW_CHILDREN_no,
+    DW_CHILDREN_yes,
+    StringTable,
     // Base type encoding constants
-    DW_ATE_ADDRESS, DW_ATE_BOOLEAN, DW_ATE_FLOAT, DW_ATE_SIGNED,
-    DW_ATE_SIGNED_CHAR, DW_ATE_UNSIGNED, DW_ATE_UNSIGNED_CHAR,
+    DW_ATE_ADDRESS,
+    DW_ATE_BOOLEAN,
+    DW_ATE_FLOAT,
+    DW_ATE_SIGNED,
+    DW_ATE_SIGNED_CHAR,
+    DW_ATE_UNSIGNED,
+    DW_ATE_UNSIGNED_CHAR,
+    // DWARF attribute constants
+    DW_AT_BYTE_SIZE,
+    DW_AT_COMP_DIR,
+    DW_AT_DATA_MEMBER_LOCATION,
+    DW_AT_DECL_FILE,
+    DW_AT_DECL_LINE,
+    DW_AT_ENCODING,
+    DW_AT_EXTERNAL,
+    DW_AT_FRAME_BASE,
+    DW_AT_HIGH_PC,
+    DW_AT_LANGUAGE,
+    DW_AT_LOCATION,
+    DW_AT_LOW_PC,
+    DW_AT_NAME,
+    DW_AT_PRODUCER,
+    DW_AT_PROTOTYPED,
+    DW_AT_STMT_LIST,
+    DW_AT_TYPE,
+    DW_AT_UPPER_BOUND,
+    // DWARF form constants
+    DW_FORM_ADDR,
+    DW_FORM_DATA1,
+    DW_FORM_DATA2,
+    DW_FORM_DATA4,
+    DW_FORM_DATA8,
+    DW_FORM_EXPRLOC,
+    DW_FORM_FLAG_PRESENT,
+    DW_FORM_REF4,
+    DW_FORM_SDATA,
+    DW_FORM_SEC_OFFSET,
+    DW_FORM_STRING,
+    DW_FORM_STRP,
+    DW_FORM_UDATA,
     // Language constant
     DW_LANG_C11,
     // Expression opcodes
-    DW_OP_ADDR, DW_OP_FBREG, DW_OP_REG0, DW_OP_REGX,
+    DW_OP_ADDR,
+    DW_OP_FBREG,
+    DW_OP_REG0,
+    DW_OP_REGX,
+    // DWARF tag constants
+    DW_TAG_ARRAY_TYPE,
+    DW_TAG_BASE_TYPE,
+    DW_TAG_COMPILE_UNIT,
+    DW_TAG_CONST_TYPE,
+    DW_TAG_ENUMERATION_TYPE,
+    DW_TAG_ENUMERATOR,
+    DW_TAG_FORMAL_PARAMETER,
+    DW_TAG_LEXICAL_BLOCK,
+    DW_TAG_MEMBER,
+    DW_TAG_POINTER_TYPE,
+    DW_TAG_STRUCTURE_TYPE,
+    DW_TAG_SUBPROGRAM,
+    DW_TAG_SUBRANGE_TYPE,
+    DW_TAG_TYPEDEF,
+    DW_TAG_UNION_TYPE,
+    DW_TAG_UNSPECIFIED_PARAMETERS,
+    DW_TAG_VARIABLE,
+    DW_TAG_VOLATILE_TYPE,
 };
 
 // ---------------------------------------------------------------------------
@@ -1177,15 +1229,27 @@ mod tests {
         assert!(attr_names.contains(&DW_AT_STMT_LIST));
 
         // Verify low_pc value.
-        let low_pc_attr = die.attributes.iter().find(|a| a.name == DW_AT_LOW_PC).unwrap();
+        let low_pc_attr = die
+            .attributes
+            .iter()
+            .find(|a| a.name == DW_AT_LOW_PC)
+            .unwrap();
         assert_eq!(low_pc_attr.value, AttributeValue::Addr(0x400000));
 
         // Verify high_pc is the code size (not absolute address).
-        let high_pc_attr = die.attributes.iter().find(|a| a.name == DW_AT_HIGH_PC).unwrap();
+        let high_pc_attr = die
+            .attributes
+            .iter()
+            .find(|a| a.name == DW_AT_HIGH_PC)
+            .unwrap();
         assert_eq!(high_pc_attr.value, AttributeValue::Data4(0x1000));
 
         // Verify stmt_list offset.
-        let stmt_attr = die.attributes.iter().find(|a| a.name == DW_AT_STMT_LIST).unwrap();
+        let stmt_attr = die
+            .attributes
+            .iter()
+            .find(|a| a.name == DW_AT_STMT_LIST)
+            .unwrap();
         assert_eq!(stmt_attr.value, AttributeValue::SecOffset(42));
     }
 
@@ -1339,17 +1403,29 @@ mod tests {
         assert_eq!(die.tag, DW_TAG_BASE_TYPE);
         assert!(!die.has_children);
 
-        let byte_size_attr = die.attributes.iter().find(|a| a.name == DW_AT_BYTE_SIZE).unwrap();
+        let byte_size_attr = die
+            .attributes
+            .iter()
+            .find(|a| a.name == DW_AT_BYTE_SIZE)
+            .unwrap();
         assert_eq!(byte_size_attr.value, AttributeValue::Data1(4));
 
-        let encoding_attr = die.attributes.iter().find(|a| a.name == DW_AT_ENCODING).unwrap();
+        let encoding_attr = die
+            .attributes
+            .iter()
+            .find(|a| a.name == DW_AT_ENCODING)
+            .unwrap();
         assert_eq!(encoding_attr.value, AttributeValue::Data1(DW_ATE_SIGNED));
     }
 
     #[test]
     fn test_build_base_type_die_char() {
         let die = build_base_type_die("char", 1, DW_ATE_SIGNED_CHAR);
-        let encoding_attr = die.attributes.iter().find(|a| a.name == DW_AT_ENCODING).unwrap();
+        let encoding_attr = die
+            .attributes
+            .iter()
+            .find(|a| a.name == DW_AT_ENCODING)
+            .unwrap();
         assert_eq!(
             encoding_attr.value,
             AttributeValue::Data1(DW_ATE_SIGNED_CHAR)
@@ -1359,25 +1435,34 @@ mod tests {
     #[test]
     fn test_build_base_type_die_float() {
         let die = build_base_type_die("float", 4, DW_ATE_FLOAT);
-        let byte_size = die.attributes.iter().find(|a| a.name == DW_AT_BYTE_SIZE).unwrap();
+        let byte_size = die
+            .attributes
+            .iter()
+            .find(|a| a.name == DW_AT_BYTE_SIZE)
+            .unwrap();
         assert_eq!(byte_size.value, AttributeValue::Data1(4));
     }
 
     #[test]
     fn test_build_base_type_die_double() {
         let die = build_base_type_die("double", 8, DW_ATE_FLOAT);
-        let byte_size = die.attributes.iter().find(|a| a.name == DW_AT_BYTE_SIZE).unwrap();
+        let byte_size = die
+            .attributes
+            .iter()
+            .find(|a| a.name == DW_AT_BYTE_SIZE)
+            .unwrap();
         assert_eq!(byte_size.value, AttributeValue::Data1(8));
     }
 
     #[test]
     fn test_build_base_type_die_bool() {
         let die = build_base_type_die("_Bool", 1, DW_ATE_BOOLEAN);
-        let encoding_attr = die.attributes.iter().find(|a| a.name == DW_AT_ENCODING).unwrap();
-        assert_eq!(
-            encoding_attr.value,
-            AttributeValue::Data1(DW_ATE_BOOLEAN)
-        );
+        let encoding_attr = die
+            .attributes
+            .iter()
+            .find(|a| a.name == DW_AT_ENCODING)
+            .unwrap();
+        assert_eq!(encoding_attr.value, AttributeValue::Data1(DW_ATE_BOOLEAN));
     }
 
     // -----------------------------------------------------------------------
@@ -1390,17 +1475,29 @@ mod tests {
         assert_eq!(die.tag, DW_TAG_POINTER_TYPE);
         assert!(!die.has_children);
 
-        let type_attr = die.attributes.iter().find(|a| a.name == DW_AT_TYPE).unwrap();
+        let type_attr = die
+            .attributes
+            .iter()
+            .find(|a| a.name == DW_AT_TYPE)
+            .unwrap();
         assert_eq!(type_attr.value, AttributeValue::Ref(0x30));
 
-        let size_attr = die.attributes.iter().find(|a| a.name == DW_AT_BYTE_SIZE).unwrap();
+        let size_attr = die
+            .attributes
+            .iter()
+            .find(|a| a.name == DW_AT_BYTE_SIZE)
+            .unwrap();
         assert_eq!(size_attr.value, AttributeValue::Data1(8));
     }
 
     #[test]
     fn test_build_pointer_type_die_32bit() {
         let die = build_pointer_type_die(0x20, 4);
-        let size_attr = die.attributes.iter().find(|a| a.name == DW_AT_BYTE_SIZE).unwrap();
+        let size_attr = die
+            .attributes
+            .iter()
+            .find(|a| a.name == DW_AT_BYTE_SIZE)
+            .unwrap();
         assert_eq!(size_attr.value, AttributeValue::Data1(4));
     }
 
@@ -1429,7 +1526,11 @@ mod tests {
         assert_eq!(die.children[0].tag, DW_TAG_MEMBER);
         assert_eq!(die.children[1].tag, DW_TAG_MEMBER);
 
-        let size_attr = die.attributes.iter().find(|a| a.name == DW_AT_BYTE_SIZE).unwrap();
+        let size_attr = die
+            .attributes
+            .iter()
+            .find(|a| a.name == DW_AT_BYTE_SIZE)
+            .unwrap();
         assert_eq!(size_attr.value, AttributeValue::Data4(8));
     }
 
@@ -1502,7 +1603,11 @@ mod tests {
         assert_eq!(die.tag, DW_TAG_TYPEDEF);
         assert!(!die.has_children);
 
-        let type_attr = die.attributes.iter().find(|a| a.name == DW_AT_TYPE).unwrap();
+        let type_attr = die
+            .attributes
+            .iter()
+            .find(|a| a.name == DW_AT_TYPE)
+            .unwrap();
         assert_eq!(type_attr.value, AttributeValue::Ref(0x40));
     }
 
@@ -1634,7 +1739,8 @@ mod tests {
     fn test_serialize_die_simple_base_type() {
         let die = build_base_type_die("int", 4, DW_ATE_SIGNED);
         let mut abbrev = AbbreviationTable::new();
-        let abbrev_attrs: Vec<(u16, u16)> = die.attributes.iter().map(|a| (a.name, a.form)).collect();
+        let abbrev_attrs: Vec<(u16, u16)> =
+            die.attributes.iter().map(|a| (a.name, a.form)).collect();
         let code = abbrev.add_abbreviation(die.tag, die.has_children, abbrev_attrs);
 
         let mut buffer = Vec::new();
@@ -1671,8 +1777,7 @@ mod tests {
         let mut abbrev = AbbreviationTable::new();
         let parent_attrs: Vec<(u16, u16)> =
             parent.attributes.iter().map(|a| (a.name, a.form)).collect();
-        let parent_code =
-            abbrev.add_abbreviation(parent.tag, parent.has_children, parent_attrs);
+        let parent_code = abbrev.add_abbreviation(parent.tag, parent.has_children, parent_attrs);
 
         let mut buffer = Vec::new();
         serialize_die(&parent, parent_code, &mut buffer, 8, &mut abbrev);
@@ -1829,13 +1934,8 @@ mod tests {
         let int_name_offset = strings.add("int");
         patch_string_offset(&mut int_die.attributes, DW_AT_NAME, int_name_offset);
 
-        let bytes = emitter.emit_compilation_unit(
-            &cu_info,
-            &[],
-            &[int_die],
-            &mut abbrev,
-            &mut strings,
-        );
+        let bytes =
+            emitter.emit_compilation_unit(&cu_info, &[], &[int_die], &mut abbrev, &mut strings);
 
         // The result should start with the CU header:
         // bytes[0..4] = unit_length (non-zero)
@@ -1880,13 +1980,8 @@ mod tests {
         let mut abbrev = AbbreviationTable::new();
         let mut strings = StringTable::new();
 
-        let bytes = emitter.emit_compilation_unit(
-            &cu_info,
-            &[func],
-            &[],
-            &mut abbrev,
-            &mut strings,
-        );
+        let bytes =
+            emitter.emit_compilation_unit(&cu_info, &[func], &[], &mut abbrev, &mut strings);
 
         // Should produce non-empty output.
         assert!(!bytes.is_empty());
@@ -1912,13 +2007,7 @@ mod tests {
         let mut abbrev = AbbreviationTable::new();
         let mut strings = StringTable::new();
 
-        let bytes = emitter.emit_compilation_unit(
-            &cu_info,
-            &[],
-            &[],
-            &mut abbrev,
-            &mut strings,
-        );
+        let bytes = emitter.emit_compilation_unit(&cu_info, &[], &[], &mut abbrev, &mut strings);
 
         // address_size byte in CU header should be 4.
         assert_eq!(bytes[10], 4);

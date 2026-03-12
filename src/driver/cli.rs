@@ -130,6 +130,32 @@ pub struct CliArgs {
 
     /// Target triple string from `--target <triple>`. `None` means use host default.
     pub target: Option<String>,
+
+    /// Omit the 128-byte red zone from x86-64 stack frames (`-mno-red-zone`).
+    pub no_red_zone: bool,
+
+    /// Emit each function into its own `.text.<funcname>` section (`-ffunction-sections`).
+    pub function_sections: bool,
+
+    /// Emit each global variable into its own `.data.<varname>` section (`-fdata-sections`).
+    pub data_sections: bool,
+
+    /// Whether the compilation is freestanding (`-ffreestanding`).
+    pub freestanding: bool,
+
+    /// Warnings accumulated from silently-discarded flags.
+    pub discarded_flag_warnings: Vec<String>,
+
+    /// Files to force-include before the main source (`-include <file>`).
+    /// Each entry is a file path that will be preprocessed as if `#include "file"`
+    /// appeared at the top of the source file.
+    pub force_includes: Vec<String>,
+
+    /// Preprocessor-only mode: stop after preprocessing and output the result (`-E`).
+    pub preprocess_only: bool,
+
+    /// Suppress warnings (`-w`).
+    pub suppress_warnings: bool,
 }
 
 impl Default for CliArgs {
@@ -151,6 +177,14 @@ impl Default for CliArgs {
             cf_protection: false,
             static_link: false,
             target: None,
+            no_red_zone: false,
+            function_sections: false,
+            data_sections: false,
+            freestanding: false,
+            discarded_flag_warnings: Vec::new(),
+            force_includes: Vec::new(),
+            preprocess_only: false,
+            suppress_warnings: false,
         }
     }
 }
@@ -282,6 +316,12 @@ pub fn parse_args_from(args: &[String]) -> Result<CliArgs, String> {
             "-c" => {
                 cli.compile_only = true;
             }
+            "-E" => {
+                cli.preprocess_only = true;
+            }
+            "-w" => {
+                cli.suppress_warnings = true;
+            }
             "-g" => {
                 cli.debug_info = true;
             }
@@ -364,6 +404,14 @@ pub fn parse_args_from(args: &[String]) -> Result<CliArgs, String> {
                 else if s.starts_with("-o") && s.len() > 2 {
                     cli.output = Some(s[2..].to_string());
                 }
+                // -include <file> — force-include before source
+                else if s == "-include" {
+                    i += 1;
+                    if i >= args.len() {
+                        return Err("missing argument after '-include'".to_string());
+                    }
+                    cli.force_includes.push(args[i].clone());
+                }
                 // -I<dir> or -I <dir>
                 else if s == "-I" || s.starts_with("-I") {
                     let val = extract_flag_value("-I", s, args, &mut i)?;
@@ -389,13 +437,142 @@ pub fn parse_args_from(args: &[String]) -> Result<CliArgs, String> {
                     let val = extract_flag_value("-l", s, args, &mut i)?;
                     cli.libraries.push(val);
                 }
+                // -mno-red-zone: real semantics — omit red zone in x86-64 stack frames
+                else if s == "-mno-red-zone" {
+                    cli.no_red_zone = true;
+                }
+                // -ffunction-sections: real semantics — each function in its own section
+                else if s == "-ffunction-sections" {
+                    cli.function_sections = true;
+                }
+                // -fdata-sections: real semantics — each variable in its own section
+                else if s == "-fdata-sections" {
+                    cli.data_sections = true;
+                }
+                // -ffreestanding: real semantics — note freestanding mode
+                else if s == "-ffreestanding" {
+                    cli.freestanding = true;
+                }
+                // -W... warnings flags — silently accept
+                else if s.starts_with("-W") {
+                    // Warning control flags accepted and discarded
+                }
+                // -O (other optimization levels) — accept as -O0
+                else if s.starts_with("-O") {
+                    // Unrecognized -O level, treat as -O0
+                }
+                // -f... flags — silently accept (kernel passes many -f flags)
+                else if s.starts_with("-f") {
+                    // Accepted and discarded: -fno-strict-aliasing, -fno-common,
+                    // -fno-delete-null-pointer-checks, -fstack-protector, -fstack-protector-strong,
+                    // -fno-asynchronous-unwind-tables, -fno-pie, etc.
+                }
+                // -m... machine flags with possible =value — silently accept
+                else if s.starts_with("-m") {
+                    // Accepted and discarded: -mpreferred-stack-boundary=N,
+                    // -mindirect-branch=thunk, -msoft-float, -mretpoline-external-thunk, etc.
+                    // Value is already attached or there is no separate value
+                }
+                // -std=... standard flags
+                else if s.starts_with("-std=") || s.starts_with("--std=") {
+                    // Accepted and discarded
+                }
+                // -pipe
+                else if s == "-pipe" {
+                    // Accepted and discarded
+                }
+                // -E (preprocess only) / -S (assembly only) / -M / -MM / -MF / -MQ / -MT / -MD / -MMD
+                else if s == "-E"
+                    || s == "-S"
+                    || s == "-M"
+                    || s == "-MM"
+                    || s == "-MMD"
+                    || s == "-MD"
+                {
+                    // Accepted and discarded
+                } else if s.starts_with("-MF") || s.starts_with("-MQ") || s.starts_with("-MT") {
+                    // These take a value, consume it if space-separated
+                    if s.len() == 3 {
+                        // Space-separated form: -MF <file>
+                        let next = i + 1;
+                        if next < args.len() {
+                            i = next;
+                        }
+                    }
+                    // Attached form is already consumed
+                }
+                // -x <language>
+                else if s == "-x" {
+                    // Consume the next argument (language name)
+                    let next = i + 1;
+                    if next < args.len() {
+                        i = next;
+                    }
+                }
+                // -include <file> (force include)
+                else if s == "-include" {
+                    // Consume the next argument and treat as forced include
+                    let next = i + 1;
+                    if next < args.len() {
+                        i = next;
+                    }
+                }
+                // -isystem <dir>
+                else if s == "-isystem"
+                    || s == "-idirafter"
+                    || s == "-iquote"
+                    || s == "-iprefix"
+                    || s == "-iwithprefix"
+                    || s == "-iwithprefixbefore"
+                {
+                    // Consume the next argument
+                    let next = i + 1;
+                    if next < args.len() {
+                        i = next;
+                        if s == "-isystem" {
+                            cli.include_paths.push(args[next].clone());
+                        }
+                    }
+                }
+                // -nostdinc / -nostdlib / -nodefaultlibs / -nostartfiles
+                else if s == "-nostdinc"
+                    || s == "-nostdlib"
+                    || s == "-nodefaultlibs"
+                    || s == "-nostartfiles"
+                    || s == "-nostdinc++"
+                    || s == "-nolibc"
+                {
+                    // Accepted and discarded
+                }
+                // -Xlinker / -Xassembler / -Xpreprocessor
+                else if s == "-Xlinker" || s == "-Xassembler" || s == "-Xpreprocessor" {
+                    // Consume next arg
+                    let next = i + 1;
+                    if next < args.len() {
+                        i = next;
+                    }
+                }
+                // -Wl,... / -Wa,... / -Wp,...
+                else if s.starts_with("-Wl,") || s.starts_with("-Wa,") || s.starts_with("-Wp,") {
+                    // Accepted and discarded
+                }
+                // --param name=value or --param=name=value
+                else if s == "--param" {
+                    let next = i + 1;
+                    if next < args.len() {
+                        i = next;
+                    }
+                } else if s.starts_with("--param=") {
+                    // Already consumed
+                }
                 // Input files: anything not starting with '-'
                 else if !s.starts_with('-') {
                     cli.input_files.push(s.to_string());
                 }
-                // Unrecognized flag: treat as error per AAP §0.7 Diagnostic Format Rule
+                // Catch-all: silently discard any other unrecognized flag with a warning
                 else {
-                    return Err(format!("unrecognized option '{}'", s));
+                    cli.discarded_flag_warnings
+                        .push(format!("warning: unrecognized option '{}' (ignored)", s));
                 }
             }
         }
@@ -824,10 +1001,22 @@ mod tests {
     // -------------------------------------------------------------------
 
     #[test]
-    fn test_unrecognized_flag_error() {
+    fn test_unrecognized_flag_warning() {
+        // Per Directive 2: unrecognized flags are silently discarded with a warning,
+        // not rejected as errors. This enables GCC-compatible flag passthrough for
+        // build systems like the Linux kernel Makefile.
         let result = parse_args_from(&args(&["--unknown-flag", "main.c"]));
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("unrecognized option"));
+        assert!(
+            result.is_ok(),
+            "Unrecognized flags should be accepted with a warning, not rejected"
+        );
+        let cli_args = result.unwrap();
+        assert_eq!(cli_args.input_files.len(), 1);
+        assert_eq!(cli_args.input_files[0], "main.c");
+        assert!(
+            !cli_args.discarded_flag_warnings.is_empty(),
+            "Should have recorded a warning for the unrecognized flag"
+        );
     }
 
     #[test]

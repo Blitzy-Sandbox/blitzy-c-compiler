@@ -161,9 +161,7 @@ pub(super) fn parse_statement(parser: &mut Parser<'_>) -> Statement {
         // Declaration starters: type specifiers, storage classes,
         // type qualifiers, and C11 special keywords.
         // ---------------------------------------------------------------
-        kind if is_declaration_start(parser, kind) => {
-            parse_declaration_statement(parser)
-        }
+        kind if is_declaration_start(parser, kind) => parse_declaration_statement(parser),
 
         // ---------------------------------------------------------------
         // Fallback: expression statement
@@ -277,6 +275,27 @@ pub(super) fn parse_compound_statement(parser: &mut Parser<'_>) -> Statement {
 /// as `parse_statement`, but wraps declarations in `BlockItem::Declaration`.
 fn parse_block_item(parser: &mut Parser<'_>) -> BlockItem {
     let kind = parser.current().kind;
+
+    // GCC __label__ extension: local label declaration at the start of
+    // a compound statement.  Syntax: `__label__ id1, id2, ...;`
+    // We consume and discard — the labels are simply declared in the
+    // normal label namespace when they appear as `id:`.
+    if kind == TokenKind::GccLabel {
+        let start = parser.current_span();
+        parser.advance(); // consume __label__
+                          // Consume comma-separated identifiers.
+        loop {
+            if parser.check(TokenKind::Identifier) {
+                parser.advance();
+            }
+            if !parser.match_token(TokenKind::Comma) {
+                break;
+            }
+        }
+        let _ = parser.expect(TokenKind::Semicolon);
+        let span = parser.span_from(start);
+        return BlockItem::Statement(Statement::Null { span });
+    }
 
     // Check for declaration starters.
     if is_declaration_start(parser, kind) {
@@ -1002,10 +1021,9 @@ fn is_declaration_start(parser: &Parser<'_>, kind: TokenKind) -> bool {
 
     // Type qualifiers can start a declaration (e.g., `const int x;`).
     match kind {
-        TokenKind::Const
-        | TokenKind::Volatile
-        | TokenKind::Restrict
-        | TokenKind::Atomic => return true,
+        TokenKind::Const | TokenKind::Volatile | TokenKind::Restrict | TokenKind::Atomic => {
+            return true
+        }
         _ => {}
     }
 
@@ -1241,9 +1259,7 @@ mod tests {
 
         let stmt = parse_statement(&mut parser);
         match stmt {
-            Statement::Return {
-                value: Some(_), ..
-            } => {}
+            Statement::Return { value: Some(_), .. } => {}
             _ => panic!("expected Return with value, got {:?}", stmt),
         }
     }
@@ -1321,7 +1337,11 @@ mod tests {
         let stmt = parse_compound_statement(&mut parser);
         match stmt {
             Statement::Compound { items, .. } => {
-                assert!(items.is_empty(), "expected empty compound, got {} items", items.len());
+                assert!(
+                    items.is_empty(),
+                    "expected empty compound, got {} items",
+                    items.len()
+                );
             }
             _ => panic!("expected Compound statement, got {:?}", stmt),
         }
@@ -1618,10 +1638,7 @@ mod tests {
         let mut interner = Interner::new();
         let x_id = interner.intern("x");
 
-        let mut tokens = vec![
-            make_ident_token(x_id),
-            make_token(TokenKind::Semicolon),
-        ];
+        let mut tokens = vec![make_ident_token(x_id), make_token(TokenKind::Semicolon)];
         tokens.push(make_token(TokenKind::Eof));
 
         let mut diag = DiagnosticEmitter::new();

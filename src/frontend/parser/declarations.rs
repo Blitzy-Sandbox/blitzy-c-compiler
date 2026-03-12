@@ -53,12 +53,10 @@
 //! This module contains zero `unsafe` blocks. All operations use safe Rust.
 
 use super::ast::{
-    DeclSpecifiers, Declaration, Declarator, Designator,
-    DesignatedInitializer, DirectDeclarator, EnumDef, EnumVariant,
-    FunctionDef, FunctionSpecifier, GccAttribute, InitDeclarator, Initializer,
-    ParamDeclaration, ParamList, StorageClass, StructDef,
-    StructFieldDeclarator, StructMember, TypeQualifier, TypeSpecifier,
-    UnionDef,
+    DeclSpecifiers, Declaration, Declarator, DesignatedInitializer, Designator, DirectDeclarator,
+    EnumDef, EnumVariant, FunctionDef, FunctionSpecifier, GccAttribute, InitDeclarator,
+    Initializer, ParamDeclaration, ParamList, StorageClass, StructDef, StructFieldDeclarator,
+    StructMember, TypeQualifier, TypeSpecifier, UnionDef,
 };
 use super::expressions;
 use super::gcc_extensions;
@@ -106,6 +104,13 @@ pub(super) fn parse_external_declaration(parser: &mut Parser<'_>) -> Declaration
         return parse_external_declaration(parser);
     }
 
+    // Handle top-level inline assembly: `asm("...");` or `__asm__("...");`
+    // or `__asm("...");`. Used by Linux kernel for EXPORT_SYMBOL and
+    // similar constructs.
+    if parser.check(TokenKind::Asm) {
+        return parse_top_level_asm(parser, start);
+    }
+
     // Handle empty declaration (stray semicolons).
     if parser.check(TokenKind::Semicolon) {
         let span = parser.current_span();
@@ -123,9 +128,9 @@ pub(super) fn parse_external_declaration(parser: &mut Parser<'_>) -> Declaration
     if parser.check(TokenKind::Semicolon) {
         let span = parser.span_from(start);
         parser.advance(); // consume `;`
-        // Return as a variable declaration with no declarators — this is how
-        // standalone struct/union/enum definitions and forward declarations
-        // are represented.
+                          // Return as a variable declaration with no declarators — this is how
+                          // standalone struct/union/enum definitions and forward declarations
+                          // are represented.
         return Declaration::Variable {
             specifiers,
             declarators: Vec::new(),
@@ -161,10 +166,14 @@ pub(super) fn parse_external_declaration(parser: &mut Parser<'_>) -> Declaration
 
     // Check for old-style K&R parameter declarations before `{`.
     // K&R style: `int foo(a, b) int a; float b; { ... }`
-    if !is_typedef
-        && is_kr_style_definition(parser, &first_declarator)
-    {
-        return parse_kr_function_definition(parser, specifiers, first_declarator, post_attrs, start);
+    if !is_typedef && is_kr_style_definition(parser, &first_declarator) {
+        return parse_kr_function_definition(
+            parser,
+            specifiers,
+            first_declarator,
+            post_attrs,
+            start,
+        );
     }
 
     // Not a function definition — parse as variable/typedef declaration.
@@ -212,7 +221,8 @@ pub(super) fn parse_declaration_specifiers(parser: &mut Parser<'_>) -> (DeclSpec
                     parser.error("duplicate 'typedef' specifier in declaration");
                 }
                 if storage_class.is_some() {
-                    parser.error("'typedef' cannot be combined with another storage class specifier");
+                    parser
+                        .error("'typedef' cannot be combined with another storage class specifier");
                 }
                 is_typedef = true;
                 parser.advance();
@@ -254,9 +264,7 @@ pub(super) fn parse_declaration_specifiers(parser: &mut Parser<'_>) -> (DeclSpec
                         Some(StorageClass::Static) | Some(StorageClass::Extern)
                     )
                 {
-                    parser.error(
-                        "'_Thread_local' can only be combined with 'static' or 'extern'",
-                    );
+                    parser.error("'_Thread_local' can only be combined with 'static' or 'extern'");
                 }
                 storage_class = Some(StorageClass::ThreadLocal);
                 parser.advance();
@@ -717,10 +725,7 @@ fn try_parse_param_declarator(parser: &mut Parser<'_>) -> Option<Declarator> {
     // Check if the current token can start a declarator.
     if !matches!(
         parser.current().kind,
-        TokenKind::Star
-            | TokenKind::Identifier
-            | TokenKind::LeftParen
-            | TokenKind::LeftBracket
+        TokenKind::Star | TokenKind::Identifier | TokenKind::LeftParen | TokenKind::LeftBracket
     ) {
         return None;
     }
@@ -746,9 +751,7 @@ fn try_parse_param_declarator(parser: &mut Parser<'_>) -> Option<Declarator> {
                     let next = parser.peek().kind;
                     if matches!(
                         next,
-                        TokenKind::RightParen
-                            | TokenKind::Comma
-                            | TokenKind::LeftBracket
+                        TokenKind::RightParen | TokenKind::Comma | TokenKind::LeftBracket
                     ) {
                         parser.advance();
                         DirectDeclarator::Identifier(id)
@@ -990,10 +993,7 @@ fn parse_designation(parser: &mut Parser<'_>) -> Vec<Designator> {
                 parser.advance(); // consume `...`
                 let high_expr = expressions::parse_assignment_expression(parser);
                 let _ = parser.expect(TokenKind::RightBracket);
-                designators.push(Designator::Range(
-                    Box::new(index_expr),
-                    Box::new(high_expr),
-                ));
+                designators.push(Designator::Range(Box::new(index_expr), Box::new(high_expr)));
             } else {
                 let _ = parser.expect(TokenKind::RightBracket);
                 designators.push(Designator::Index(Box::new(index_expr)));
@@ -1201,9 +1201,7 @@ fn parse_struct_members(parser: &mut Parser<'_>) -> Vec<StructMember> {
 
             // Check for bitfield width.
             let bit_width = if parser.match_token(TokenKind::Colon) {
-                Some(Box::new(
-                    expressions::parse_assignment_expression(parser),
-                ))
+                Some(Box::new(expressions::parse_assignment_expression(parser)))
             } else {
                 None
             };
@@ -1385,9 +1383,7 @@ pub(super) fn parse_enum(parser: &mut Parser<'_>) -> TypeSpecifier {
 
                 // Parse optional value: `= constant_expression`.
                 let value = if parser.match_token(TokenKind::Equal) {
-                    Some(Box::new(
-                        expressions::parse_assignment_expression(parser),
-                    ))
+                    Some(Box::new(expressions::parse_assignment_expression(parser)))
                 } else {
                     None
                 };
@@ -1578,9 +1574,7 @@ fn is_kr_style_definition(parser: &Parser<'_>, declarator: &Declarator) -> bool 
     // In K&R style, after the declarator (and `)`) we see type specifiers
     // for parameter declarations, not `{` and not `;`.
     let kind = parser.current().kind;
-    kind.is_type_specifier()
-        || kind.is_storage_class()
-        || kind.is_type_qualifier()
+    kind.is_type_specifier() || kind.is_storage_class() || kind.is_type_qualifier()
 }
 
 /// Returns `true` if a direct declarator has a function parameter suffix.
@@ -1861,6 +1855,77 @@ fn parse_kr_identifier_list(parser: &mut Parser<'_>, start: SourceSpan) -> Param
 ///   `__asm__` `(` string-literal `)` | `asm` `(` string-literal `)`
 /// We simply consume the tokens without storing them — the asm name does
 /// not affect semantic analysis or code generation in our compiler.
+/// Parses a top-level inline assembly declaration at file scope.
+///
+/// Syntax:
+///   `asm("assembly string");`
+///   `__asm__("assembly string");`
+///   `__asm("assembly string");`
+///   `asm volatile("assembly string");` (volatile is ignored at file scope)
+///
+/// This is used extensively by the Linux kernel for `EXPORT_SYMBOL` and
+/// similar constructs that emit assembly directives at file scope.
+fn parse_top_level_asm(parser: &mut Parser<'_>, start: SourceSpan) -> Declaration {
+    parser.advance(); // consume `asm` / `__asm__` / `__asm`
+
+    // Skip optional `volatile` or `__volatile__` qualifier
+    if parser.check(TokenKind::Volatile) {
+        parser.advance();
+    }
+    // Also skip `goto` or keyword-like identifiers if present
+    if parser.check(TokenKind::Identifier) {
+        // Skip identifiers like "goto", "__volatile__" that may appear
+        // as asm qualifiers at top level
+        parser.advance();
+    }
+
+    if parser.expect(TokenKind::LeftParen).is_err() {
+        return Declaration::Empty {
+            span: parser.span_from(start),
+        };
+    }
+
+    // Collect the assembly string — may be multiple concatenated string literals
+    let mut asm_string = String::new();
+    while parser.check(TokenKind::StringLiteral) {
+        if let TokenValue::Str(ref s) = parser.current().value {
+            asm_string.push_str(s);
+        }
+        parser.advance();
+    }
+
+    // If no string literal found, skip balanced parens as error recovery
+    if asm_string.is_empty() {
+        let mut depth = 1u32;
+        while !parser.is_at_end() && depth > 0 {
+            match parser.current().kind {
+                TokenKind::LeftParen => {
+                    depth += 1;
+                    parser.advance();
+                }
+                TokenKind::RightParen => {
+                    depth -= 1;
+                    if depth == 0 {
+                        parser.advance();
+                        break;
+                    }
+                    parser.advance();
+                }
+                _ => {
+                    parser.advance();
+                }
+            }
+        }
+    } else {
+        parser.expect(TokenKind::RightParen);
+    }
+
+    parser.match_token(TokenKind::Semicolon);
+
+    let span = parser.span_from(start);
+    Declaration::TopLevelAsm { asm_string, span }
+}
+
 fn skip_asm_label(parser: &mut Parser<'_>) {
     if parser.check(TokenKind::Asm) {
         parser.advance(); // consume __asm__
@@ -2235,15 +2300,13 @@ mod tests {
         let decl = parse_external_declaration(&mut parser);
 
         match &decl {
-            Declaration::Variable { specifiers, .. } => {
-                match &specifiers.type_specifier {
-                    TypeSpecifier::Struct(sd) => {
-                        assert_eq!(sd.tag, Some(s_id));
-                        assert_eq!(sd.members.len(), 2);
-                    }
-                    _ => panic!("expected Struct type specifier"),
+            Declaration::Variable { specifiers, .. } => match &specifiers.type_specifier {
+                TypeSpecifier::Struct(sd) => {
+                    assert_eq!(sd.tag, Some(s_id));
+                    assert_eq!(sd.members.len(), 2);
                 }
-            }
+                _ => panic!("expected Struct type specifier"),
+            },
             _ => panic!("expected Variable declaration (struct def)"),
         }
     }
@@ -2277,15 +2340,13 @@ mod tests {
         let decl = parse_external_declaration(&mut parser);
 
         match &decl {
-            Declaration::Variable { specifiers, .. } => {
-                match &specifiers.type_specifier {
-                    TypeSpecifier::Enum(ed) => {
-                        assert_eq!(ed.tag, Some(color_id));
-                        assert_eq!(ed.variants.len(), 3);
-                    }
-                    _ => panic!("expected Enum type specifier"),
+            Declaration::Variable { specifiers, .. } => match &specifiers.type_specifier {
+                TypeSpecifier::Enum(ed) => {
+                    assert_eq!(ed.tag, Some(color_id));
+                    assert_eq!(ed.variants.len(), 3);
                 }
-            }
+                _ => panic!("expected Enum type specifier"),
+            },
             _ => panic!("expected Variable declaration (enum def)"),
         }
     }
@@ -2323,17 +2384,15 @@ mod tests {
         let decl = parse_external_declaration(&mut parser);
 
         match &decl {
-            Declaration::Variable { specifiers, .. } => {
-                match &specifiers.type_specifier {
-                    TypeSpecifier::Enum(ed) => {
-                        assert_eq!(ed.variants.len(), 3);
-                        assert!(ed.variants[0].value.is_some());
-                        assert!(ed.variants[1].value.is_some());
-                        assert!(ed.variants[2].value.is_some());
-                    }
-                    _ => panic!("expected Enum type specifier with values"),
+            Declaration::Variable { specifiers, .. } => match &specifiers.type_specifier {
+                TypeSpecifier::Enum(ed) => {
+                    assert_eq!(ed.variants.len(), 3);
+                    assert!(ed.variants[0].value.is_some());
+                    assert!(ed.variants[1].value.is_some());
+                    assert!(ed.variants[2].value.is_some());
                 }
-            }
+                _ => panic!("expected Enum type specifier with values"),
+            },
             _ => panic!("expected Variable declaration (enum with values)"),
         }
     }
@@ -2357,7 +2416,11 @@ mod tests {
         let decl = parse_external_declaration(&mut parser);
 
         match &decl {
-            Declaration::Variable { specifiers, declarators, .. } => {
+            Declaration::Variable {
+                specifiers,
+                declarators,
+                ..
+            } => {
                 assert!(declarators.is_empty());
                 match &specifiers.type_specifier {
                     TypeSpecifier::StructRef { tag, .. } => {
@@ -2456,15 +2519,13 @@ mod tests {
         let decl = parse_external_declaration(&mut parser);
 
         match &decl {
-            Declaration::Variable { specifiers, .. } => {
-                match &specifiers.type_specifier {
-                    TypeSpecifier::Union(ud) => {
-                        assert_eq!(ud.tag, Some(u_id));
-                        assert_eq!(ud.members.len(), 2);
-                    }
-                    _ => panic!("expected Union type specifier"),
+            Declaration::Variable { specifiers, .. } => match &specifiers.type_specifier {
+                TypeSpecifier::Union(ud) => {
+                    assert_eq!(ud.tag, Some(u_id));
+                    assert_eq!(ud.members.len(), 2);
                 }
-            }
+                _ => panic!("expected Union type specifier"),
+            },
             _ => panic!("expected Variable declaration (union def)"),
         }
     }
@@ -2540,15 +2601,13 @@ mod tests {
         let decl = parse_external_declaration(&mut parser);
 
         match &decl {
-            Declaration::Variable { declarators, .. } => {
-                match &declarators[0].declarator.direct {
-                    DirectDeclarator::Function { params, .. } => {
-                        assert!(params.variadic);
-                        assert_eq!(params.params.len(), 1);
-                    }
-                    _ => panic!("expected function declarator"),
+            Declaration::Variable { declarators, .. } => match &declarators[0].declarator.direct {
+                DirectDeclarator::Function { params, .. } => {
+                    assert!(params.variadic);
+                    assert_eq!(params.params.len(), 1);
                 }
-            }
+                _ => panic!("expected function declarator"),
+            },
             _ => panic!("expected Variable declaration (variadic function)"),
         }
     }
@@ -2574,15 +2633,13 @@ mod tests {
         let decl = parse_external_declaration(&mut parser);
 
         match &decl {
-            Declaration::Variable { declarators, .. } => {
-                match &declarators[0].declarator.direct {
-                    DirectDeclarator::Function { params, .. } => {
-                        assert!(params.params.is_empty());
-                        assert!(!params.variadic);
-                    }
-                    _ => panic!("expected function declarator"),
+            Declaration::Variable { declarators, .. } => match &declarators[0].declarator.direct {
+                DirectDeclarator::Function { params, .. } => {
+                    assert!(params.params.is_empty());
+                    assert!(!params.variadic);
                 }
-            }
+                _ => panic!("expected function declarator"),
+            },
             _ => panic!("expected Variable declaration (empty params)"),
         }
     }
@@ -2609,14 +2666,12 @@ mod tests {
         let decl = parse_external_declaration(&mut parser);
 
         match &decl {
-            Declaration::Variable { declarators, .. } => {
-                match &declarators[0].declarator.direct {
-                    DirectDeclarator::Function { params, .. } => {
-                        assert!(params.params.is_empty());
-                    }
-                    _ => panic!("expected function declarator"),
+            Declaration::Variable { declarators, .. } => match &declarators[0].declarator.direct {
+                DirectDeclarator::Function { params, .. } => {
+                    assert!(params.params.is_empty());
                 }
-            }
+                _ => panic!("expected function declarator"),
+            },
             _ => panic!("expected Variable declaration (void params)"),
         }
     }
@@ -2820,10 +2875,12 @@ mod tests {
         let decl = parse_external_declaration(&mut parser);
 
         match &decl {
-            Declaration::Variable { specifiers, declarators, .. } => {
-                assert!(specifiers
-                    .type_qualifiers
-                    .contains(&TypeQualifier::Const));
+            Declaration::Variable {
+                specifiers,
+                declarators,
+                ..
+            } => {
+                assert!(specifiers.type_qualifiers.contains(&TypeQualifier::Const));
                 assert_eq!(declarators[0].declarator.pointer.len(), 1);
             }
             _ => panic!("expected Variable declaration (const int ptr)"),

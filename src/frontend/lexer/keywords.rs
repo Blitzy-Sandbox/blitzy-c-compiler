@@ -137,6 +137,11 @@ fn get_keywords() -> &'static HashMap<&'static str, TokenKind> {
         m.insert("__attribute__", TokenKind::GccAttribute);
         m.insert("__extension__", TokenKind::GccExtension);
 
+        // GCC alternate spellings for _Alignof and _Alignas
+        m.insert("__alignof__", TokenKind::Alignof);
+        m.insert("__alignof", TokenKind::Alignof);
+        m.insert("__alignas__", TokenKind::Alignas);
+
         // Assembly: three accepted spellings all map to the same variant
         m.insert("asm", TokenKind::Asm);
         m.insert("__asm__", TokenKind::Asm);
@@ -160,7 +165,10 @@ fn get_keywords() -> &'static HashMap<&'static str, TokenKind> {
         // GCC Extension Keywords — Type / Offset Builtins
         // ===================================================================
         m.insert("__builtin_offsetof", TokenKind::BuiltinOffsetof);
-        m.insert("__builtin_types_compatible_p", TokenKind::BuiltinTypesCompatibleP);
+        m.insert(
+            "__builtin_types_compatible_p",
+            TokenKind::BuiltinTypesCompatibleP,
+        );
 
         // ===================================================================
         // GCC Extension Keywords — Control-Flow / Optimisation Builtins
@@ -287,8 +295,8 @@ pub fn lookup_keyword(name: &str) -> Option<TokenKind> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::token::TokenKind;
+    use super::*;
 
     // =======================================================================
     // C89/C99 Standard Keywords (34 tests)
@@ -512,22 +520,13 @@ mod tests {
 
     #[test]
     fn test_builtin_bit_manipulation() {
-        assert_eq!(
-            lookup_keyword("__builtin_clz"),
-            Some(TokenKind::BuiltinClz)
-        );
-        assert_eq!(
-            lookup_keyword("__builtin_ctz"),
-            Some(TokenKind::BuiltinCtz)
-        );
+        assert_eq!(lookup_keyword("__builtin_clz"), Some(TokenKind::BuiltinClz));
+        assert_eq!(lookup_keyword("__builtin_ctz"), Some(TokenKind::BuiltinCtz));
         assert_eq!(
             lookup_keyword("__builtin_popcount"),
             Some(TokenKind::BuiltinPopcount)
         );
-        assert_eq!(
-            lookup_keyword("__builtin_ffs"),
-            Some(TokenKind::BuiltinFfs)
-        );
+        assert_eq!(lookup_keyword("__builtin_ffs"), Some(TokenKind::BuiltinFfs));
     }
 
     // =======================================================================
@@ -536,10 +535,7 @@ mod tests {
 
     #[test]
     fn test_builtin_math() {
-        assert_eq!(
-            lookup_keyword("__builtin_abs"),
-            Some(TokenKind::BuiltinAbs)
-        );
+        assert_eq!(lookup_keyword("__builtin_abs"), Some(TokenKind::BuiltinAbs));
         assert_eq!(
             lookup_keyword("__builtin_fabsf"),
             Some(TokenKind::BuiltinFabsf)
@@ -548,10 +544,7 @@ mod tests {
             lookup_keyword("__builtin_fabs"),
             Some(TokenKind::BuiltinFabs)
         );
-        assert_eq!(
-            lookup_keyword("__builtin_inf"),
-            Some(TokenKind::BuiltinInf)
-        );
+        assert_eq!(lookup_keyword("__builtin_inf"), Some(TokenKind::BuiltinInf));
         assert_eq!(
             lookup_keyword("__builtin_inff"),
             Some(TokenKind::BuiltinInff)
@@ -564,10 +557,7 @@ mod tests {
             lookup_keyword("__builtin_huge_valf"),
             Some(TokenKind::BuiltinHugeValf)
         );
-        assert_eq!(
-            lookup_keyword("__builtin_nan"),
-            Some(TokenKind::BuiltinNan)
-        );
+        assert_eq!(lookup_keyword("__builtin_nan"), Some(TokenKind::BuiltinNan));
         assert_eq!(
             lookup_keyword("__builtin_nanf"),
             Some(TokenKind::BuiltinNanf)
@@ -612,18 +602,9 @@ mod tests {
 
     #[test]
     fn test_gcc_type_extensions() {
-        assert_eq!(
-            lookup_keyword("__int128"),
-            Some(TokenKind::GccInt128)
-        );
-        assert_eq!(
-            lookup_keyword("__label__"),
-            Some(TokenKind::GccLabel)
-        );
-        assert_eq!(
-            lookup_keyword("__auto_type"),
-            Some(TokenKind::GccAutoType)
-        );
+        assert_eq!(lookup_keyword("__int128"), Some(TokenKind::GccInt128));
+        assert_eq!(lookup_keyword("__label__"), Some(TokenKind::GccLabel));
+        assert_eq!(lookup_keyword("__auto_type"), Some(TokenKind::GccAutoType));
     }
 
     // =======================================================================
@@ -673,9 +654,8 @@ mod tests {
     #[test]
     fn test_non_keywords_return_none() {
         let non_keywords = [
-            "foo", "bar", "main", "printf", "x", "_custom", "my_var",
-            "argc", "argv", "NULL", "stdin", "stdout", "stderr",
-            "size_t", "uint32_t", "true", "false",
+            "foo", "bar", "main", "printf", "x", "_custom", "my_var", "argc", "argv", "NULL",
+            "stdin", "stdout", "stderr", "size_t", "uint32_t", "true", "false",
         ];
         for name in &non_keywords {
             assert_eq!(
@@ -763,17 +743,57 @@ mod tests {
     fn test_all_44_c11_keywords_present() {
         let c11_keywords = [
             // C89/C99 (34)
-            "auto", "break", "case", "char", "const", "continue", "default",
-            "do", "double", "else", "enum", "extern", "float", "for", "goto",
-            "if", "inline", "int", "long", "register", "restrict", "return",
-            "short", "signed", "sizeof", "static", "struct", "switch",
-            "typedef", "union", "unsigned", "void", "volatile", "while",
+            "auto",
+            "break",
+            "case",
+            "char",
+            "const",
+            "continue",
+            "default",
+            "do",
+            "double",
+            "else",
+            "enum",
+            "extern",
+            "float",
+            "for",
+            "goto",
+            "if",
+            "inline",
+            "int",
+            "long",
+            "register",
+            "restrict",
+            "return",
+            "short",
+            "signed",
+            "sizeof",
+            "static",
+            "struct",
+            "switch",
+            "typedef",
+            "union",
+            "unsigned",
+            "void",
+            "volatile",
+            "while",
             // C11 (10)
-            "_Alignas", "_Alignof", "_Atomic", "_Bool", "_Complex",
-            "_Generic", "_Imaginary", "_Noreturn", "_Static_assert",
+            "_Alignas",
+            "_Alignof",
+            "_Atomic",
+            "_Bool",
+            "_Complex",
+            "_Generic",
+            "_Imaginary",
+            "_Noreturn",
+            "_Static_assert",
             "_Thread_local",
         ];
-        assert_eq!(c11_keywords.len(), 44, "There must be exactly 44 C11 keywords");
+        assert_eq!(
+            c11_keywords.len(),
+            44,
+            "There must be exactly 44 C11 keywords"
+        );
         for kw in &c11_keywords {
             assert!(
                 lookup_keyword(kw).is_some(),
@@ -813,7 +833,10 @@ mod tests {
         // Multiple calls must always return the same result.
         for _ in 0..100 {
             assert_eq!(lookup_keyword("int"), Some(TokenKind::Int));
-            assert_eq!(lookup_keyword("__attribute__"), Some(TokenKind::GccAttribute));
+            assert_eq!(
+                lookup_keyword("__attribute__"),
+                Some(TokenKind::GccAttribute)
+            );
             assert_eq!(lookup_keyword("notakeyword"), None);
         }
     }

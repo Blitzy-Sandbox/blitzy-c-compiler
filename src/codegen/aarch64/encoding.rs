@@ -21,10 +21,10 @@
 
 use std::collections::HashMap;
 
-use crate::codegen::{MachineInstr, MachineOperand, Relocation, RelocationType};
-use crate::codegen::regalloc::PhysReg;
 #[allow(unused_imports)]
 use crate::codegen::aarch64::isel::{Aarch64Condition, Aarch64Opcode, ShiftType};
+use crate::codegen::regalloc::PhysReg;
+use crate::codegen::{MachineInstr, MachineOperand, Relocation, RelocationType};
 
 // ---------------------------------------------------------------------------
 // Internal types for branch fixup resolution
@@ -147,8 +147,7 @@ impl Aarch64Encoder {
             // =============================================================
             // Integer Arithmetic — ADD / ADDS / SUB / SUBS
             // =============================================================
-            Aarch64Opcode::ADD | Aarch64Opcode::ADDS
-            | Aarch64Opcode::SUB | Aarch64Opcode::SUBS => {
+            Aarch64Opcode::ADD | Aarch64Opcode::ADDS | Aarch64Opcode::SUB | Aarch64Opcode::SUBS => {
                 self.encode_add_sub(opcode, &instr.operands);
             }
 
@@ -190,8 +189,7 @@ impl Aarch64Encoder {
             // =============================================================
             // Logical — AND / ANDS / ORR / EOR
             // =============================================================
-            Aarch64Opcode::AND | Aarch64Opcode::ANDS
-            | Aarch64Opcode::ORR | Aarch64Opcode::EOR => {
+            Aarch64Opcode::AND | Aarch64Opcode::ANDS | Aarch64Opcode::ORR | Aarch64Opcode::EOR => {
                 self.encode_logical(opcode, &instr.operands);
             }
 
@@ -221,8 +219,10 @@ impl Aarch64Encoder {
             // =============================================================
             // Conditional select — CSEL / CSINC / CSINV / CSNEG
             // =============================================================
-            Aarch64Opcode::CSEL | Aarch64Opcode::CSINC
-            | Aarch64Opcode::CSINV | Aarch64Opcode::CSNEG => {
+            Aarch64Opcode::CSEL
+            | Aarch64Opcode::CSINC
+            | Aarch64Opcode::CSINV
+            | Aarch64Opcode::CSNEG => {
                 self.encode_cond_sel(opcode, &instr.operands);
             }
 
@@ -339,10 +339,10 @@ impl Aarch64Encoder {
             // FP unary
             Aarch64Opcode::FSQRT_S => self.encode_fp_unary(&instr.operands, 0b00, 0b000011),
             Aarch64Opcode::FSQRT_D => self.encode_fp_unary(&instr.operands, 0b01, 0b000011),
-            Aarch64Opcode::FABS_S  => self.encode_fp_unary(&instr.operands, 0b00, 0b000001),
-            Aarch64Opcode::FABS_D  => self.encode_fp_unary(&instr.operands, 0b01, 0b000001),
-            Aarch64Opcode::FNEG_S  => self.encode_fp_unary(&instr.operands, 0b00, 0b000010),
-            Aarch64Opcode::FNEG_D  => self.encode_fp_unary(&instr.operands, 0b01, 0b000010),
+            Aarch64Opcode::FABS_S => self.encode_fp_unary(&instr.operands, 0b00, 0b000001),
+            Aarch64Opcode::FABS_D => self.encode_fp_unary(&instr.operands, 0b01, 0b000001),
+            Aarch64Opcode::FNEG_S => self.encode_fp_unary(&instr.operands, 0b00, 0b000010),
+            Aarch64Opcode::FNEG_D => self.encode_fp_unary(&instr.operands, 0b01, 0b000010),
 
             // FP move
             Aarch64Opcode::FMOV => {
@@ -551,9 +551,7 @@ impl Aarch64Encoder {
     /// Extract a memory operand (base register + offset) at `idx`.
     fn extract_memory(&self, operands: &[MachineOperand], idx: usize) -> (u32, i32) {
         match operands.get(idx) {
-            Some(MachineOperand::Memory { base, offset }) => {
-                (Self::reg_num(base), *offset)
-            }
+            Some(MachineOperand::Memory { base, offset }) => (Self::reg_num(base), *offset),
             _ => (31, 0), // Default to [SP, #0]
         }
     }
@@ -582,8 +580,18 @@ impl Aarch64Encoder {
 
     /// ADD/SUB immediate:
     /// `[sf(1)][op(1)][S(1)][100010][sh(1)][imm12(12)][Rn(5)][Rd(5)]`
-    fn encode_add_sub_imm_fn(sf: u32, op: u32, s: u32, sh: u32, imm12: u32, rn: u32, rd: u32) -> u32 {
-        (sf << 31) | (op << 30) | (s << 29)
+    fn encode_add_sub_imm_fn(
+        sf: u32,
+        op: u32,
+        s: u32,
+        sh: u32,
+        imm12: u32,
+        rn: u32,
+        rd: u32,
+    ) -> u32 {
+        (sf << 31)
+            | (op << 30)
+            | (s << 29)
             | (0b100010 << 23)
             | ((sh & 1) << 22)
             | ((imm12 & 0xFFF) << 10)
@@ -593,8 +601,17 @@ impl Aarch64Encoder {
 
     /// Logical immediate:
     /// `[sf(1)][opc(2)][100100][N(1)][immr(6)][imms(6)][Rn(5)][Rd(5)]`
-    fn encode_logical_imm_fn(sf: u32, opc: u32, n: u32, immr: u32, imms: u32, rn: u32, rd: u32) -> u32 {
-        (sf << 31) | (opc << 29)
+    fn encode_logical_imm_fn(
+        sf: u32,
+        opc: u32,
+        n: u32,
+        immr: u32,
+        imms: u32,
+        rn: u32,
+        rd: u32,
+    ) -> u32 {
+        (sf << 31)
+            | (opc << 29)
             | (0b100100 << 23)
             | ((n & 1) << 22)
             | ((immr & 0x3F) << 16)
@@ -606,7 +623,8 @@ impl Aarch64Encoder {
     /// Move wide (MOVZ/MOVK/MOVN):
     /// `[sf(1)][opc(2)][100101][hw(2)][imm16(16)][Rd(5)]`
     fn encode_move_wide_fn(sf: u32, opc: u32, hw: u32, imm16: u32, rd: u32) -> u32 {
-        (sf << 31) | (opc << 29)
+        (sf << 31)
+            | (opc << 29)
             | (0b100101 << 23)
             | ((hw & 0x3) << 21)
             | ((imm16 & 0xFFFF) << 5)
@@ -615,8 +633,17 @@ impl Aarch64Encoder {
 
     /// Bitfield (SBFM/BFM/UBFM):
     /// `[sf(1)][opc(2)][100110][N(1)][immr(6)][imms(6)][Rn(5)][Rd(5)]`
-    fn encode_bitfield_fn(sf: u32, opc: u32, n: u32, immr: u32, imms: u32, rn: u32, rd: u32) -> u32 {
-        (sf << 31) | (opc << 29)
+    fn encode_bitfield_fn(
+        sf: u32,
+        opc: u32,
+        n: u32,
+        immr: u32,
+        imms: u32,
+        rn: u32,
+        rd: u32,
+    ) -> u32 {
+        (sf << 31)
+            | (opc << 29)
             | (0b100110 << 23)
             | ((n & 1) << 22)
             | ((immr & 0x3F) << 16)
@@ -628,7 +655,8 @@ impl Aarch64Encoder {
     /// PC-relative (ADR/ADRP):
     /// `[op(1)][immlo(2)][10000][immhi(19)][Rd(5)]`
     fn encode_pc_rel_fn(op: u32, immlo: u32, immhi: u32, rd: u32) -> u32 {
-        (op << 31) | ((immlo & 0x3) << 29)
+        (op << 31)
+            | ((immlo & 0x3) << 29)
             | (0b10000 << 24)
             | ((immhi & 0x7FFFF) << 5)
             | (rd & 0x1F)
@@ -649,15 +677,15 @@ impl Aarch64Encoder {
     /// Compare and branch (CBZ/CBNZ):
     /// `[sf(1)][011010][op(1)][imm19(19)][Rt(5)]`
     fn encode_compare_branch_fn(sf: u32, op: u32, imm19: u32, rt: u32) -> u32 {
-        (sf << 31) | (0b011010 << 25) | (op << 24)
-            | ((imm19 & 0x7FFFF) << 5)
-            | (rt & 0x1F)
+        (sf << 31) | (0b011010 << 25) | (op << 24) | ((imm19 & 0x7FFFF) << 5) | (rt & 0x1F)
     }
 
     /// Test and branch (TBZ/TBNZ):
     /// `[b5(1)][011011][op(1)][b40(5)][imm14(14)][Rt(5)]`
     fn encode_test_branch_fn(b5: u32, op: u32, b40: u32, imm14: u32, rt: u32) -> u32 {
-        (b5 << 31) | (0b011011 << 25) | (op << 24)
+        (b5 << 31)
+            | (0b011011 << 25)
+            | (op << 24)
             | ((b40 & 0x1F) << 19)
             | ((imm14 & 0x3FFF) << 5)
             | (rt & 0x1F)
@@ -666,15 +694,23 @@ impl Aarch64Encoder {
     /// Unconditional branch register (BR/BLR/RET):
     /// `[1101011][opc(4)][11111][000000][Rn(5)][00000]`
     fn encode_branch_reg_fn(&self, opc: u32, rn: u32) -> u32 {
-        (0b1101011u32 << 25) | ((opc & 0xF) << 21)
-            | (0b11111 << 16)
-            | ((rn & 0x1F) << 5)
+        (0b1101011u32 << 25) | ((opc & 0xF) << 21) | (0b11111 << 16) | ((rn & 0x1F) << 5)
     }
 
     /// Logical shifted register:
     /// `[sf(1)][opc(2)][01010][shift(2)][N(1)][Rm(5)][imm6(6)][Rn(5)][Rd(5)]`
-    fn encode_logical_shifted_fn(sf: u32, opc: u32, shift: u32, n: u32, rm: u32, imm6: u32, rn: u32, rd: u32) -> u32 {
-        (sf << 31) | (opc << 29)
+    fn encode_logical_shifted_fn(
+        sf: u32,
+        opc: u32,
+        shift: u32,
+        n: u32,
+        rm: u32,
+        imm6: u32,
+        rn: u32,
+        rd: u32,
+    ) -> u32 {
+        (sf << 31)
+            | (opc << 29)
             | (0b01010 << 24)
             | ((shift & 0x3) << 22)
             | ((n & 1) << 21)
@@ -686,7 +722,16 @@ impl Aarch64Encoder {
 
     /// Add/subtract shifted register:
     /// `[sf(1)][op(1)][S(1)][01011][shift(2)][0][Rm(5)][imm6(6)][Rn(5)][Rd(5)]`
-    fn encode_add_sub_shifted_fn(sf: u32, op: u32, s: u32, shift: u32, rm: u32, imm6: u32, rn: u32, rd: u32) -> u32 {
+    fn encode_add_sub_shifted_fn(
+        sf: u32,
+        op: u32,
+        s: u32,
+        shift: u32,
+        rm: u32,
+        imm6: u32,
+        rn: u32,
+        rd: u32,
+    ) -> u32 {
         (sf << 31) | (op << 30) | (s << 29)
             | (0b01011 << 24)
             | ((shift & 0x3) << 22)
@@ -699,8 +744,19 @@ impl Aarch64Encoder {
 
     /// Conditional select (CSEL/CSINC/CSINV/CSNEG):
     /// `[sf(1)][op(1)][S(1)][11010100][Rm(5)][cond(4)][op2(1)][0][Rn(5)][Rd(5)]`
-    fn encode_cond_select_fn(sf: u32, op: u32, s: u32, rm: u32, cond: u32, op2: u32, rn: u32, rd: u32) -> u32 {
-        (sf << 31) | (op << 30) | (s << 29)
+    fn encode_cond_select_fn(
+        sf: u32,
+        op: u32,
+        s: u32,
+        rm: u32,
+        cond: u32,
+        op2: u32,
+        rn: u32,
+        rd: u32,
+    ) -> u32 {
+        (sf << 31)
+            | (op << 30)
+            | (s << 29)
             | (0b11010100u32 << 21)
             | ((rm & 0x1F) << 16)
             | ((cond & 0xF) << 12)
@@ -712,7 +768,8 @@ impl Aarch64Encoder {
     /// Data-processing 2-source:
     /// `[sf(1)][0][S(1)][11010110][Rm(5)][opcode(6)][Rn(5)][Rd(5)]`
     fn encode_dp_2src_fn(&self, sf: u32, s: u32, rm: u32, opcode: u32, rn: u32, rd: u32) -> u32 {
-        (sf << 31) | (s << 29)
+        (sf << 31)
+            | (s << 29)
             | (0b11010110u32 << 21)
             | ((rm & 0x1F) << 16)
             | ((opcode & 0x3F) << 10)
@@ -722,8 +779,19 @@ impl Aarch64Encoder {
 
     /// Data-processing 3-source:
     /// `[sf(1)][op54(2)][11011][op31(3)][Rm(5)][o0(1)][Ra(5)][Rn(5)][Rd(5)]`
-    fn encode_dp_3src(&self, sf: u32, op54: u32, op31: u32, rm: u32, o0: u32, ra: u32, rn: u32, rd: u32) -> u32 {
-        (sf << 31) | (op54 << 29)
+    fn encode_dp_3src(
+        &self,
+        sf: u32,
+        op54: u32,
+        op31: u32,
+        rm: u32,
+        o0: u32,
+        ra: u32,
+        rn: u32,
+        rd: u32,
+    ) -> u32 {
+        (sf << 31)
+            | (op54 << 29)
             | (0b11011 << 24)
             | ((op31 & 0x7) << 21)
             | ((rm & 0x1F) << 16)
@@ -736,7 +804,9 @@ impl Aarch64Encoder {
     /// Data-processing 1-source:
     /// `[sf(1)][1][S(1)][11010110][opcode2(5)][opcode(6)][Rn(5)][Rd(5)]`
     fn encode_dp_1src_fn(sf: u32, s: u32, opcode2: u32, opcode: u32, rn: u32, rd: u32) -> u32 {
-        (sf << 31) | (1 << 30) | (s << 29)
+        (sf << 31)
+            | (1 << 30)
+            | (s << 29)
             | (0b11010110u32 << 21)
             | ((opcode2 & 0x1F) << 16)
             | ((opcode & 0x3F) << 10)
@@ -746,8 +816,18 @@ impl Aarch64Encoder {
 
     /// Load/store unsigned immediate offset:
     /// `[size(2)][111][V(1)][01][opc(2)][imm12(12)][Rn(5)][Rt(5)]`
-    fn encode_ldst_unsigned_imm_fn(size: u32, v: u32, opc: u32, imm12: u32, rn: u32, rt: u32) -> u32 {
-        (size << 30) | (0b111 << 27) | (v << 26) | (0b01 << 24)
+    fn encode_ldst_unsigned_imm_fn(
+        size: u32,
+        v: u32,
+        opc: u32,
+        imm12: u32,
+        rn: u32,
+        rt: u32,
+    ) -> u32 {
+        (size << 30)
+            | (0b111 << 27)
+            | (v << 26)
+            | (0b01 << 24)
             | ((opc & 0x3) << 22)
             | ((imm12 & 0xFFF) << 10)
             | ((rn & 0x1F) << 5)
@@ -757,7 +837,10 @@ impl Aarch64Encoder {
     /// Load/store register pair (signed offset):
     /// `[opc(2)][101][V(1)][010][L(1)][imm7(7)][Rt2(5)][Rn(5)][Rt(5)]`
     fn encode_ldst_pair_fn(opc: u32, v: u32, l: u32, imm7: u32, rt2: u32, rn: u32, rt: u32) -> u32 {
-        (opc << 30) | (0b101 << 27) | (v << 26) | (0b010 << 23)
+        (opc << 30)
+            | (0b101 << 27)
+            | (v << 26)
+            | (0b010 << 23)
             | ((l & 1) << 22)
             | ((imm7 & 0x7F) << 15)
             | ((rt2 & 0x1F) << 10)
@@ -767,8 +850,19 @@ impl Aarch64Encoder {
 
     /// Load/store register pair (pre-indexed):
     /// `[opc(2)][101][V(1)][011][L(1)][imm7(7)][Rt2(5)][Rn(5)][Rt(5)]`
-    fn encode_ldst_pair_pre_fn(opc: u32, v: u32, l: u32, imm7: u32, rt2: u32, rn: u32, rt: u32) -> u32 {
-        (opc << 30) | (0b101 << 27) | (v << 26) | (0b011 << 23)
+    fn encode_ldst_pair_pre_fn(
+        opc: u32,
+        v: u32,
+        l: u32,
+        imm7: u32,
+        rt2: u32,
+        rn: u32,
+        rt: u32,
+    ) -> u32 {
+        (opc << 30)
+            | (0b101 << 27)
+            | (v << 26)
+            | (0b011 << 23)
             | ((l & 1) << 22)
             | ((imm7 & 0x7F) << 15)
             | ((rt2 & 0x1F) << 10)
@@ -815,7 +909,14 @@ impl Aarch64Encoder {
 
     /// FP integer conversion:
     /// `[sf(1)][0][0][11110][ftype(2)][1][rmode(2)][opcode(3)][000000][Rn(5)][Rd(5)]`
-    fn encode_fp_int_conv_fn(sf: u32, ftype: u32, rmode: u32, opcode: u32, rn: u32, rd: u32) -> u32 {
+    fn encode_fp_int_conv_fn(
+        sf: u32,
+        ftype: u32,
+        rmode: u32,
+        opcode: u32,
+        rn: u32,
+        rd: u32,
+    ) -> u32 {
         (sf << 31)
             | (0b0001_1110u32 << 24)
             | ((ftype & 0x3) << 22)
@@ -847,9 +948,9 @@ impl Aarch64Encoder {
     /// and shifted-register forms based on the operand types.
     fn encode_add_sub(&mut self, opcode: Aarch64Opcode, operands: &[MachineOperand]) {
         let (op, s) = match opcode {
-            Aarch64Opcode::ADD  => (0, 0),
+            Aarch64Opcode::ADD => (0, 0),
             Aarch64Opcode::ADDS => (0, 1),
-            Aarch64Opcode::SUB  => (1, 0),
+            Aarch64Opcode::SUB => (1, 0),
             Aarch64Opcode::SUBS => (1, 1),
             _ => (0, 0),
         };
@@ -863,21 +964,17 @@ impl Aarch64Encoder {
                 let imm_val = *imm as u64;
                 // If the immediate fits in 12 bits, use the immediate form.
                 if imm_val <= 0xFFF {
-                    let enc = Self::encode_add_sub_imm_fn(
-                        sf, op, s, 0, imm_val as u32, rn, rd,
-                    );
+                    let enc = Self::encode_add_sub_imm_fn(sf, op, s, 0, imm_val as u32, rn, rd);
                     self.emit_u32(enc);
                 } else if (imm_val & 0xFFF) == 0 && (imm_val >> 12) <= 0xFFF {
                     // Shifted by 12: sh=1
-                    let enc = Self::encode_add_sub_imm_fn(
-                        sf, op, s, 1, (imm_val >> 12) as u32, rn, rd,
-                    );
+                    let enc =
+                        Self::encode_add_sub_imm_fn(sf, op, s, 1, (imm_val >> 12) as u32, rn, rd);
                     self.emit_u32(enc);
                 } else {
                     // Fall back: use immediate form with truncated value.
-                    let enc = Self::encode_add_sub_imm_fn(
-                        sf, op, s, 0, (imm_val & 0xFFF) as u32, rn, rd,
-                    );
+                    let enc =
+                        Self::encode_add_sub_imm_fn(sf, op, s, 0, (imm_val & 0xFFF) as u32, rn, rd);
                     self.emit_u32(enc);
                 }
             }
@@ -885,9 +982,8 @@ impl Aarch64Encoder {
                 let rm = self.extract_reg(operands, 2);
                 // Optional shift operand at index 3 (shift type) and 4 (amount).
                 let (shift_enc, shift_amt) = self.extract_shift(operands, 3);
-                let enc = Self::encode_add_sub_shifted_fn(
-                    sf, op, s, shift_enc, rm, shift_amt, rn, rd,
-                );
+                let enc =
+                    Self::encode_add_sub_shifted_fn(sf, op, s, shift_enc, rm, shift_amt, rn, rd);
                 self.emit_u32(enc);
             }
             _ => {
@@ -915,9 +1011,9 @@ impl Aarch64Encoder {
     /// and shifted-register forms.
     fn encode_logical(&mut self, opcode: Aarch64Opcode, operands: &[MachineOperand]) {
         let opc = match opcode {
-            Aarch64Opcode::AND  => 0b00,
-            Aarch64Opcode::ORR  => 0b01,
-            Aarch64Opcode::EOR  => 0b10,
+            Aarch64Opcode::AND => 0b00,
+            Aarch64Opcode::ORR => 0b01,
+            Aarch64Opcode::EOR => 0b10,
             Aarch64Opcode::ANDS => 0b11,
             _ => 0b00,
         };
@@ -943,7 +1039,8 @@ impl Aarch64Encoder {
             Some(MachineOperand::Register(_)) => {
                 let rm = self.extract_reg(operands, 2);
                 let (shift_enc, shift_amt) = self.extract_shift(operands, 3);
-                let enc = Self::encode_logical_shifted_fn(sf, opc, shift_enc, 0, rm, shift_amt, rn, rd);
+                let enc =
+                    Self::encode_logical_shifted_fn(sf, opc, shift_enc, 0, rm, shift_amt, rn, rd);
                 self.emit_u32(enc);
             }
             _ => {
@@ -1059,7 +1156,7 @@ impl Aarch64Encoder {
         let cond = self.extract_imm(operands, 3) as u32 & 0xF;
 
         let (op, op2) = match opcode {
-            Aarch64Opcode::CSEL  => (0, 0),
+            Aarch64Opcode::CSEL => (0, 0),
             Aarch64Opcode::CSINC => (0, 1),
             Aarch64Opcode::CSINV => (1, 0),
             Aarch64Opcode::CSNEG => (1, 1),
@@ -1177,7 +1274,10 @@ impl Aarch64Encoder {
     /// `[size(2)][111][V(1)][00][opc(2)][0][imm9(9)][00][Rn(5)][Rt(5)]`
     fn encode_ldst_unscaled(&mut self, size: u32, opc: u32, offset: i32, rn: u32, rt: u32) {
         let imm9 = (offset as u32) & 0x1FF;
-        let enc = (size << 30) | (0b111 << 27) | (0 << 26) | (0b00 << 24)
+        let enc = (size << 30)
+            | (0b111 << 27)
+            | (0 << 26)
+            | (0b00 << 24)
             | ((opc & 0x3) << 22)
             | (0 << 21)
             | (imm9 << 12)
@@ -1437,8 +1537,10 @@ impl Aarch64Encoder {
     fn encode_fmov(&mut self, operands: &[MachineOperand]) {
         let rd = self.extract_reg(operands, 0);
         let rn = self.extract_reg(operands, 1);
-        let rd_is_fp = matches!(operands.get(0), Some(MachineOperand::Register(r)) if Self::is_fp_phys(r));
-        let rn_is_fp = matches!(operands.get(1), Some(MachineOperand::Register(r)) if Self::is_fp_phys(r));
+        let rd_is_fp =
+            matches!(operands.get(0), Some(MachineOperand::Register(r)) if Self::is_fp_phys(r));
+        let rn_is_fp =
+            matches!(operands.get(1), Some(MachineOperand::Register(r)) if Self::is_fp_phys(r));
 
         if rd_is_fp && rn_is_fp {
             // FMOV within FP regs — use FP 1-source encoding.
@@ -1490,7 +1592,13 @@ impl Aarch64Encoder {
     }
 
     /// Encode FP ↔ integer conversion (SCVTF, UCVTF, FCVTZS, FCVTZU).
-    fn encode_fp_int_conv(&mut self, operands: &[MachineOperand], ftype: u32, rmode: u32, opcode: u32) {
+    fn encode_fp_int_conv(
+        &mut self,
+        operands: &[MachineOperand],
+        ftype: u32,
+        rmode: u32,
+        opcode: u32,
+    ) {
         let rd = self.extract_reg(operands, 0);
         let rn = self.extract_reg(operands, 1);
         let enc = Self::encode_fp_int_conv_fn(1, ftype, rmode, opcode, rn, rd);
@@ -1517,9 +1625,15 @@ impl Aarch64Encoder {
         } else {
             // Use unscaled form.
             let imm9 = (off as u32) & 0x1FF;
-            let enc = (size << 30) | (0b111 << 27) | (1 << 26) | (0b00 << 24)
-                | ((opc & 0x3) << 22) | (imm9 << 12) | (0b00 << 10)
-                | ((rn & 0x1F) << 5) | (rt & 0x1F);
+            let enc = (size << 30)
+                | (0b111 << 27)
+                | (1 << 26)
+                | (0b00 << 24)
+                | ((opc & 0x3) << 22)
+                | (imm9 << 12)
+                | (0b00 << 10)
+                | ((rn & 0x1F) << 5)
+                | (rt & 0x1F);
             self.emit_u32(enc);
         }
     }
@@ -1727,7 +1841,13 @@ impl Aarch64Encoder {
                         let lbl = *lbl;
                         if let Some(&target_off) = self.label_offsets.get(&lbl) {
                             let delta = (target_off as i64 - self.offset as i64) >> 2;
-                            let enc = Self::encode_test_branch_fn(b5, op, b40, (delta as u32) & 0x3FFF, rt);
+                            let enc = Self::encode_test_branch_fn(
+                                b5,
+                                op,
+                                b40,
+                                (delta as u32) & 0x3FFF,
+                                rt,
+                            );
                             self.emit_u32(enc);
                         } else {
                             self.fixups.push(BranchFixup {
@@ -1803,9 +1923,7 @@ impl Aarch64Encoder {
                     let immhi = (imm >> 2) & 0x7FFFF;
                     let mask_lo = 0x3 << 29;
                     let mask_hi = 0x7FFFF << 5;
-                    (existing & !(mask_lo | mask_hi))
-                        | (immlo << 29)
-                        | (immhi << 5)
+                    (existing & !(mask_lo | mask_hi)) | (immlo << 29) | (immhi << 5)
                 }
             };
 
@@ -1953,12 +2071,12 @@ pub fn encode_bitmask_immediate(value: u64, reg_size: u32) -> Option<(u32, u32, 
             // More precisely: imms = (NOT(size_mask)) | (ones - 1)
             // where size_mask = size * 2 - 1.
             let size_encoding = match size {
-                2  => 0b111100,
-                4  => 0b111000,
-                8  => 0b110000,
+                2 => 0b111100,
+                4 => 0b111000,
+                8 => 0b110000,
                 16 => 0b100000,
                 32 => 0b000000,
-                _  => unreachable!(),
+                _ => unreachable!(),
             };
             imms = (size_encoding | (ones_count - 1)) & 0x3F;
         }
@@ -1998,9 +2116,9 @@ fn rotate_right(value: u64, amount: u32, width: u32) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::codegen::{MachineInstr, MachineOperand};
+    use crate::codegen::aarch64::isel::{Aarch64Condition, Aarch64Opcode};
     use crate::codegen::regalloc::PhysReg;
-    use crate::codegen::aarch64::isel::{Aarch64Opcode, Aarch64Condition};
+    use crate::codegen::{MachineInstr, MachineOperand};
 
     /// Helper: create a MachineInstr from an Aarch64Opcode and operands.
     fn make_instr(opcode: Aarch64Opcode, operands: Vec<MachineOperand>) -> MachineInstr {
@@ -2016,7 +2134,11 @@ mod tests {
         let mut enc = Aarch64Encoder::new();
         let instr = make_instr(opcode, operands);
         enc.encode_instruction(&instr);
-        assert_eq!(enc.code.len(), 4, "AArch64 instructions must be exactly 4 bytes");
+        assert_eq!(
+            enc.code.len(),
+            4,
+            "AArch64 instructions must be exactly 4 bytes"
+        );
         enc.read_u32(0)
     }
 
@@ -2054,7 +2176,11 @@ mod tests {
         for instr in &test_cases {
             let mut enc = Aarch64Encoder::new();
             enc.encode_instruction(instr);
-            assert_eq!(enc.code.len(), 4, "Every AArch64 instruction must be 4 bytes");
+            assert_eq!(
+                enc.code.len(),
+                4,
+                "Every AArch64 instruction must be 4 bytes"
+            );
         }
     }
 
@@ -2086,26 +2212,16 @@ mod tests {
     #[test]
     fn test_add_x1_x2_100() {
         // ADD X1, X2, #100  (64-bit, sf=1, op=0, S=0)
-        let val = encode_single(
-            Aarch64Opcode::ADD,
-            vec![reg(1), reg(2), imm(100), imm(64)],
-        );
+        let val = encode_single(Aarch64Opcode::ADD, vec![reg(1), reg(2), imm(100), imm(64)]);
         // sf=1, op=0, S=0, 100010, sh=0, imm12=100(0x64), Rn=2, Rd=1
-        let expected = (1u32 << 31)
-            | (0b100010 << 23)
-            | (100 << 10)
-            | (2 << 5)
-            | 1;
+        let expected = (1u32 << 31) | (0b100010 << 23) | (100 << 10) | (2 << 5) | 1;
         assert_eq!(val, expected);
     }
 
     #[test]
     fn test_sub_w3_w4_255() {
         // SUB W3, W4, #255  (32-bit, sf=0)
-        let val = encode_single(
-            Aarch64Opcode::SUB,
-            vec![reg(3), reg(4), imm(255), imm(32)],
-        );
+        let val = encode_single(Aarch64Opcode::SUB, vec![reg(3), reg(4), imm(255), imm(32)]);
         let expected = (0u32 << 31) // sf=0
             | (1 << 30)  // op=1 (SUB)
             | (0 << 29)  // S=0
@@ -2119,10 +2235,7 @@ mod tests {
     #[test]
     fn test_cmp_x5_0() {
         // CMP X5, #0 = SUBS XZR, X5, #0
-        let val = encode_single(
-            Aarch64Opcode::SUBS,
-            vec![reg(31), reg(5), imm(0), imm(64)],
-        );
+        let val = encode_single(Aarch64Opcode::SUBS, vec![reg(31), reg(5), imm(0), imm(64)]);
         let expected = (1u32 << 31) // sf=1
             | (1 << 30)  // op=1 (SUB)
             | (1 << 29)  // S=1
@@ -2140,10 +2253,7 @@ mod tests {
     #[test]
     fn test_add_x1_x2_x3_no_shift() {
         // ADD X1, X2, X3
-        let val = encode_single(
-            Aarch64Opcode::ADD,
-            vec![reg(1), reg(2), reg(3), imm(64)],
-        );
+        let val = encode_single(Aarch64Opcode::ADD, vec![reg(1), reg(2), reg(3), imm(64)]);
         let expected = (1u32 << 31) // sf=1
             | (0 << 30)  // op=0
             | (0 << 29)  // S=0
@@ -2200,10 +2310,7 @@ mod tests {
     #[test]
     fn test_b_offset_8() {
         // B +8 → offset = 8 bytes = 2 instructions
-        let val = encode_single(
-            Aarch64Opcode::B,
-            vec![imm(8)],
-        );
+        let val = encode_single(Aarch64Opcode::B, vec![imm(8)]);
         let expected = (0u32 << 31) // op=0 (B)
             | (0b00101 << 26)
             | 2; // imm26 = 8/4 = 2
@@ -2213,10 +2320,7 @@ mod tests {
     #[test]
     fn test_bl_offset_100() {
         // BL +100 → offset = 100 bytes = 25 instructions
-        let val = encode_single(
-            Aarch64Opcode::BL,
-            vec![imm(100)],
-        );
+        let val = encode_single(Aarch64Opcode::BL, vec![imm(100)]);
         let expected = (1u32 << 31) // op=1 (BL)
             | (0b00101 << 26)
             | 25; // imm26 = 100/4 = 25
@@ -2228,10 +2332,7 @@ mod tests {
         // RET (defaults to X30)
         let val = encode_single(Aarch64Opcode::RET, vec![]);
         // [1101011][0010][11111][000000][11110][00000]
-        let expected = (0b1101011u32 << 25)
-            | (0b0010 << 21)
-            | (0b11111 << 16)
-            | (30 << 5); // Rn = X30
+        let expected = (0b1101011u32 << 25) | (0b0010 << 21) | (0b11111 << 16) | (30 << 5); // Rn = X30
         assert_eq!(val, expected);
     }
 
@@ -2244,22 +2345,19 @@ mod tests {
         );
         let expected = (0b01010100u32 << 24)
             | (3 << 5)  // imm19 = 3
-            | 0;         // cond = EQ = 0000
+            | 0; // cond = EQ = 0000
         assert_eq!(val, expected);
     }
 
     #[test]
     fn test_cbz_x5_offset_16() {
         // CBZ X5, +16 → imm19 = 16/4 = 4
-        let val = encode_single(
-            Aarch64Opcode::CBZ,
-            vec![reg(5), imm(16), imm(64)],
-        );
+        let val = encode_single(Aarch64Opcode::CBZ, vec![reg(5), imm(16), imm(64)]);
         let expected = (1u32 << 31) // sf=1
             | (0b011010 << 25)
             | (0 << 24) // op=0 (CBZ)
             | (4 << 5)  // imm19=4
-            | 5;         // Rt=5
+            | 5; // Rt=5
         assert_eq!(val, expected);
     }
 
@@ -2270,10 +2368,7 @@ mod tests {
     #[test]
     fn test_ldr_x1_x2_8() {
         // LDR X1, [X2, #8] → size=11, V=0, opc=01, imm12=8/8=1
-        let val = encode_single(
-            Aarch64Opcode::LDR,
-            vec![reg(1), mem(2, 8)],
-        );
+        let val = encode_single(Aarch64Opcode::LDR, vec![reg(1), mem(2, 8)]);
         let expected = (0b11u32 << 30)
             | (0b111 << 27)
             | (0 << 26)   // V=0
@@ -2281,17 +2376,14 @@ mod tests {
             | (0b01 << 22) // opc=01 (load)
             | (1 << 10)    // imm12 = 8/8 = 1
             | (2 << 5)     // Rn = 2
-            | 1;            // Rt = 1
+            | 1; // Rt = 1
         assert_eq!(val, expected);
     }
 
     #[test]
     fn test_str_w3_sp_16() {
         // STR W3, [SP, #16] → size=10, V=0, opc=00, imm12=16/4=4, Rn=31(SP)
-        let val = encode_single(
-            Aarch64Opcode::STRW,
-            vec![reg(3), mem(31, 16)],
-        );
+        let val = encode_single(Aarch64Opcode::STRW, vec![reg(3), mem(31, 16)]);
         let expected = (0b10u32 << 30)
             | (0b111 << 27)
             | (0 << 26)
@@ -2306,10 +2398,7 @@ mod tests {
     #[test]
     fn test_ldrb_w4_x5_0() {
         // LDRB W4, [X5, #0] → size=00, V=0, opc=01, imm12=0
-        let val = encode_single(
-            Aarch64Opcode::LDRB,
-            vec![reg(4), mem(5, 0)],
-        );
+        let val = encode_single(Aarch64Opcode::LDRB, vec![reg(4), mem(5, 0)]);
         let expected = (0b00u32 << 30)
             | (0b111 << 27)
             | (0 << 26)
@@ -2324,10 +2413,7 @@ mod tests {
     #[test]
     fn test_ldp_x1_x2_sp_16() {
         // LDP X1, X2, [SP, #16]
-        let val = encode_single(
-            Aarch64Opcode::LDP,
-            vec![reg(1), reg(2), mem(31, 16)],
-        );
+        let val = encode_single(Aarch64Opcode::LDP, vec![reg(1), reg(2), mem(31, 16)]);
         // opc=10, V=0, 010, L=1, imm7 = 16/8 = 2, Rt2=2, Rn=31, Rt=1
         let expected = (0b10u32 << 30)
             | (0b101 << 27)
@@ -2337,7 +2423,7 @@ mod tests {
             | (2 << 15)  // imm7 = 2
             | (2 << 10)  // Rt2 = 2
             | (31 << 5)  // Rn = SP
-            | 1;          // Rt = 1
+            | 1; // Rt = 1
         assert_eq!(val, expected);
     }
 
@@ -2351,7 +2437,9 @@ mod tests {
         let val = encode_single(
             Aarch64Opcode::CSEL,
             vec![
-                reg(1), reg(2), reg(3),
+                reg(1),
+                reg(2),
+                reg(3),
                 imm(Aarch64Condition::EQ.encoding() as i64),
                 imm(64),
             ],
@@ -2364,7 +2452,7 @@ mod tests {
             | (0 << 12)  // cond=EQ=0000
             | (0 << 10)  // op2=0
             | (2 << 5)   // Rn=2
-            | 1;          // Rd=1
+            | 1; // Rd=1
         assert_eq!(val, expected);
     }
 
@@ -2374,7 +2462,9 @@ mod tests {
         let val = encode_single(
             Aarch64Opcode::CSINC,
             vec![
-                reg(4), reg(5), reg(6),
+                reg(4),
+                reg(5),
+                reg(6),
                 imm(Aarch64Condition::NE.encoding() as i64),
                 imm(64),
             ],
@@ -2411,7 +2501,7 @@ mod tests {
             | (0b0010 << 12)
             | (0b10 << 10)
             | (1 << 5)      // Rn=1 (D1 → encoding 1)
-            | 0;             // Rd=0 (D0 → encoding 0)
+            | 0; // Rd=0 (D0 → encoding 0)
         assert_eq!(val, expected);
     }
 
@@ -2428,7 +2518,7 @@ mod tests {
             | (4 << 16)     // Rm=4
             | (0b001000 << 10)
             | (3 << 5)      // Rn=3
-            | 0b00000;      // opcode2=0
+            | 0b00000; // opcode2=0
         assert_eq!(val, expected);
     }
 
@@ -2536,12 +2626,10 @@ mod tests {
     #[test]
     fn test_get_relocations_bl_symbol() {
         let mut enc = Aarch64Encoder::new();
-        let instrs = vec![
-            make_instr(
-                Aarch64Opcode::BL,
-                vec![MachineOperand::Symbol("printf".to_string())],
-            ),
-        ];
+        let instrs = vec![make_instr(
+            Aarch64Opcode::BL,
+            vec![MachineOperand::Symbol("printf".to_string())],
+        )];
         enc.encode_function(&instrs);
         let relocs = enc.get_relocations();
         assert_eq!(relocs.len(), 1);
@@ -2556,10 +2644,7 @@ mod tests {
     #[test]
     fn test_mov_x1_x2() {
         // MOV X1, X2 = ORR X1, XZR, X2
-        let val = encode_single(
-            Aarch64Opcode::MOV,
-            vec![reg(1), reg(2), imm(64)],
-        );
+        let val = encode_single(Aarch64Opcode::MOV, vec![reg(1), reg(2), imm(64)]);
         let expected = Aarch64Encoder::encode_logical_shifted_fn(1, 0b01, 0, 0, 2, 0, 31, 1);
         assert_eq!(val, expected);
     }
@@ -2570,17 +2655,10 @@ mod tests {
 
     #[test]
     fn test_sdiv_x1_x2_x3() {
-        let val = encode_single(
-            Aarch64Opcode::SDIV,
-            vec![reg(1), reg(2), reg(3), imm(64)],
-        );
+        let val = encode_single(Aarch64Opcode::SDIV, vec![reg(1), reg(2), reg(3), imm(64)]);
         // sf=1, 0, S=0, 11010110, Rm=3, opcode=000011, Rn=2, Rd=1
-        let expected = (1u32 << 31)
-            | (0b11010110u32 << 21)
-            | (3 << 16)
-            | (0b000011 << 10)
-            | (2 << 5)
-            | 1;
+        let expected =
+            (1u32 << 31) | (0b11010110u32 << 21) | (3 << 16) | (0b000011 << 10) | (2 << 5) | 1;
         assert_eq!(val, expected);
     }
 
@@ -2590,10 +2668,7 @@ mod tests {
 
     #[test]
     fn test_mul_x1_x2_x3() {
-        let val = encode_single(
-            Aarch64Opcode::MUL,
-            vec![reg(1), reg(2), reg(3), imm(64)],
-        );
+        let val = encode_single(Aarch64Opcode::MUL, vec![reg(1), reg(2), reg(3), imm(64)]);
         // MADD X1, X2, X3, XZR
         // sf=1, op54=00, 11011, op31=000, Rm=3, o0=0, Ra=31, Rn=2, Rd=1
         let expected = (1u32 << 31)
@@ -2614,10 +2689,7 @@ mod tests {
     #[test]
     fn test_lsr_x1_x2_imm4() {
         // LSR X1, X2, #4 = UBFM X1, X2, #4, #63
-        let val = encode_single(
-            Aarch64Opcode::LSR,
-            vec![reg(1), reg(2), imm(4), imm(64)],
-        );
+        let val = encode_single(Aarch64Opcode::LSR, vec![reg(1), reg(2), imm(4), imm(64)]);
         // sf=1, opc=10, 100110, N=1, immr=4, imms=63, Rn=2, Rd=1
         let expected = (1u32 << 31)
             | (0b10 << 29)
@@ -2637,10 +2709,7 @@ mod tests {
     #[test]
     fn test_br_x10() {
         // BR X10
-        let val = encode_single(
-            Aarch64Opcode::BR,
-            vec![reg(10)],
-        );
+        let val = encode_single(Aarch64Opcode::BR, vec![reg(10)]);
         let expected = (0b1101011u32 << 25)
             | (0b0000 << 21) // opc=0000 for BR
             | (0b11111 << 16)
@@ -2651,10 +2720,7 @@ mod tests {
     #[test]
     fn test_blr_x8() {
         // BLR X8
-        let val = encode_single(
-            Aarch64Opcode::BLR,
-            vec![reg(8)],
-        );
+        let val = encode_single(Aarch64Opcode::BLR, vec![reg(8)]);
         let expected = (0b1101011u32 << 25)
             | (0b0001 << 21) // opc=0001 for BLR
             | (0b11111 << 16)
@@ -2678,7 +2744,10 @@ mod tests {
         let relocs = enc.get_relocations();
         assert_eq!(relocs.len(), 1);
         assert_eq!(relocs[0].symbol, "my_global");
-        assert_eq!(relocs[0].reloc_type, RelocationType::Aarch64_ADR_PREL_PG_HI21);
+        assert_eq!(
+            relocs[0].reloc_type,
+            RelocationType::Aarch64_ADR_PREL_PG_HI21
+        );
     }
 
     // ===================================================================
@@ -2688,10 +2757,7 @@ mod tests {
     #[test]
     fn test_sxtw() {
         // SXTW X1, W2 = SBFM X1, X2, #0, #31
-        let val = encode_single(
-            Aarch64Opcode::SXTW,
-            vec![reg(1), reg(2)],
-        );
+        let val = encode_single(Aarch64Opcode::SXTW, vec![reg(1), reg(2)]);
         // sf=1, opc=00, 100110, N=1, immr=0, imms=31, Rn=2, Rd=1
         let expected = (1u32 << 31)
             | (0b00 << 29)
@@ -2725,10 +2791,7 @@ mod tests {
     fn test_forward_branch_fixup() {
         let mut enc = Aarch64Encoder::new();
         // Emit a B to label 42 (not yet seen).
-        let instr_b = make_instr(
-            Aarch64Opcode::B,
-            vec![MachineOperand::Label(42)],
-        );
+        let instr_b = make_instr(Aarch64Opcode::B, vec![MachineOperand::Label(42)]);
         enc.encode_instruction(&instr_b);
 
         // Emit a NOP as the target of label 42.

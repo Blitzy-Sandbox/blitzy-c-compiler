@@ -35,13 +35,12 @@ pub mod isel;
 
 use std::collections::HashMap;
 
+use crate::codegen::regalloc::{
+    compute_live_intervals, linear_scan_allocate, AllocationResult, PhysReg, RegClass, RegisterInfo,
+};
 use crate::codegen::{
     Architecture, CodeGen, CodeGenError, MachineInstr, MachineOperand, ObjectCode, Relocation,
     Section, SectionFlags, SectionType, Symbol, SymbolBinding, SymbolType, SymbolVisibility,
-};
-use crate::codegen::regalloc::{
-    AllocationResult, PhysReg, RegClass, RegisterInfo, compute_live_intervals,
-    linear_scan_allocate,
 };
 use crate::driver::target::TargetConfig;
 use crate::ir::{Function, GlobalVariable, IrType, Module};
@@ -239,33 +238,33 @@ pub fn riscv64_register_info() -> RegisterInfo {
         // Caller-saved registers listed first to minimize save/restore overhead.
         int_regs: vec![
             // Caller-saved temporaries (preferred — no save/restore cost):
-            X5, X6, X7,                                        // t0-t2
-            X28, X29, X30, X31,                                // t3-t6
+            X5, X6, X7, // t0-t2
+            X28, X29, X30, X31, // t3-t6
             // Argument registers (caller-saved):
-            X10, X11, X12, X13, X14, X15, X16, X17,           // a0-a7
+            X10, X11, X12, X13, X14, X15, X16, X17, // a0-a7
             // Callee-saved registers (used when caller-saved are exhausted):
-            X8, X9,                                             // s0-s1
+            X8, X9, // s0-s1
             X18, X19, X20, X21, X22, X23, X24, X25, X26, X27, // s2-s11
         ],
         // Allocatable floating-point registers in allocation priority order.
         float_regs: vec![
             // Caller-saved FP temporaries:
-            F0, F1, F2, F3, F4, F5, F6, F7,           // ft0-ft7
-            F28, F29, F30, F31,                         // ft8-ft11
+            F0, F1, F2, F3, F4, F5, F6, F7, // ft0-ft7
+            F28, F29, F30, F31, // ft8-ft11
             // FP argument registers (caller-saved):
-            F10, F11, F12, F13, F14, F15, F16, F17,   // fa0-fa7
+            F10, F11, F12, F13, F14, F15, F16, F17, // fa0-fa7
             // FP callee-saved registers:
-            F8, F9,                                     // fs0-fs1
+            F8, F9, // fs0-fs1
             F18, F19, F20, F21, F22, F23, F24, F25, F26, F27, // fs2-fs11
         ],
         // Integer callee-saved registers (s0-s11 per LP64D ABI).
         callee_saved_int: vec![
-            X8, X9,                                             // s0-s1
+            X8, X9, // s0-s1
             X18, X19, X20, X21, X22, X23, X24, X25, X26, X27, // s2-s11
         ],
         // FP callee-saved registers (fs0-fs11 per LP64D ABI).
         callee_saved_float: vec![
-            F8, F9,                                             // fs0-fs1
+            F8, F9, // fs0-fs1
             F18, F19, F20, F21, F22, F23, F24, F25, F26, F27, // fs2-fs11
         ],
         reg_names: build_riscv64_reg_names(),
@@ -443,10 +442,7 @@ fn compute_frame_size(alloc_result: &AllocationResult) -> i64 {
 ///     | spill slots      |
 ///     +------------------+ ← new sp (16-byte aligned)
 /// ```
-fn generate_prologue(
-    alloc_result: &AllocationResult,
-    _target: &TargetConfig,
-) -> Vec<MachineInstr> {
+fn generate_prologue(alloc_result: &AllocationResult, _target: &TargetConfig) -> Vec<MachineInstr> {
     let frame_size = compute_frame_size(alloc_result);
     let mut instrs = Vec::new();
 
@@ -571,10 +567,7 @@ fn generate_prologue(
 ///
 /// Reverses the prologue: restores callee-saved registers, restores ra and
 /// s0, deallocates the stack frame, and returns via the RET pseudo-instruction.
-fn generate_epilogue(
-    alloc_result: &AllocationResult,
-    _target: &TargetConfig,
-) -> Vec<MachineInstr> {
+fn generate_epilogue(alloc_result: &AllocationResult, _target: &TargetConfig) -> Vec<MachineInstr> {
     let frame_size = compute_frame_size(alloc_result);
     let mut instrs = Vec::new();
 
@@ -927,11 +920,7 @@ impl CodeGen for Riscv64CodeGen {
     /// 6. Machine code encoding (instructions → bytes)
     ///
     /// Global variables are emitted into `.data`, `.rodata`, and `.bss` sections.
-    fn generate(
-        &self,
-        module: &Module,
-        target: &TargetConfig,
-    ) -> Result<ObjectCode, CodeGenError> {
+    fn generate(&self, module: &Module, target: &TargetConfig) -> Result<ObjectCode, CodeGenError> {
         let reg_info = riscv64_register_info();
         let mut sections = Vec::new();
         let mut symbols = Vec::new();
@@ -974,9 +963,8 @@ impl CodeGen for Riscv64CodeGen {
             let epilogue = generate_epilogue(&alloc_result, target);
 
             // Step 6: Concatenate prologue + body + epilogue
-            let mut all_instrs = Vec::with_capacity(
-                prologue.len() + body_instrs.len() + epilogue.len(),
-            );
+            let mut all_instrs =
+                Vec::with_capacity(prologue.len() + body_instrs.len() + epilogue.len());
             all_instrs.extend(prologue);
             all_instrs.extend(body_instrs);
             all_instrs.extend(epilogue);
@@ -1310,7 +1298,10 @@ mod tests {
         let module = Module::new("test".to_string());
         let target = TargetConfig::riscv64();
         let result = codegen.generate(&module, &target);
-        assert!(result.is_ok(), "Code generation should succeed for empty module");
+        assert!(
+            result.is_ok(),
+            "Code generation should succeed for empty module"
+        );
         let obj = result.unwrap();
         assert_eq!(obj.target_arch, Architecture::Riscv64);
     }

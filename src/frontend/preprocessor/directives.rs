@@ -31,7 +31,7 @@ use std::path::PathBuf;
 use super::conditional::ConditionalStack;
 use super::expression::evaluate_to_bool;
 use super::include::{IncludeError, IncludeKind, IncludeResolver};
-use super::macros::{MacroDefinition, MacroTable, parse_macro_definition};
+use super::macros::{parse_macro_definition, MacroDefinition, MacroTable};
 use crate::common::diagnostics::DiagnosticEmitter;
 use crate::common::source_map::{SourceLocation, SourceMap};
 
@@ -360,8 +360,7 @@ pub fn process_directive(
             // We only skip evaluation when in ParentInactive, but since we
             // cannot directly query that state, we use a pragmatic approach:
             // always try to evaluate and fall back to false on failure.
-            let condition =
-                evaluate_if_expression(rest, ctx, location).unwrap_or(false);
+            let condition = evaluate_if_expression(rest, ctx, location).unwrap_or(false);
             ctx.conditional_stack
                 .process_elif(condition, location, &mut ctx.diagnostics)?;
             Ok(DirectiveAction::None)
@@ -424,7 +423,9 @@ fn evaluate_if_expression(
 
     // Phase 2: Expand remaining macros in the expression text.
     let mut expansion_guard = std::collections::HashSet::new();
-    let expanded = ctx.macro_table.expand_line(&pre_defined, &mut expansion_guard);
+    let expanded = ctx
+        .macro_table
+        .expand_line(&pre_defined, &mut expansion_guard);
     let expanded_trimmed = expanded.trim();
     if expanded_trimmed.is_empty() {
         ctx.diagnostics.error(location, "#if with no expression");
@@ -477,8 +478,10 @@ fn replace_defined_with_literals(text: &str, macro_table: &MacroTable) -> String
         // Check for 'defined' keyword
         if i + 7 <= len && &text[i..i + 7] == "defined" {
             // Make sure it's a word boundary (not part of a longer identifier)
-            let before_ok = i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_');
-            let after_ok = i + 7 >= len || !(bytes[i + 7].is_ascii_alphanumeric() || bytes[i + 7] == b'_');
+            let before_ok =
+                i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_');
+            let after_ok =
+                i + 7 >= len || !(bytes[i + 7].is_ascii_alphanumeric() || bytes[i + 7] == b'_');
             if before_ok && after_ok {
                 let mut j = i + 7;
                 // Skip whitespace
@@ -501,7 +504,11 @@ fn replace_defined_with_literals(text: &str, macro_table: &MacroTable) -> String
                     }
                     if j < len && bytes[j] == b')' {
                         j += 1;
-                        let val = if !ident.is_empty() && macro_table.is_defined(ident) { "1" } else { "0" };
+                        let val = if !ident.is_empty() && macro_table.is_defined(ident) {
+                            "1"
+                        } else {
+                            "0"
+                        };
                         result.push_str(val);
                         i = j;
                         continue;
@@ -514,7 +521,11 @@ fn replace_defined_with_literals(text: &str, macro_table: &MacroTable) -> String
                         j += 1;
                     }
                     let ident = &text[ident_start..j];
-                    let val = if macro_table.is_defined(ident) { "1" } else { "0" };
+                    let val = if macro_table.is_defined(ident) {
+                        "1"
+                    } else {
+                        "0"
+                    };
                     result.push_str(val);
                     i = j;
                     continue;
@@ -594,10 +605,8 @@ fn handle_include(
         match try_macro_expanded_include(trimmed, ctx, location) {
             Some(result) => return result,
             None => {
-                ctx.diagnostics.error(
-                    location,
-                    "#include expects \"FILENAME\" or <FILENAME>",
-                );
+                ctx.diagnostics
+                    .error(location, "#include expects \"FILENAME\" or <FILENAME>");
                 return Ok(DirectiveAction::Error);
             }
         }
@@ -649,10 +658,8 @@ fn resolve_and_include(
             Ok(DirectiveAction::None)
         }
         Err(IncludeError::IoError(err)) => {
-            ctx.diagnostics.error(
-                location,
-                format!("cannot open include file: {}", err),
-            );
+            ctx.diagnostics
+                .error(location, format!("cannot open include file: {}", err));
             Ok(DirectiveAction::Error)
         }
     }
@@ -743,8 +750,7 @@ fn handle_define(
     // Parse the macro definition body using the macros module parser.
     // `parse_macro_definition` returns a `MacroDefinition` with `.name`,
     // `.kind`, and `.replacement` populated from the directive text.
-    let result: Result<MacroDefinition, String> =
-        parse_macro_definition(name, after_name);
+    let result: Result<MacroDefinition, String> = parse_macro_definition(name, after_name);
     match result {
         Ok(mut def) => {
             def.location = Some(location);
@@ -760,8 +766,8 @@ fn handle_define(
                 // `is_equivalent` compares `.kind` and `.replacement` fields.
                 // When they differ, the macro has been redefined with a
                 // different expansion, which warrants a warning.
-                let kinds_match = std::mem::discriminant(&old.kind)
-                    == std::mem::discriminant(&def.kind);
+                let kinds_match =
+                    std::mem::discriminant(&old.kind) == std::mem::discriminant(&def.kind);
                 let replacements_match = old.replacement == def.replacement;
 
                 if !kinds_match || !replacements_match {
@@ -773,10 +779,7 @@ fn handle_define(
                         if !old_loc.is_dummy() {
                             ctx.diagnostics.warning(
                                 old_loc,
-                                format!(
-                                    "previous definition of '{}' was here",
-                                    old.name
-                                ),
+                                format!("previous definition of '{}' was here", old.name),
                             );
                         }
                     }
@@ -835,17 +838,11 @@ fn handle_pragma(
 ) -> Result<DirectiveAction, ()> {
     let trimmed = rest.trim();
 
-    if trimmed == "once"
-        || trimmed.starts_with("once ")
-        || trimmed.starts_with("once\t")
-    {
+    if trimmed == "once" || trimmed.starts_with("once ") || trimmed.starts_with("once\t") {
         // #pragma once — prevent re-inclusion of this file.
         // Get the current file path from the source map using the
         // location's file_id, then mark it in the include resolver.
-        let current_file = ctx
-            .source_map
-            .get_file_path(location.file_id)
-            .to_path_buf();
+        let current_file = ctx.source_map.get_file_path(location.file_id).to_path_buf();
         ctx.include_resolver.mark_pragma_once(&current_file);
         return Ok(DirectiveAction::None);
     }
@@ -922,10 +919,8 @@ fn handle_line(
 ) -> Result<DirectiveAction, ()> {
     let trimmed = rest.trim();
     if trimmed.is_empty() {
-        ctx.diagnostics.error(
-            location,
-            "\"line\" after #line is not a positive integer",
-        );
+        ctx.diagnostics
+            .error(location, "\"line\" after #line is not a positive integer");
         return Err(());
     }
 
@@ -936,10 +931,7 @@ fn handle_line(
         _ => {
             ctx.diagnostics.error(
                 location,
-                format!(
-                    "\"{}\" after #line is not a positive integer",
-                    line_str
-                ),
+                format!("\"{}\" after #line is not a positive integer", line_str),
             );
             return Err(());
         }
@@ -952,18 +944,14 @@ fn handle_line(
             match file_trimmed[1..].find('"') {
                 Some(end) => Some(PathBuf::from(&file_trimmed[1..1 + end])),
                 None => {
-                    ctx.diagnostics.error(
-                        location,
-                        "missing terminating \" in #line directive",
-                    );
+                    ctx.diagnostics
+                        .error(location, "missing terminating \" in #line directive");
                     return Err(());
                 }
             }
         } else if !file_trimmed.is_empty() {
-            ctx.diagnostics.error(
-                location,
-                "expected filename string in #line directive",
-            );
+            ctx.diagnostics
+                .error(location, "expected filename string in #line directive");
             return Err(());
         } else {
             None
@@ -973,12 +961,8 @@ fn handle_line(
     };
 
     // Apply the line override to the source map
-    ctx.source_map.set_line_override(
-        location.file_id,
-        location.byte_offset,
-        new_line,
-        new_file,
-    );
+    ctx.source_map
+        .set_line_override(location.file_id, location.byte_offset, new_line, new_file);
 
     Ok(DirectiveAction::None)
 }
@@ -1003,8 +987,8 @@ fn split_at_whitespace(s: &str) -> (&str, &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
     use crate::common::source_map::FileId;
+    use std::path::Path;
 
     // -----------------------------------------------------------------------
     // Test Helpers
@@ -1024,10 +1008,7 @@ mod tests {
     fn test_context() -> PreprocessorContext {
         let mut source_map = SourceMap::new();
         // Register a dummy file so FileId(0) is valid
-        source_map.add_file(
-            PathBuf::from("test.c"),
-            String::from("// test file\n"),
-        );
+        source_map.add_file(PathBuf::from("test.c"), String::from("// test file\n"));
 
         PreprocessorContext::new(
             MacroTable::new(),
@@ -1484,12 +1465,7 @@ mod tests {
     fn test_error_emits_diagnostic() {
         let mut ctx = test_context();
         let loc = test_loc(1);
-        let result = process_directive(
-            DirectiveKind::Error,
-            "something went wrong",
-            &mut ctx,
-            loc,
-        );
+        let result = process_directive(DirectiveKind::Error, "something went wrong", &mut ctx, loc);
         assert!(result.is_ok());
         assert!(ctx.diagnostics.has_errors());
     }
@@ -1498,12 +1474,7 @@ mod tests {
     fn test_warning_emits_diagnostic() {
         let mut ctx = test_context();
         let loc = test_loc(1);
-        let result = process_directive(
-            DirectiveKind::Warning,
-            "this is deprecated",
-            &mut ctx,
-            loc,
-        );
+        let result = process_directive(DirectiveKind::Warning, "this is deprecated", &mut ctx, loc);
         assert!(result.is_ok());
         assert!(!ctx.diagnostics.has_errors());
         assert_eq!(ctx.diagnostics.warning_count(), 1);
@@ -1542,12 +1513,7 @@ mod tests {
     fn test_line_with_filename() {
         let mut ctx = test_context();
         let loc = test_loc(1);
-        let result = process_directive(
-            DirectiveKind::Line,
-            "100 \"fake.c\"",
-            &mut ctx,
-            loc,
-        );
+        let result = process_directive(DirectiveKind::Line, "100 \"fake.c\"", &mut ctx, loc);
         assert!(result.is_ok());
         let override_result = ctx
             .source_map
@@ -1635,12 +1601,7 @@ mod tests {
     fn test_pragma_unknown_silently_ignored() {
         let mut ctx = test_context();
         let loc = test_loc(1);
-        let result = process_directive(
-            DirectiveKind::Pragma,
-            "GCC diagnostic push",
-            &mut ctx,
-            loc,
-        );
+        let result = process_directive(DirectiveKind::Pragma, "GCC diagnostic push", &mut ctx, loc);
         assert!(result.is_ok());
         assert!(!ctx.diagnostics.has_errors());
     }
@@ -1649,8 +1610,7 @@ mod tests {
     fn test_pragma_pack_silently_ignored() {
         let mut ctx = test_context();
         let loc = test_loc(1);
-        let result =
-            process_directive(DirectiveKind::Pragma, "pack(push, 1)", &mut ctx, loc);
+        let result = process_directive(DirectiveKind::Pragma, "pack(push, 1)", &mut ctx, loc);
         assert!(result.is_ok());
         assert!(!ctx.diagnostics.has_errors());
     }

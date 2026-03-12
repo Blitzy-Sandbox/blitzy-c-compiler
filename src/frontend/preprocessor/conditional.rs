@@ -148,9 +148,7 @@ impl ConditionalStack {
     /// An empty stack represents top-level code, which is always active.
     #[inline]
     pub fn new() -> Self {
-        ConditionalStack {
-            stack: Vec::new(),
-        }
+        ConditionalStack { stack: Vec::new() }
     }
 
     // -- Activity Query -----------------------------------------------------
@@ -355,10 +353,7 @@ impl ConditionalStack {
     ///
     /// `Ok(())` if the stack is empty (all conditionals were properly closed).
     /// `Err(())` if any unterminated conditionals were found.
-    pub fn check_unterminated(
-        &self,
-        diagnostics: &mut DiagnosticEmitter,
-    ) -> Result<(), ()> {
+    pub fn check_unterminated(&self, diagnostics: &mut DiagnosticEmitter) -> Result<(), ()> {
         if self.stack.is_empty() {
             return Ok(());
         }
@@ -780,7 +775,9 @@ mod tests {
 
         // Pop them all
         for i in (0..depth).rev() {
-            stack.pop_endif(test_loc(100 + i as u32), &mut diag).unwrap();
+            stack
+                .pop_endif(test_loc(100 + i as u32), &mut diag)
+                .unwrap();
             assert!(stack.is_active());
             assert_eq!(stack.depth(), i);
         }

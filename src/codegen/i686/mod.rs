@@ -66,19 +66,16 @@ pub mod abi;
 use std::collections::HashMap;
 
 use crate::codegen::regalloc::{
+    build_value_to_reg_map, compute_live_intervals, insert_spill_code, linear_scan_allocate,
     PhysReg, RegisterInfo,
-    compute_live_intervals, linear_scan_allocate, insert_spill_code,
-    build_value_to_reg_map,
 };
 use crate::codegen::{
-    Architecture, CodeGen, CodeGenError, ObjectCode,
-    Section, SectionType, SectionFlags,
-    Symbol, SymbolBinding, SymbolType, SymbolVisibility,
-    Relocation, RelocationType,
-    MachineInstr, MachineOperand,
+    Architecture, CodeGen, CodeGenError, MachineInstr, MachineOperand, ObjectCode, Relocation,
+    RelocationType, Section, SectionFlags, SectionType, Symbol, SymbolBinding, SymbolType,
+    SymbolVisibility,
 };
-use crate::ir::{Module, IrType, Value};
 use crate::driver::target::TargetConfig;
+use crate::ir::{IrType, Module, Value};
 
 // ---------------------------------------------------------------------------
 // i686 Physical Register Constants
@@ -238,11 +235,7 @@ impl CodeGen for I686CodeGen {
     ///
     /// An [`ObjectCode`] with `.text`, `.data`, `.rodata`, and `.bss` sections,
     /// function and global variable symbols, and `R_386_*` relocations.
-    fn generate(
-        &self,
-        module: &Module,
-        target: &TargetConfig,
-    ) -> Result<ObjectCode, CodeGenError> {
+    fn generate(&self, module: &Module, target: &TargetConfig) -> Result<ObjectCode, CodeGenError> {
         // Validate target architecture.
         if target.arch != Architecture::I686 {
             return Err(CodeGenError::InternalError(format!(
@@ -319,9 +312,8 @@ impl CodeGen for I686CodeGen {
             // appending at the end) so the stack frame is properly torn down
             // before every return path. This mirrors x86_64's approach.
             let ret_opcode = encoding::I686Opcode::Ret as u32;
-            let mut final_instrs: Vec<MachineInstr> = Vec::with_capacity(
-                prologue.len() + machine_instrs.len() + epilogue.len() * 2,
-            );
+            let mut final_instrs: Vec<MachineInstr> =
+                Vec::with_capacity(prologue.len() + machine_instrs.len() + epilogue.len() * 2);
             // Insert prologue at the start.
             final_instrs.extend(prologue);
             // Insert body, injecting epilogue before each ret.
@@ -631,19 +623,17 @@ pub fn create_i686_register_info() -> RegisterInfo {
     // Allocatable integer GPRs: caller-saved first, then callee-saved.
     // esp (4) and ebp (5) are NOT included — they are reserved.
     let int_regs = vec![
-        EAX,  // PhysReg(0) — caller-saved, accumulator
-        ECX,  // PhysReg(1) — caller-saved, counter
-        EDX,  // PhysReg(2) — caller-saved, data
-        EBX,  // PhysReg(3) — callee-saved
-        ESI,  // PhysReg(6) — callee-saved
-        EDI,  // PhysReg(7) — callee-saved
+        EAX, // PhysReg(0) — caller-saved, accumulator
+        ECX, // PhysReg(1) — caller-saved, counter
+        EDX, // PhysReg(2) — caller-saved, data
+        EBX, // PhysReg(3) — callee-saved
+        ESI, // PhysReg(6) — callee-saved
+        EDI, // PhysReg(7) — callee-saved
     ];
 
     // Allocatable floating-point/SSE registers.
     // All 8 XMM registers are caller-saved on i686.
-    let float_regs = vec![
-        XMM0, XMM1, XMM2, XMM3, XMM4, XMM5, XMM6, XMM7,
-    ];
+    let float_regs = vec![XMM0, XMM1, XMM2, XMM3, XMM4, XMM5, XMM6, XMM7];
 
     // Callee-saved integer registers (cdecl ABI).
     // The register allocator will save/restore these in prologue/epilogue
@@ -829,8 +819,8 @@ fn is_readonly_initializer(
         Constant::Bool(_) => false,
         Constant::Null(_) => false,
         Constant::Undef(_) => false,
-        Constant::ZeroInit(_) => false,    // Zero-init goes to .bss or .data
-        Constant::String(_) => true,       // String literals are read-only
+        Constant::ZeroInit(_) => false, // Zero-init goes to .bss or .data
+        Constant::String(_) => true,    // String literals are read-only
         Constant::GlobalRef(_) => false,
     }
 }
@@ -865,13 +855,11 @@ fn serialize_constant(
                 _ => (v as i32).to_le_bytes().to_vec(),
             }
         }
-        Constant::Float { value, ty } => {
-            match ty {
-                IrType::F32 => (*value as f32).to_le_bytes().to_vec(),
-                IrType::F64 => value.to_le_bytes().to_vec(),
-                _ => value.to_le_bytes().to_vec(),
-            }
-        }
+        Constant::Float { value, ty } => match ty {
+            IrType::F32 => (*value as f32).to_le_bytes().to_vec(),
+            IrType::F64 => value.to_le_bytes().to_vec(),
+            _ => value.to_le_bytes().to_vec(),
+        },
         Constant::Bool(b) => vec![if *b { 1u8 } else { 0u8 }],
         Constant::Null(_) => vec![0u8; 4], // 32-bit null pointer on i686
         Constant::Undef(_) => vec![0u8; type_size],
@@ -901,8 +889,8 @@ fn serialize_constant(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::codegen::{Architecture, CodeGen};
     use crate::codegen::regalloc::{PhysReg, RegClass};
+    use crate::codegen::{Architecture, CodeGen};
 
     /// Verify that `I686CodeGen::new()` creates a valid instance.
     #[test]
@@ -948,9 +936,18 @@ mod tests {
     fn test_callee_saved_int_registers() {
         let info = create_i686_register_info();
         assert_eq!(info.callee_saved_int.len(), 3);
-        assert!(info.callee_saved_int.contains(&PhysReg(3)), "ebx should be callee-saved");
-        assert!(info.callee_saved_int.contains(&PhysReg(6)), "esi should be callee-saved");
-        assert!(info.callee_saved_int.contains(&PhysReg(7)), "edi should be callee-saved");
+        assert!(
+            info.callee_saved_int.contains(&PhysReg(3)),
+            "ebx should be callee-saved"
+        );
+        assert!(
+            info.callee_saved_int.contains(&PhysReg(6)),
+            "esi should be callee-saved"
+        );
+        assert!(
+            info.callee_saved_int.contains(&PhysReg(7)),
+            "edi should be callee-saved"
+        );
     }
 
     /// Verify no callee-saved float registers on i686.
@@ -1138,7 +1135,10 @@ mod tests {
     fn test_serialize_integer_constant() {
         use crate::ir::Constant;
         let target = TargetConfig::i686();
-        let c = Constant::Integer { value: 42, ty: IrType::I32 };
+        let c = Constant::Integer {
+            value: 42,
+            ty: IrType::I32,
+        };
         let bytes = serialize_constant(&c, 4, &target);
         assert_eq!(bytes, vec![42, 0, 0, 0]); // little-endian i32
     }
@@ -1168,7 +1168,10 @@ mod tests {
     fn test_serialize_constant_padding() {
         use crate::ir::Constant;
         let target = TargetConfig::i686();
-        let c = Constant::Integer { value: 1, ty: IrType::I8 };
+        let c = Constant::Integer {
+            value: 1,
+            ty: IrType::I8,
+        };
         let bytes = serialize_constant(&c, 4, &target);
         assert_eq!(bytes, vec![1, 0, 0, 0]); // padded to 4 bytes
     }

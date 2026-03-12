@@ -338,7 +338,10 @@ fn peek(source: &[u8], pos: usize) -> Option<u8> {
 /// the escape is malformed.
 fn parse_escape_sequence(source: &[u8], pos: &mut usize) -> Result<u32, LexError> {
     if *pos >= source.len() {
-        return Err(LexError::new("unexpected end of input in escape sequence", *pos));
+        return Err(LexError::new(
+            "unexpected end of input in escape sequence",
+            *pos,
+        ));
     }
     let ch = source[*pos];
     *pos += 1;
@@ -462,12 +465,16 @@ fn parse_escape_sequence(source: &[u8], pos: &mut usize) -> Result<u32, LexError
             Ok(value)
         }
 
+        // GCC extension: \e for ESC (0x1B) — commonly used in the Linux
+        // kernel (e.g. string_helpers.c) for ANSI escape sequences.
+        b'e' | b'E' => Ok(0x1B),
+
         // Unknown escape sequence — GCC treats this as the character itself
-        // with a warning, but we report an error for strict compliance.
-        other => Err(LexError::new(
-            format!("unknown escape sequence '\\{}'", other as char),
-            *pos - 1,
-        )),
+        // with a warning.  Follow GCC behaviour for kernel compatibility.
+        other => {
+            // Return the literal character value (GCC behaviour).
+            Ok(other as u32)
+        }
     }
 }
 
@@ -570,11 +577,7 @@ fn parse_float_suffix(source: &[u8], pos: usize) -> (FloatSuffix, usize) {
 ///   `(integer_part + fractional_part) * 2^exponent`
 ///
 /// where `fractional_part = hex_frac_digits / 16^(number_of_frac_digits)`.
-fn compute_hex_float(
-    int_digits: &[u8],
-    frac_digits: &[u8],
-    exponent: i64,
-) -> f64 {
+fn compute_hex_float(int_digits: &[u8], frac_digits: &[u8], exponent: i64) -> f64 {
     // Build the integer part from hex digits.
     let mut mantissa: f64 = 0.0;
     for &d in int_digits {
@@ -636,7 +639,12 @@ pub fn scan_number(source: &[u8], pos: usize) -> Result<(NumericValue, usize), L
 
     let first_byte = match peek(source, current) {
         Some(b) => b,
-        None => return Err(LexError::new("unexpected end of input in numeric literal", current)),
+        None => {
+            return Err(LexError::new(
+                "unexpected end of input in numeric literal",
+                current,
+            ))
+        }
     };
 
     // -----------------------------------------------------------------------
@@ -1016,10 +1024,7 @@ fn scan_decimal_float_from_digits(
 ///
 /// `current` points to the byte immediately after `e`/`E` or `p`/`P`.
 /// Advances `current` past all consumed bytes. Returns the exponent value.
-fn parse_decimal_exponent(
-    source: &[u8],
-    current: &mut usize,
-) -> Result<i64, LexError> {
+fn parse_decimal_exponent(source: &[u8], current: &mut usize) -> Result<i64, LexError> {
     let mut sign: i64 = 1;
     if let Some(&b) = source.get(*current) {
         if b == b'+' {
@@ -1040,10 +1045,7 @@ fn parse_decimal_exponent(
     }
 
     if *current == digits_start {
-        return Err(LexError::new(
-            "exponent has no digits",
-            digits_start,
-        ));
+        return Err(LexError::new("exponent has no digits", digits_start));
     }
 
     let exp_str = std::str::from_utf8(&source[digits_start..*current])
@@ -1058,10 +1060,7 @@ fn parse_decimal_exponent(
 /// Same as `parse_decimal_exponent` but used inline within float scanning
 /// where the `e`/`E` has already been consumed and we just need to handle
 /// `[+-]digits`. Returns the byte count consumed by the exponent portion.
-fn parse_decimal_exponent_inline(
-    source: &[u8],
-    current: &mut usize,
-) -> Result<usize, LexError> {
+fn parse_decimal_exponent_inline(source: &[u8], current: &mut usize) -> Result<usize, LexError> {
     let exp_start = *current;
 
     if let Some(&b) = source.get(*current) {
@@ -1179,7 +1178,10 @@ pub fn scan_string(
 
     // Consume the opening double-quote.
     if peek(source, current) != Some(b'"') {
-        return Err(LexError::new("expected '\"' at start of string literal", current));
+        return Err(LexError::new(
+            "expected '\"' at start of string literal",
+            current,
+        ));
     }
     current += 1;
 
@@ -1254,17 +1256,16 @@ pub fn scan_string(
 /// C allows multi-character constants like `'ab'` (implementation-defined
 /// value). This function supports them but the value is computed by packing
 /// successive byte values into a `u32` (like GCC).
-pub fn scan_char(
-    source: &[u8],
-    pos: usize,
-    _prefix: CharPrefix,
-) -> Result<(u32, usize), LexError> {
+pub fn scan_char(source: &[u8], pos: usize, _prefix: CharPrefix) -> Result<(u32, usize), LexError> {
     let start = pos;
     let mut current = pos;
 
     // Consume the opening single-quote.
     if peek(source, current) != Some(b'\'') {
-        return Err(LexError::new("expected '\\'' at start of character literal", current));
+        return Err(LexError::new(
+            "expected '\\'' at start of character literal",
+            current,
+        ));
     }
     current += 1;
 
@@ -1331,7 +1332,12 @@ mod tests {
         match result {
             Ok((value, consumed)) => {
                 assert_eq!(value, expected, "value mismatch for input '{}'", input);
-                assert_eq!(consumed, input.len(), "consumed mismatch for input '{}'", input);
+                assert_eq!(
+                    consumed,
+                    input.len(),
+                    "consumed mismatch for input '{}'",
+                    input
+                );
             }
             Err(e) => panic!("scan_number('{}') failed: {}", input, e),
         }
@@ -1343,7 +1349,11 @@ mod tests {
         match result {
             Ok((value, consumed)) => {
                 assert_eq!(value, expected, "value mismatch for input '{}'", input);
-                assert_eq!(consumed, expected_consumed, "consumed mismatch for input '{}'", input);
+                assert_eq!(
+                    consumed, expected_consumed,
+                    "consumed mismatch for input '{}'",
+                    input
+                );
             }
             Err(e) => panic!("scan_number('{}') failed: {}", input, e),
         }
@@ -1758,7 +1768,11 @@ mod tests {
         let result = scan_number(b"0x1.0p10", 0).unwrap();
         assert_eq!(result.1, 8);
         if let NumericValue::Float { value, suffix } = result.0 {
-            assert!((value - 1024.0).abs() < 1e-10, "expected 1024.0, got {}", value);
+            assert!(
+                (value - 1024.0).abs() < 1e-10,
+                "expected 1024.0, got {}",
+                value
+            );
             assert_eq!(suffix, FloatSuffix::None);
         } else {
             panic!("expected Float variant");
@@ -1820,7 +1834,11 @@ mod tests {
         };
         let tv = nv.into_token_value();
         match tv {
-            TokenValue::Integer { value, base, suffix } => {
+            TokenValue::Integer {
+                value,
+                base,
+                suffix,
+            } => {
                 assert_eq!(value, 42);
                 assert_eq!(base, NumericBase::Decimal);
                 assert_eq!(suffix, IntSuffix::Unsigned);
@@ -1839,7 +1857,12 @@ mod tests {
         match result {
             Ok((content, consumed)) => {
                 assert_eq!(content, expected, "content mismatch for input {:?}", input);
-                assert_eq!(consumed, input.len(), "consumed mismatch for input {:?}", input);
+                assert_eq!(
+                    consumed,
+                    input.len(),
+                    "consumed mismatch for input {:?}",
+                    input
+                );
             }
             Err(e) => panic!("scan_string({:?}) failed: {}", input, e),
         }
@@ -1928,7 +1951,12 @@ mod tests {
         match result {
             Ok((value, consumed)) => {
                 assert_eq!(value, expected, "value mismatch for input {:?}", input);
-                assert_eq!(consumed, input.len(), "consumed mismatch for input {:?}", input);
+                assert_eq!(
+                    consumed,
+                    input.len(),
+                    "consumed mismatch for input {:?}",
+                    input
+                );
             }
             Err(e) => panic!("scan_char({:?}) failed: {}", input, e),
         }
@@ -2204,4 +2232,3 @@ mod tests {
         }
     }
 }
-

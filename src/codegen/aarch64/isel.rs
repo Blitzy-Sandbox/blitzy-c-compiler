@@ -18,20 +18,14 @@
 
 use std::collections::HashMap;
 
-use crate::codegen::{
-    CodeGenError, MachineInstr, MachineOperand, Relocation, RelocationType,
+use crate::codegen::aarch64::abi::{
+    generate_call_sequence, is_fp_reg, FLOAT_ARG_REGS, FP, INT_ARG_REGS, LR, V0, X0,
 };
 use crate::codegen::regalloc::PhysReg;
-use crate::codegen::aarch64::abi::{
-    generate_call_sequence,
-    INT_ARG_REGS, FLOAT_ARG_REGS,
-    X0, FP, LR, V0,
-    is_fp_reg,
-};
+use crate::codegen::{CodeGenError, MachineInstr, MachineOperand, Relocation, RelocationType};
 use crate::ir::{
-    Callee, CastOp, CompareOp, Constant,
-    FloatCompareOp, Function, Instruction, IrType,
-    Terminator, Value,
+    Callee, CastOp, CompareOp, Constant, FloatCompareOp, Function, Instruction, IrType, Terminator,
+    Value,
 };
 
 // ===========================================================================
@@ -56,67 +50,149 @@ use crate::ir::{
 #[allow(non_camel_case_types)]
 pub enum Aarch64Opcode {
     // -- Integer Arithmetic --
-    ADD, ADDS, SUB, SUBS,
-    MUL, MADD, MSUB,
-    SDIV, UDIV,
-    SMULL, UMULL, SMULH, UMULH,
+    ADD,
+    ADDS,
+    SUB,
+    SUBS,
+    MUL,
+    MADD,
+    MSUB,
+    SDIV,
+    UDIV,
+    SMULL,
+    UMULL,
+    SMULH,
+    UMULH,
 
     // -- Logical --
-    AND, ANDS, ORR, ORN, EOR, EON, BIC, BICS,
+    AND,
+    ANDS,
+    ORR,
+    ORN,
+    EOR,
+    EON,
+    BIC,
+    BICS,
 
     // -- Shift --
-    LSL, LSR, ASR, ROR,
+    LSL,
+    LSR,
+    ASR,
+    ROR,
 
     // -- Move --
-    MOV, MVN, MOVZ, MOVK, MOVN,
+    MOV,
+    MVN,
+    MOVZ,
+    MOVK,
+    MOVN,
 
     // -- Extend --
-    SXTB, SXTH, SXTW, UXTB, UXTH,
+    SXTB,
+    SXTH,
+    SXTW,
+    UXTB,
+    UXTH,
 
     // -- Bit Manipulation --
-    CLZ, RBIT, REV, REV16, REV32,
+    CLZ,
+    RBIT,
+    REV,
+    REV16,
+    REV32,
 
     // -- Conditional Select --
-    CSEL, CSINC, CSINV, CSNEG,
+    CSEL,
+    CSINC,
+    CSINV,
+    CSNEG,
 
     // -- Load / Store (integer) --
-    LDR, LDRW, LDRH, LDRB,
-    LDRSW, LDRSH, LDRSB,
-    STR, STRW, STRH, STRB,
+    LDR,
+    LDRW,
+    LDRH,
+    LDRB,
+    LDRSW,
+    LDRSH,
+    LDRSB,
+    STR,
+    STRW,
+    STRH,
+    STRB,
 
     // -- Load / Store Pair --
-    LDP, STP,
+    LDP,
+    STP,
 
     // -- Load / Store (SIMD/FP scalar) --
-    LDR_S, LDR_D, STR_S, STR_D,
-    LDP_D, STP_D,
+    LDR_S,
+    LDR_D,
+    STR_S,
+    STR_D,
+    LDP_D,
+    STP_D,
 
     // -- PC-Relative Addressing --
-    ADRP, ADR,
+    ADRP,
+    ADR,
 
     // -- Branch --
-    B, BL, BR, BLR, RET,
-    B_cond, CBZ, CBNZ, TBZ, TBNZ,
+    B,
+    BL,
+    BR,
+    BLR,
+    RET,
+    B_cond,
+    CBZ,
+    CBNZ,
+    TBZ,
+    TBNZ,
 
     // -- FP Arithmetic --
-    FADD_S, FADD_D, FSUB_S, FSUB_D,
-    FMUL_S, FMUL_D, FDIV_S, FDIV_D,
-    FSQRT_S, FSQRT_D,
-    FABS_S, FABS_D, FNEG_S, FNEG_D,
-    FMIN_S, FMIN_D, FMAX_S, FMAX_D,
+    FADD_S,
+    FADD_D,
+    FSUB_S,
+    FSUB_D,
+    FMUL_S,
+    FMUL_D,
+    FDIV_S,
+    FDIV_D,
+    FSQRT_S,
+    FSQRT_D,
+    FABS_S,
+    FABS_D,
+    FNEG_S,
+    FNEG_D,
+    FMIN_S,
+    FMIN_D,
+    FMAX_S,
+    FMAX_D,
     FMOV,
 
     // -- FP Comparison --
-    FCMP_S, FCMP_D,
-    FCSEL_S, FCSEL_D,
+    FCMP_S,
+    FCMP_D,
+    FCSEL_S,
+    FCSEL_D,
 
     // -- FP Conversion --
-    SCVTF_S, SCVTF_D, UCVTF_S, UCVTF_D,
-    FCVTZS_S, FCVTZS_D, FCVTZU_S, FCVTZU_D,
-    FCVT_S_TO_D, FCVT_D_TO_S,
+    SCVTF_S,
+    SCVTF_D,
+    UCVTF_S,
+    UCVTF_D,
+    FCVTZS_S,
+    FCVTZS_D,
+    FCVTZU_S,
+    FCVTZU_D,
+    FCVT_S_TO_D,
+    FCVT_D_TO_S,
 
     // -- System --
-    NOP, SVC, DMB, DSB, ISB,
+    NOP,
+    SVC,
+    DMB,
+    DSB,
+    ISB,
 }
 
 impl Aarch64Opcode {
@@ -127,28 +203,28 @@ impl Aarch64Opcode {
     pub const fn as_u32(self) -> u32 {
         match self {
             // Integer arithmetic — 0x1000
-            Aarch64Opcode::ADD   => 0x1000,
-            Aarch64Opcode::ADDS  => 0x1001,
-            Aarch64Opcode::SUB   => 0x1002,
-            Aarch64Opcode::SUBS  => 0x1003,
-            Aarch64Opcode::MUL   => 0x1004,
-            Aarch64Opcode::MADD  => 0x1005,
-            Aarch64Opcode::MSUB  => 0x1006,
-            Aarch64Opcode::SDIV  => 0x1007,
-            Aarch64Opcode::UDIV  => 0x1008,
+            Aarch64Opcode::ADD => 0x1000,
+            Aarch64Opcode::ADDS => 0x1001,
+            Aarch64Opcode::SUB => 0x1002,
+            Aarch64Opcode::SUBS => 0x1003,
+            Aarch64Opcode::MUL => 0x1004,
+            Aarch64Opcode::MADD => 0x1005,
+            Aarch64Opcode::MSUB => 0x1006,
+            Aarch64Opcode::SDIV => 0x1007,
+            Aarch64Opcode::UDIV => 0x1008,
             Aarch64Opcode::SMULL => 0x1009,
             Aarch64Opcode::UMULL => 0x100A,
             Aarch64Opcode::SMULH => 0x100B,
             Aarch64Opcode::UMULH => 0x100C,
 
             // Logical — 0x1100
-            Aarch64Opcode::AND  => 0x1100,
+            Aarch64Opcode::AND => 0x1100,
             Aarch64Opcode::ANDS => 0x1101,
-            Aarch64Opcode::ORR  => 0x1102,
-            Aarch64Opcode::ORN  => 0x1103,
-            Aarch64Opcode::EOR  => 0x1104,
-            Aarch64Opcode::EON  => 0x1105,
-            Aarch64Opcode::BIC  => 0x1106,
+            Aarch64Opcode::ORR => 0x1102,
+            Aarch64Opcode::ORN => 0x1103,
+            Aarch64Opcode::EOR => 0x1104,
+            Aarch64Opcode::EON => 0x1105,
+            Aarch64Opcode::BIC => 0x1106,
             Aarch64Opcode::BICS => 0x1107,
 
             // Shift — 0x1200
@@ -158,8 +234,8 @@ impl Aarch64Opcode {
             Aarch64Opcode::ROR => 0x1203,
 
             // Move — 0x1300
-            Aarch64Opcode::MOV  => 0x1300,
-            Aarch64Opcode::MVN  => 0x1301,
+            Aarch64Opcode::MOV => 0x1300,
+            Aarch64Opcode::MVN => 0x1301,
             Aarch64Opcode::MOVZ => 0x1302,
             Aarch64Opcode::MOVK => 0x1303,
             Aarch64Opcode::MOVN => 0x1304,
@@ -172,30 +248,30 @@ impl Aarch64Opcode {
             Aarch64Opcode::UXTH => 0x1404,
 
             // Bit manipulation — 0x1500
-            Aarch64Opcode::CLZ   => 0x1500,
-            Aarch64Opcode::RBIT  => 0x1501,
-            Aarch64Opcode::REV   => 0x1502,
+            Aarch64Opcode::CLZ => 0x1500,
+            Aarch64Opcode::RBIT => 0x1501,
+            Aarch64Opcode::REV => 0x1502,
             Aarch64Opcode::REV16 => 0x1503,
             Aarch64Opcode::REV32 => 0x1504,
 
             // Conditional select — 0x1600
-            Aarch64Opcode::CSEL  => 0x1600,
+            Aarch64Opcode::CSEL => 0x1600,
             Aarch64Opcode::CSINC => 0x1601,
             Aarch64Opcode::CSINV => 0x1602,
             Aarch64Opcode::CSNEG => 0x1603,
 
             // Load / store (integer) — 0x2000
-            Aarch64Opcode::LDR   => 0x2000,
-            Aarch64Opcode::LDRW  => 0x2001,
-            Aarch64Opcode::LDRH  => 0x2002,
-            Aarch64Opcode::LDRB  => 0x2003,
+            Aarch64Opcode::LDR => 0x2000,
+            Aarch64Opcode::LDRW => 0x2001,
+            Aarch64Opcode::LDRH => 0x2002,
+            Aarch64Opcode::LDRB => 0x2003,
             Aarch64Opcode::LDRSW => 0x2004,
             Aarch64Opcode::LDRSH => 0x2005,
             Aarch64Opcode::LDRSB => 0x2006,
-            Aarch64Opcode::STR   => 0x2010,
-            Aarch64Opcode::STRW  => 0x2011,
-            Aarch64Opcode::STRH  => 0x2012,
-            Aarch64Opcode::STRB  => 0x2013,
+            Aarch64Opcode::STR => 0x2010,
+            Aarch64Opcode::STRW => 0x2011,
+            Aarch64Opcode::STRH => 0x2012,
+            Aarch64Opcode::STRB => 0x2013,
 
             // Pair — 0x2100
             Aarch64Opcode::LDP => 0x2100,
@@ -211,56 +287,56 @@ impl Aarch64Opcode {
 
             // PC-relative addressing — 0x3000
             Aarch64Opcode::ADRP => 0x3000,
-            Aarch64Opcode::ADR  => 0x3001,
+            Aarch64Opcode::ADR => 0x3001,
 
             // Branch — 0x4000
-            Aarch64Opcode::B      => 0x4000,
-            Aarch64Opcode::BL     => 0x4001,
-            Aarch64Opcode::BR     => 0x4002,
-            Aarch64Opcode::BLR    => 0x4003,
-            Aarch64Opcode::RET    => 0x4004,
+            Aarch64Opcode::B => 0x4000,
+            Aarch64Opcode::BL => 0x4001,
+            Aarch64Opcode::BR => 0x4002,
+            Aarch64Opcode::BLR => 0x4003,
+            Aarch64Opcode::RET => 0x4004,
             Aarch64Opcode::B_cond => 0x4010,
-            Aarch64Opcode::CBZ    => 0x4020,
-            Aarch64Opcode::CBNZ   => 0x4021,
-            Aarch64Opcode::TBZ    => 0x4030,
-            Aarch64Opcode::TBNZ   => 0x4031,
+            Aarch64Opcode::CBZ => 0x4020,
+            Aarch64Opcode::CBNZ => 0x4021,
+            Aarch64Opcode::TBZ => 0x4030,
+            Aarch64Opcode::TBNZ => 0x4031,
 
             // FP arithmetic — 0x5000
-            Aarch64Opcode::FADD_S  => 0x5000,
-            Aarch64Opcode::FADD_D  => 0x5001,
-            Aarch64Opcode::FSUB_S  => 0x5002,
-            Aarch64Opcode::FSUB_D  => 0x5003,
-            Aarch64Opcode::FMUL_S  => 0x5004,
-            Aarch64Opcode::FMUL_D  => 0x5005,
-            Aarch64Opcode::FDIV_S  => 0x5006,
-            Aarch64Opcode::FDIV_D  => 0x5007,
+            Aarch64Opcode::FADD_S => 0x5000,
+            Aarch64Opcode::FADD_D => 0x5001,
+            Aarch64Opcode::FSUB_S => 0x5002,
+            Aarch64Opcode::FSUB_D => 0x5003,
+            Aarch64Opcode::FMUL_S => 0x5004,
+            Aarch64Opcode::FMUL_D => 0x5005,
+            Aarch64Opcode::FDIV_S => 0x5006,
+            Aarch64Opcode::FDIV_D => 0x5007,
             Aarch64Opcode::FSQRT_S => 0x5008,
             Aarch64Opcode::FSQRT_D => 0x5009,
-            Aarch64Opcode::FABS_S  => 0x500A,
-            Aarch64Opcode::FABS_D  => 0x500B,
-            Aarch64Opcode::FNEG_S  => 0x500C,
-            Aarch64Opcode::FNEG_D  => 0x500D,
-            Aarch64Opcode::FMIN_S  => 0x500E,
-            Aarch64Opcode::FMIN_D  => 0x500F,
-            Aarch64Opcode::FMAX_S  => 0x5010,
-            Aarch64Opcode::FMAX_D  => 0x5011,
-            Aarch64Opcode::FMOV    => 0x5020,
+            Aarch64Opcode::FABS_S => 0x500A,
+            Aarch64Opcode::FABS_D => 0x500B,
+            Aarch64Opcode::FNEG_S => 0x500C,
+            Aarch64Opcode::FNEG_D => 0x500D,
+            Aarch64Opcode::FMIN_S => 0x500E,
+            Aarch64Opcode::FMIN_D => 0x500F,
+            Aarch64Opcode::FMAX_S => 0x5010,
+            Aarch64Opcode::FMAX_D => 0x5011,
+            Aarch64Opcode::FMOV => 0x5020,
 
             // FP comparison — 0x5100
-            Aarch64Opcode::FCMP_S  => 0x5100,
-            Aarch64Opcode::FCMP_D  => 0x5101,
+            Aarch64Opcode::FCMP_S => 0x5100,
+            Aarch64Opcode::FCMP_D => 0x5101,
             Aarch64Opcode::FCSEL_S => 0x5110,
             Aarch64Opcode::FCSEL_D => 0x5111,
 
             // FP conversion — 0x5200
-            Aarch64Opcode::SCVTF_S     => 0x5200,
-            Aarch64Opcode::SCVTF_D     => 0x5201,
-            Aarch64Opcode::UCVTF_S     => 0x5202,
-            Aarch64Opcode::UCVTF_D     => 0x5203,
-            Aarch64Opcode::FCVTZS_S    => 0x5210,
-            Aarch64Opcode::FCVTZS_D    => 0x5211,
-            Aarch64Opcode::FCVTZU_S    => 0x5212,
-            Aarch64Opcode::FCVTZU_D    => 0x5213,
+            Aarch64Opcode::SCVTF_S => 0x5200,
+            Aarch64Opcode::SCVTF_D => 0x5201,
+            Aarch64Opcode::UCVTF_S => 0x5202,
+            Aarch64Opcode::UCVTF_D => 0x5203,
+            Aarch64Opcode::FCVTZS_S => 0x5210,
+            Aarch64Opcode::FCVTZS_D => 0x5211,
+            Aarch64Opcode::FCVTZU_S => 0x5212,
+            Aarch64Opcode::FCVTZU_D => 0x5213,
             Aarch64Opcode::FCVT_S_TO_D => 0x5220,
             Aarch64Opcode::FCVT_D_TO_S => 0x5221,
 
@@ -404,14 +480,22 @@ impl Aarch64Opcode {
 /// against the NZCV flags register (set by CMP, ADDS, SUBS, TST, FCMP, etc.).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Aarch64Condition {
-    EQ, NE,
-    HS, LO,
-    MI, PL,
-    VS, VC,
-    HI, LS,
-    GE, LT,
-    GT, LE,
-    AL, NV,
+    EQ,
+    NE,
+    HS,
+    LO,
+    MI,
+    PL,
+    VS,
+    VC,
+    HI,
+    LS,
+    GE,
+    LT,
+    GT,
+    LE,
+    AL,
+    NV,
 }
 
 impl Aarch64Condition {
@@ -488,15 +572,15 @@ pub struct ShiftedOperand {
 /// Maps an IR integer comparison to the AArch64 condition code.
 fn compare_op_to_condition(op: &CompareOp) -> Aarch64Condition {
     match op {
-        CompareOp::Equal              => Aarch64Condition::EQ,
-        CompareOp::NotEqual           => Aarch64Condition::NE,
-        CompareOp::SignedLess         => Aarch64Condition::LT,
-        CompareOp::SignedLessEqual    => Aarch64Condition::LE,
-        CompareOp::SignedGreater      => Aarch64Condition::GT,
+        CompareOp::Equal => Aarch64Condition::EQ,
+        CompareOp::NotEqual => Aarch64Condition::NE,
+        CompareOp::SignedLess => Aarch64Condition::LT,
+        CompareOp::SignedLessEqual => Aarch64Condition::LE,
+        CompareOp::SignedGreater => Aarch64Condition::GT,
         CompareOp::SignedGreaterEqual => Aarch64Condition::GE,
-        CompareOp::UnsignedLess         => Aarch64Condition::LO,
-        CompareOp::UnsignedLessEqual    => Aarch64Condition::LS,
-        CompareOp::UnsignedGreater      => Aarch64Condition::HI,
+        CompareOp::UnsignedLess => Aarch64Condition::LO,
+        CompareOp::UnsignedLessEqual => Aarch64Condition::LS,
+        CompareOp::UnsignedGreater => Aarch64Condition::HI,
         CompareOp::UnsignedGreaterEqual => Aarch64Condition::HS,
     }
 }
@@ -504,14 +588,14 @@ fn compare_op_to_condition(op: &CompareOp) -> Aarch64Condition {
 /// Maps an IR float comparison to the AArch64 condition code.
 fn float_compare_op_to_condition(op: &FloatCompareOp) -> Aarch64Condition {
     match op {
-        FloatCompareOp::OrderedEqual        => Aarch64Condition::EQ,
-        FloatCompareOp::OrderedNotEqual     => Aarch64Condition::NE,
-        FloatCompareOp::OrderedLess         => Aarch64Condition::MI,
-        FloatCompareOp::OrderedLessEqual    => Aarch64Condition::LS,
-        FloatCompareOp::OrderedGreater      => Aarch64Condition::GT,
+        FloatCompareOp::OrderedEqual => Aarch64Condition::EQ,
+        FloatCompareOp::OrderedNotEqual => Aarch64Condition::NE,
+        FloatCompareOp::OrderedLess => Aarch64Condition::MI,
+        FloatCompareOp::OrderedLessEqual => Aarch64Condition::LS,
+        FloatCompareOp::OrderedGreater => Aarch64Condition::GT,
         FloatCompareOp::OrderedGreaterEqual => Aarch64Condition::GE,
-        FloatCompareOp::Unordered           => Aarch64Condition::VS,
-        FloatCompareOp::UnorderedEqual      => Aarch64Condition::EQ,
+        FloatCompareOp::Unordered => Aarch64Condition::VS,
+        FloatCompareOp::UnorderedEqual => Aarch64Condition::EQ,
     }
 }
 
@@ -729,14 +813,26 @@ impl Aarch64InstructionSelector {
                     nsrn += 1;
                 } else {
                     let off = 16 + (ngrn.max(8) - 8 + nsrn.max(8) - 8) as i32 * 8;
-                    self.set_operand(val, MachineOperand::Memory { base: FP, offset: off });
+                    self.set_operand(
+                        val,
+                        MachineOperand::Memory {
+                            base: FP,
+                            offset: off,
+                        },
+                    );
                 }
             } else if ngrn < 8 {
                 self.set_operand(val, MachineOperand::Register(INT_ARG_REGS[ngrn]));
                 ngrn += 1;
             } else {
                 let off = 16 + (ngrn.max(8) - 8 + nsrn.max(8) - 8) as i32 * 8;
-                self.set_operand(val, MachineOperand::Memory { base: FP, offset: off });
+                self.set_operand(
+                    val,
+                    MachineOperand::Memory {
+                        base: FP,
+                        offset: off,
+                    },
+                );
             }
         }
     }
@@ -747,50 +843,127 @@ impl Aarch64InstructionSelector {
 
     fn select_instruction(&mut self, inst: &Instruction) -> Result<(), CodeGenError> {
         match inst {
-            Instruction::Add { result, lhs, rhs, ty } =>
-                self.select_add_sub(*result, *lhs, *rhs, ty, true),
-            Instruction::Sub { result, lhs, rhs, ty } =>
-                self.select_add_sub(*result, *lhs, *rhs, ty, false),
-            Instruction::Mul { result, lhs, rhs, ty } =>
-                self.select_mul(*result, *lhs, *rhs, ty),
-            Instruction::Div { result, lhs, rhs, ty, is_signed } =>
-                self.select_div(*result, *lhs, *rhs, ty, *is_signed),
-            Instruction::Mod { result, lhs, rhs, ty, is_signed } =>
-                self.select_mod(*result, *lhs, *rhs, ty, *is_signed),
-            Instruction::And { result, lhs, rhs, ty } =>
-                self.select_bitwise(*result, *lhs, *rhs, ty, Aarch64Opcode::AND),
-            Instruction::Or { result, lhs, rhs, ty } =>
-                self.select_bitwise(*result, *lhs, *rhs, ty, Aarch64Opcode::ORR),
-            Instruction::Xor { result, lhs, rhs, ty } =>
-                self.select_bitwise(*result, *lhs, *rhs, ty, Aarch64Opcode::EOR),
-            Instruction::Shl { result, lhs, rhs, ty } =>
-                self.select_shift(*result, *lhs, *rhs, ty, Aarch64Opcode::LSL),
-            Instruction::Shr { result, lhs, rhs, ty, is_arithmetic } => {
-                let op = if *is_arithmetic { Aarch64Opcode::ASR } else { Aarch64Opcode::LSR };
+            Instruction::Add {
+                result,
+                lhs,
+                rhs,
+                ty,
+            } => self.select_add_sub(*result, *lhs, *rhs, ty, true),
+            Instruction::Sub {
+                result,
+                lhs,
+                rhs,
+                ty,
+            } => self.select_add_sub(*result, *lhs, *rhs, ty, false),
+            Instruction::Mul {
+                result,
+                lhs,
+                rhs,
+                ty,
+            } => self.select_mul(*result, *lhs, *rhs, ty),
+            Instruction::Div {
+                result,
+                lhs,
+                rhs,
+                ty,
+                is_signed,
+            } => self.select_div(*result, *lhs, *rhs, ty, *is_signed),
+            Instruction::Mod {
+                result,
+                lhs,
+                rhs,
+                ty,
+                is_signed,
+            } => self.select_mod(*result, *lhs, *rhs, ty, *is_signed),
+            Instruction::And {
+                result,
+                lhs,
+                rhs,
+                ty,
+            } => self.select_bitwise(*result, *lhs, *rhs, ty, Aarch64Opcode::AND),
+            Instruction::Or {
+                result,
+                lhs,
+                rhs,
+                ty,
+            } => self.select_bitwise(*result, *lhs, *rhs, ty, Aarch64Opcode::ORR),
+            Instruction::Xor {
+                result,
+                lhs,
+                rhs,
+                ty,
+            } => self.select_bitwise(*result, *lhs, *rhs, ty, Aarch64Opcode::EOR),
+            Instruction::Shl {
+                result,
+                lhs,
+                rhs,
+                ty,
+            } => self.select_shift(*result, *lhs, *rhs, ty, Aarch64Opcode::LSL),
+            Instruction::Shr {
+                result,
+                lhs,
+                rhs,
+                ty,
+                is_arithmetic,
+            } => {
+                let op = if *is_arithmetic {
+                    Aarch64Opcode::ASR
+                } else {
+                    Aarch64Opcode::LSR
+                };
                 self.select_shift(*result, *lhs, *rhs, ty, op)
             }
-            Instruction::ICmp { result, op, lhs, rhs, ty } =>
-                self.select_icmp(*result, op, *lhs, *rhs, ty),
-            Instruction::FCmp { result, op, lhs, rhs, ty } =>
-                self.select_fcmp(*result, op, *lhs, *rhs, ty),
-            Instruction::Alloca { result, ty, count } =>
-                self.select_alloca(*result, ty, count),
-            Instruction::Load { result, ty, ptr } =>
-                self.select_load(*result, ty, *ptr),
-            Instruction::Store { value, ptr, .. } =>
-                self.select_store(*value, *ptr),
-            Instruction::GetElementPtr { result, base_ty, ptr, indices, .. } =>
-                self.select_gep(*result, base_ty, *ptr, indices),
-            Instruction::Call { result, callee, args, return_ty } =>
-                self.select_call(result, callee, args, return_ty),
-            Instruction::Cast { result, op, value, from_ty, to_ty } =>
-                self.select_cast(*result, op, *value, from_ty, to_ty),
-            Instruction::BitCast { result, value, from_ty, to_ty } =>
-                self.select_bitcast(*result, *value, from_ty, to_ty),
-            Instruction::Select { result, condition, true_val, false_val, ty } =>
-                self.select_select(*result, *condition, *true_val, *false_val, ty),
-            Instruction::Const { result, value } =>
-                self.select_const(*result, value),
+            Instruction::ICmp {
+                result,
+                op,
+                lhs,
+                rhs,
+                ty,
+            } => self.select_icmp(*result, op, *lhs, *rhs, ty),
+            Instruction::FCmp {
+                result,
+                op,
+                lhs,
+                rhs,
+                ty,
+            } => self.select_fcmp(*result, op, *lhs, *rhs, ty),
+            Instruction::Alloca { result, ty, count } => self.select_alloca(*result, ty, count),
+            Instruction::Load { result, ty, ptr } => self.select_load(*result, ty, *ptr),
+            Instruction::Store { value, ptr, .. } => self.select_store(*value, *ptr),
+            Instruction::GetElementPtr {
+                result,
+                base_ty,
+                ptr,
+                indices,
+                ..
+            } => self.select_gep(*result, base_ty, *ptr, indices),
+            Instruction::Call {
+                result,
+                callee,
+                args,
+                return_ty,
+            } => self.select_call(result, callee, args, return_ty),
+            Instruction::Cast {
+                result,
+                op,
+                value,
+                from_ty,
+                to_ty,
+            } => self.select_cast(*result, op, *value, from_ty, to_ty),
+            Instruction::BitCast {
+                result,
+                value,
+                from_ty,
+                to_ty,
+            } => self.select_bitcast(*result, *value, from_ty, to_ty),
+            Instruction::Select {
+                result,
+                condition,
+                true_val,
+                false_val,
+                ty,
+            } => self.select_select(*result, *condition, *true_val, *false_val, ty),
+            Instruction::Const { result, value } => self.select_const(*result, value),
             Instruction::Phi { result, .. } => {
                 let _ = self.get_operand(*result);
                 Ok(())
@@ -809,8 +982,12 @@ impl Aarch64InstructionSelector {
     // ---------------------------------------------------------------
 
     fn select_add_sub(
-        &mut self, result: Value, lhs: Value, rhs: Value,
-        ty: &IrType, is_add: bool,
+        &mut self,
+        result: Value,
+        lhs: Value,
+        rhs: Value,
+        ty: &IrType,
+        is_add: bool,
     ) -> Result<(), CodeGenError> {
         if ty.is_float() {
             let l = self.get_reg(lhs);
@@ -818,41 +995,57 @@ impl Aarch64InstructionSelector {
             let d = self.alloc_vreg();
             self.set_operand(result, MachineOperand::Register(d));
             let op = match (is_add, ty) {
-                (true,  IrType::F32) => Aarch64Opcode::FADD_S,
-                (true,  IrType::F64) => Aarch64Opcode::FADD_D,
+                (true, IrType::F32) => Aarch64Opcode::FADD_S,
+                (true, IrType::F64) => Aarch64Opcode::FADD_D,
                 (false, IrType::F32) => Aarch64Opcode::FSUB_S,
                 (false, IrType::F64) => Aarch64Opcode::FSUB_D,
-                _ => return Err(CodeGenError::UnsupportedInstruction(
-                    format!("float add/sub with {:?}", ty),
-                )),
+                _ => {
+                    return Err(CodeGenError::UnsupportedInstruction(format!(
+                        "float add/sub with {:?}",
+                        ty
+                    )))
+                }
             };
-            self.emit_instr(op, vec![
-                MachineOperand::Register(d),
-                MachineOperand::Register(l),
-                MachineOperand::Register(r),
-            ]);
+            self.emit_instr(
+                op,
+                vec![
+                    MachineOperand::Register(d),
+                    MachineOperand::Register(l),
+                    MachineOperand::Register(r),
+                ],
+            );
         } else {
             let l = self.get_reg(lhs);
             let d = self.alloc_vreg();
             self.set_operand(result, MachineOperand::Register(d));
-            let base = if is_add { Aarch64Opcode::ADD } else { Aarch64Opcode::SUB };
+            let base = if is_add {
+                Aarch64Opcode::ADD
+            } else {
+                Aarch64Opcode::SUB
+            };
 
             let rhs_op = self.get_operand(rhs);
             match rhs_op {
                 MachineOperand::Immediate(imm) if fits_imm12(imm) => {
-                    self.emit_instr(base, vec![
-                        MachineOperand::Register(d),
-                        MachineOperand::Register(l),
-                        MachineOperand::Immediate(imm),
-                    ]);
+                    self.emit_instr(
+                        base,
+                        vec![
+                            MachineOperand::Register(d),
+                            MachineOperand::Register(l),
+                            MachineOperand::Immediate(imm),
+                        ],
+                    );
                 }
                 _ => {
                     let r = self.get_reg(rhs);
-                    self.emit_instr(base, vec![
-                        MachineOperand::Register(d),
-                        MachineOperand::Register(l),
-                        MachineOperand::Register(r),
-                    ]);
+                    self.emit_instr(
+                        base,
+                        vec![
+                            MachineOperand::Register(d),
+                            MachineOperand::Register(l),
+                            MachineOperand::Register(r),
+                        ],
+                    );
                 }
             }
         }
@@ -860,7 +1053,11 @@ impl Aarch64InstructionSelector {
     }
 
     fn select_mul(
-        &mut self, result: Value, lhs: Value, rhs: Value, ty: &IrType,
+        &mut self,
+        result: Value,
+        lhs: Value,
+        rhs: Value,
+        ty: &IrType,
     ) -> Result<(), CodeGenError> {
         let l = self.get_reg(lhs);
         let r = self.get_reg(rhs);
@@ -871,17 +1068,24 @@ impl Aarch64InstructionSelector {
             IrType::F64 => Aarch64Opcode::FMUL_D,
             _ => Aarch64Opcode::MUL,
         };
-        self.emit_instr(op, vec![
-            MachineOperand::Register(d),
-            MachineOperand::Register(l),
-            MachineOperand::Register(r),
-        ]);
+        self.emit_instr(
+            op,
+            vec![
+                MachineOperand::Register(d),
+                MachineOperand::Register(l),
+                MachineOperand::Register(r),
+            ],
+        );
         Ok(())
     }
 
     fn select_div(
-        &mut self, result: Value, lhs: Value, rhs: Value,
-        ty: &IrType, is_signed: bool,
+        &mut self,
+        result: Value,
+        lhs: Value,
+        rhs: Value,
+        ty: &IrType,
+        is_signed: bool,
     ) -> Result<(), CodeGenError> {
         let l = self.get_reg(lhs);
         let r = self.get_reg(rhs);
@@ -893,37 +1097,54 @@ impl Aarch64InstructionSelector {
             _ if is_signed => Aarch64Opcode::SDIV,
             _ => Aarch64Opcode::UDIV,
         };
-        self.emit_instr(op, vec![
-            MachineOperand::Register(d),
-            MachineOperand::Register(l),
-            MachineOperand::Register(r),
-        ]);
+        self.emit_instr(
+            op,
+            vec![
+                MachineOperand::Register(d),
+                MachineOperand::Register(l),
+                MachineOperand::Register(r),
+            ],
+        );
         Ok(())
     }
 
     /// MOD via SDIV/UDIV + MSUB (AArch64 has no hardware remainder).
     fn select_mod(
-        &mut self, result: Value, lhs: Value, rhs: Value,
-        _ty: &IrType, is_signed: bool,
+        &mut self,
+        result: Value,
+        lhs: Value,
+        rhs: Value,
+        _ty: &IrType,
+        is_signed: bool,
     ) -> Result<(), CodeGenError> {
         let l = self.get_reg(lhs);
         let r = self.get_reg(rhs);
         let tmp = self.alloc_vreg();
-        let div = if is_signed { Aarch64Opcode::SDIV } else { Aarch64Opcode::UDIV };
-        self.emit_instr(div, vec![
-            MachineOperand::Register(tmp),
-            MachineOperand::Register(l),
-            MachineOperand::Register(r),
-        ]);
+        let div = if is_signed {
+            Aarch64Opcode::SDIV
+        } else {
+            Aarch64Opcode::UDIV
+        };
+        self.emit_instr(
+            div,
+            vec![
+                MachineOperand::Register(tmp),
+                MachineOperand::Register(l),
+                MachineOperand::Register(r),
+            ],
+        );
         let d = self.alloc_vreg();
         self.set_operand(result, MachineOperand::Register(d));
         // MSUB Xd, Xn, Xm, Xa  →  Xa − Xn*Xm
-        self.emit_instr(Aarch64Opcode::MSUB, vec![
-            MachineOperand::Register(d),
-            MachineOperand::Register(tmp),
-            MachineOperand::Register(r),
-            MachineOperand::Register(l),
-        ]);
+        self.emit_instr(
+            Aarch64Opcode::MSUB,
+            vec![
+                MachineOperand::Register(d),
+                MachineOperand::Register(tmp),
+                MachineOperand::Register(r),
+                MachineOperand::Register(l),
+            ],
+        );
         Ok(())
     }
 
@@ -932,24 +1153,35 @@ impl Aarch64InstructionSelector {
     // ---------------------------------------------------------------
 
     fn select_bitwise(
-        &mut self, result: Value, lhs: Value, rhs: Value,
-        _ty: &IrType, opcode: Aarch64Opcode,
+        &mut self,
+        result: Value,
+        lhs: Value,
+        rhs: Value,
+        _ty: &IrType,
+        opcode: Aarch64Opcode,
     ) -> Result<(), CodeGenError> {
         let l = self.get_reg(lhs);
         let r = self.get_reg(rhs);
         let d = self.alloc_vreg();
         self.set_operand(result, MachineOperand::Register(d));
-        self.emit_instr(opcode, vec![
-            MachineOperand::Register(d),
-            MachineOperand::Register(l),
-            MachineOperand::Register(r),
-        ]);
+        self.emit_instr(
+            opcode,
+            vec![
+                MachineOperand::Register(d),
+                MachineOperand::Register(l),
+                MachineOperand::Register(r),
+            ],
+        );
         Ok(())
     }
 
     fn select_shift(
-        &mut self, result: Value, lhs: Value, rhs: Value,
-        _ty: &IrType, opcode: Aarch64Opcode,
+        &mut self,
+        result: Value,
+        lhs: Value,
+        rhs: Value,
+        _ty: &IrType,
+        opcode: Aarch64Opcode,
     ) -> Result<(), CodeGenError> {
         let l = self.get_reg(lhs);
         let d = self.alloc_vreg();
@@ -957,19 +1189,25 @@ impl Aarch64InstructionSelector {
         let rhs_op = self.get_operand(rhs);
         match rhs_op {
             MachineOperand::Immediate(imm) if imm >= 0 && imm < 64 => {
-                self.emit_instr(opcode, vec![
-                    MachineOperand::Register(d),
-                    MachineOperand::Register(l),
-                    MachineOperand::Immediate(imm),
-                ]);
+                self.emit_instr(
+                    opcode,
+                    vec![
+                        MachineOperand::Register(d),
+                        MachineOperand::Register(l),
+                        MachineOperand::Immediate(imm),
+                    ],
+                );
             }
             _ => {
                 let r = self.get_reg(rhs);
-                self.emit_instr(opcode, vec![
-                    MachineOperand::Register(d),
-                    MachineOperand::Register(l),
-                    MachineOperand::Register(r),
-                ]);
+                self.emit_instr(
+                    opcode,
+                    vec![
+                        MachineOperand::Register(d),
+                        MachineOperand::Register(l),
+                        MachineOperand::Register(r),
+                    ],
+                );
             }
         }
         Ok(())
@@ -980,60 +1218,80 @@ impl Aarch64InstructionSelector {
     // ---------------------------------------------------------------
 
     fn select_icmp(
-        &mut self, result: Value, op: &CompareOp,
-        lhs: Value, rhs: Value, _ty: &IrType,
+        &mut self,
+        result: Value,
+        op: &CompareOp,
+        lhs: Value,
+        rhs: Value,
+        _ty: &IrType,
     ) -> Result<(), CodeGenError> {
         let l = self.get_reg(lhs);
         let r = self.get_reg(rhs);
         let xzr = PhysReg(31);
         // CMP → SUBS XZR, Xn, Xm
-        self.emit_instr(Aarch64Opcode::SUBS, vec![
-            MachineOperand::Register(xzr),
-            MachineOperand::Register(l),
-            MachineOperand::Register(r),
-        ]);
+        self.emit_instr(
+            Aarch64Opcode::SUBS,
+            vec![
+                MachineOperand::Register(xzr),
+                MachineOperand::Register(l),
+                MachineOperand::Register(r),
+            ],
+        );
         // Materialise boolean via CSINC Xd, XZR, XZR, inv(cond).
         let cond = compare_op_to_condition(op);
         let inv = cond.invert();
         let d = self.alloc_vreg();
         self.set_operand(result, MachineOperand::Register(d));
-        self.emit_instr(Aarch64Opcode::CSINC, vec![
-            MachineOperand::Register(d),
-            MachineOperand::Register(xzr),
-            MachineOperand::Register(xzr),
-            MachineOperand::Immediate(inv.encoding() as i64),
-        ]);
+        self.emit_instr(
+            Aarch64Opcode::CSINC,
+            vec![
+                MachineOperand::Register(d),
+                MachineOperand::Register(xzr),
+                MachineOperand::Register(xzr),
+                MachineOperand::Immediate(inv.encoding() as i64),
+            ],
+        );
         Ok(())
     }
 
     fn select_fcmp(
-        &mut self, result: Value, op: &FloatCompareOp,
-        lhs: Value, rhs: Value, ty: &IrType,
+        &mut self,
+        result: Value,
+        op: &FloatCompareOp,
+        lhs: Value,
+        rhs: Value,
+        ty: &IrType,
     ) -> Result<(), CodeGenError> {
         let l = self.get_reg(lhs);
         let r = self.get_reg(rhs);
         let cmp_op = match ty {
             IrType::F32 => Aarch64Opcode::FCMP_S,
             IrType::F64 => Aarch64Opcode::FCMP_D,
-            _ => return Err(CodeGenError::UnsupportedInstruction(
-                format!("fcmp on {:?}", ty),
-            )),
+            _ => {
+                return Err(CodeGenError::UnsupportedInstruction(format!(
+                    "fcmp on {:?}",
+                    ty
+                )))
+            }
         };
-        self.emit_instr(cmp_op, vec![
-            MachineOperand::Register(l),
-            MachineOperand::Register(r),
-        ]);
+        self.emit_instr(
+            cmp_op,
+            vec![MachineOperand::Register(l), MachineOperand::Register(r)],
+        );
         let cond = float_compare_op_to_condition(op);
         let inv = cond.invert();
         let xzr = PhysReg(31);
         let d = self.alloc_vreg();
         self.set_operand(result, MachineOperand::Register(d));
-        self.emit_instr(Aarch64Opcode::CSINC, vec![
-            MachineOperand::Register(d),
-            MachineOperand::Register(xzr),
-            MachineOperand::Register(xzr),
-            MachineOperand::Immediate(inv.encoding() as i64),
-        ]);
+        self.emit_instr(
+            Aarch64Opcode::CSINC,
+            vec![
+                MachineOperand::Register(d),
+                MachineOperand::Register(xzr),
+                MachineOperand::Register(xzr),
+                MachineOperand::Immediate(inv.encoding() as i64),
+            ],
+        );
         Ok(())
     }
 
@@ -1042,7 +1300,10 @@ impl Aarch64InstructionSelector {
     // ---------------------------------------------------------------
 
     fn select_alloca(
-        &mut self, result: Value, ty: &IrType, _count: &Option<Value>,
+        &mut self,
+        result: Value,
+        ty: &IrType,
+        _count: &Option<Value>,
     ) -> Result<(), CodeGenError> {
         let sz = match ty {
             IrType::I1 | IrType::I8 => 1i32,
@@ -1055,17 +1316,18 @@ impl Aarch64InstructionSelector {
         self.stack_offset -= aligned;
         let d = self.alloc_vreg();
         self.set_operand(result, MachineOperand::Register(d));
-        self.emit_instr(Aarch64Opcode::SUB, vec![
-            MachineOperand::Register(d),
-            MachineOperand::Register(FP),
-            MachineOperand::Immediate((-self.stack_offset) as i64),
-        ]);
+        self.emit_instr(
+            Aarch64Opcode::SUB,
+            vec![
+                MachineOperand::Register(d),
+                MachineOperand::Register(FP),
+                MachineOperand::Immediate((-self.stack_offset) as i64),
+            ],
+        );
         Ok(())
     }
 
-    fn select_load(
-        &mut self, result: Value, ty: &IrType, ptr: Value,
-    ) -> Result<(), CodeGenError> {
+    fn select_load(&mut self, result: Value, ty: &IrType, ptr: Value) -> Result<(), CodeGenError> {
         let d = self.alloc_vreg();
         self.set_operand(result, MachineOperand::Register(d));
         let (base, off) = self.resolve_addr(ptr);
@@ -1078,29 +1340,40 @@ impl Aarch64InstructionSelector {
             IrType::F64 => Aarch64Opcode::LDR_D,
             _ => Aarch64Opcode::LDR,
         };
-        self.emit_instr(op, vec![
-            MachineOperand::Register(d),
-            MachineOperand::Memory { base, offset: off },
-        ]);
+        self.emit_instr(
+            op,
+            vec![
+                MachineOperand::Register(d),
+                MachineOperand::Memory { base, offset: off },
+            ],
+        );
         Ok(())
     }
 
-    fn select_store(
-        &mut self, value: Value, ptr: Value,
-    ) -> Result<(), CodeGenError> {
+    fn select_store(&mut self, value: Value, ptr: Value) -> Result<(), CodeGenError> {
         let v = self.get_reg(value);
         let (base, off) = self.resolve_addr(ptr);
-        let op = if is_fp_reg(v) { Aarch64Opcode::STR_D } else { Aarch64Opcode::STR };
-        self.emit_instr(op, vec![
-            MachineOperand::Register(v),
-            MachineOperand::Memory { base, offset: off },
-        ]);
+        let op = if is_fp_reg(v) {
+            Aarch64Opcode::STR_D
+        } else {
+            Aarch64Opcode::STR
+        };
+        self.emit_instr(
+            op,
+            vec![
+                MachineOperand::Register(v),
+                MachineOperand::Memory { base, offset: off },
+            ],
+        );
         Ok(())
     }
 
     fn select_gep(
-        &mut self, result: Value, base_ty: &IrType,
-        ptr: Value, indices: &[Value],
+        &mut self,
+        result: Value,
+        base_ty: &IrType,
+        ptr: Value,
+        indices: &[Value],
     ) -> Result<(), CodeGenError> {
         let mut cur = self.get_reg(ptr);
 
@@ -1126,57 +1399,79 @@ impl Aarch64InstructionSelector {
                 MachineOperand::Immediate(imm) => {
                     let byte_off = imm * elem_sz;
                     if fits_imm12(byte_off) {
-                        self.emit_instr(Aarch64Opcode::ADD, vec![
-                            MachineOperand::Register(new),
-                            MachineOperand::Register(cur),
-                            MachineOperand::Immediate(byte_off),
-                        ]);
+                        self.emit_instr(
+                            Aarch64Opcode::ADD,
+                            vec![
+                                MachineOperand::Register(new),
+                                MachineOperand::Register(cur),
+                                MachineOperand::Immediate(byte_off),
+                            ],
+                        );
                     } else {
                         let tmp = self.alloc_vreg();
                         self.materialize_constant(byte_off as u64, tmp);
-                        self.emit_instr(Aarch64Opcode::ADD, vec![
-                            MachineOperand::Register(new),
-                            MachineOperand::Register(cur),
-                            MachineOperand::Register(tmp),
-                        ]);
+                        self.emit_instr(
+                            Aarch64Opcode::ADD,
+                            vec![
+                                MachineOperand::Register(new),
+                                MachineOperand::Register(cur),
+                                MachineOperand::Register(tmp),
+                            ],
+                        );
                     }
                 }
                 _ => {
                     let ir = self.get_reg(*idx_val);
                     let shift = match elem_sz {
-                        1 => 0u8, 2 => 1, 4 => 2, 8 => 3, 16 => 4,
+                        1 => 0u8,
+                        2 => 1,
+                        4 => 2,
+                        8 => 3,
+                        16 => 4,
                         _ => {
                             let sr = self.alloc_vreg();
                             self.materialize_constant(elem_sz as u64, sr);
                             let pr = self.alloc_vreg();
-                            self.emit_instr(Aarch64Opcode::MUL, vec![
-                                MachineOperand::Register(pr),
-                                MachineOperand::Register(ir),
-                                MachineOperand::Register(sr),
-                            ]);
-                            self.emit_instr(Aarch64Opcode::ADD, vec![
-                                MachineOperand::Register(new),
-                                MachineOperand::Register(cur),
-                                MachineOperand::Register(pr),
-                            ]);
+                            self.emit_instr(
+                                Aarch64Opcode::MUL,
+                                vec![
+                                    MachineOperand::Register(pr),
+                                    MachineOperand::Register(ir),
+                                    MachineOperand::Register(sr),
+                                ],
+                            );
+                            self.emit_instr(
+                                Aarch64Opcode::ADD,
+                                vec![
+                                    MachineOperand::Register(new),
+                                    MachineOperand::Register(cur),
+                                    MachineOperand::Register(pr),
+                                ],
+                            );
                             cur = new;
                             continue;
                         }
                     };
                     if shift == 0 {
-                        self.emit_instr(Aarch64Opcode::ADD, vec![
-                            MachineOperand::Register(new),
-                            MachineOperand::Register(cur),
-                            MachineOperand::Register(ir),
-                        ]);
+                        self.emit_instr(
+                            Aarch64Opcode::ADD,
+                            vec![
+                                MachineOperand::Register(new),
+                                MachineOperand::Register(cur),
+                                MachineOperand::Register(ir),
+                            ],
+                        );
                     } else {
                         // Barrel shifter: ADD Xd, Xn, Xm, LSL #shift
-                        self.emit_instr(Aarch64Opcode::ADD, vec![
-                            MachineOperand::Register(new),
-                            MachineOperand::Register(cur),
-                            MachineOperand::Register(ir),
-                            MachineOperand::Immediate(shift as i64),
-                        ]);
+                        self.emit_instr(
+                            Aarch64Opcode::ADD,
+                            vec![
+                                MachineOperand::Register(new),
+                                MachineOperand::Register(cur),
+                                MachineOperand::Register(ir),
+                                MachineOperand::Immediate(shift as i64),
+                            ],
+                        );
                     }
                 }
             }
@@ -1202,8 +1497,11 @@ impl Aarch64InstructionSelector {
     // ---------------------------------------------------------------
 
     fn select_call(
-        &mut self, result: &Option<Value>, callee: &Callee,
-        args: &[Value], return_ty: &IrType,
+        &mut self,
+        result: &Option<Value>,
+        callee: &Callee,
+        args: &[Value],
+        return_ty: &IrType,
     ) -> Result<(), CodeGenError> {
         // Build a PhysReg-only map from our MachineOperand value_map,
         // since generate_call_sequence expects HashMap<Value, PhysReg>.
@@ -1239,115 +1537,162 @@ impl Aarch64InstructionSelector {
     // ---------------------------------------------------------------
 
     fn select_cast(
-        &mut self, result: Value, op: &CastOp, value: Value,
-        from_ty: &IrType, to_ty: &IrType,
+        &mut self,
+        result: Value,
+        op: &CastOp,
+        value: Value,
+        from_ty: &IrType,
+        to_ty: &IrType,
     ) -> Result<(), CodeGenError> {
         let s = self.get_reg(value);
         let d = self.alloc_vreg();
         self.set_operand(result, MachineOperand::Register(d));
 
         match op {
-            CastOp::SExt => {
-                match from_ty.integer_bit_width() {
-                    Some(8)  => self.emit_instr(Aarch64Opcode::SXTB, vec![
-                        MachineOperand::Register(d), MachineOperand::Register(s)]),
-                    Some(16) => self.emit_instr(Aarch64Opcode::SXTH, vec![
-                        MachineOperand::Register(d), MachineOperand::Register(s)]),
-                    Some(32) => self.emit_instr(Aarch64Opcode::SXTW, vec![
-                        MachineOperand::Register(d), MachineOperand::Register(s)]),
-                    _ => self.emit_instr(Aarch64Opcode::MOV, vec![
-                        MachineOperand::Register(d), MachineOperand::Register(s)]),
-                }
-            }
-            CastOp::ZExt => {
-                match from_ty.integer_bit_width() {
-                    Some(1) => self.emit_instr(Aarch64Opcode::AND, vec![
+            CastOp::SExt => match from_ty.integer_bit_width() {
+                Some(8) => self.emit_instr(
+                    Aarch64Opcode::SXTB,
+                    vec![MachineOperand::Register(d), MachineOperand::Register(s)],
+                ),
+                Some(16) => self.emit_instr(
+                    Aarch64Opcode::SXTH,
+                    vec![MachineOperand::Register(d), MachineOperand::Register(s)],
+                ),
+                Some(32) => self.emit_instr(
+                    Aarch64Opcode::SXTW,
+                    vec![MachineOperand::Register(d), MachineOperand::Register(s)],
+                ),
+                _ => self.emit_instr(
+                    Aarch64Opcode::MOV,
+                    vec![MachineOperand::Register(d), MachineOperand::Register(s)],
+                ),
+            },
+            CastOp::ZExt => match from_ty.integer_bit_width() {
+                Some(1) => self.emit_instr(
+                    Aarch64Opcode::AND,
+                    vec![
                         MachineOperand::Register(d),
                         MachineOperand::Register(s),
-                        MachineOperand::Immediate(1)]),
-                    Some(8)  => self.emit_instr(Aarch64Opcode::UXTB, vec![
-                        MachineOperand::Register(d), MachineOperand::Register(s)]),
-                    Some(16) => self.emit_instr(Aarch64Opcode::UXTH, vec![
-                        MachineOperand::Register(d), MachineOperand::Register(s)]),
-                    _ => self.emit_instr(Aarch64Opcode::MOV, vec![
-                        MachineOperand::Register(d), MachineOperand::Register(s)]),
-                }
-            }
-            CastOp::Trunc => {
-                match to_ty.integer_bit_width() {
-                    Some(8) => self.emit_instr(Aarch64Opcode::AND, vec![
+                        MachineOperand::Immediate(1),
+                    ],
+                ),
+                Some(8) => self.emit_instr(
+                    Aarch64Opcode::UXTB,
+                    vec![MachineOperand::Register(d), MachineOperand::Register(s)],
+                ),
+                Some(16) => self.emit_instr(
+                    Aarch64Opcode::UXTH,
+                    vec![MachineOperand::Register(d), MachineOperand::Register(s)],
+                ),
+                _ => self.emit_instr(
+                    Aarch64Opcode::MOV,
+                    vec![MachineOperand::Register(d), MachineOperand::Register(s)],
+                ),
+            },
+            CastOp::Trunc => match to_ty.integer_bit_width() {
+                Some(8) => self.emit_instr(
+                    Aarch64Opcode::AND,
+                    vec![
                         MachineOperand::Register(d),
                         MachineOperand::Register(s),
-                        MachineOperand::Immediate(0xFF)]),
-                    Some(16) => self.emit_instr(Aarch64Opcode::AND, vec![
+                        MachineOperand::Immediate(0xFF),
+                    ],
+                ),
+                Some(16) => self.emit_instr(
+                    Aarch64Opcode::AND,
+                    vec![
                         MachineOperand::Register(d),
                         MachineOperand::Register(s),
-                        MachineOperand::Immediate(0xFFFF)]),
-                    _ => self.emit_instr(Aarch64Opcode::MOV, vec![
-                        MachineOperand::Register(d), MachineOperand::Register(s)]),
-                }
-            }
+                        MachineOperand::Immediate(0xFFFF),
+                    ],
+                ),
+                _ => self.emit_instr(
+                    Aarch64Opcode::MOV,
+                    vec![MachineOperand::Register(d), MachineOperand::Register(s)],
+                ),
+            },
             CastOp::FPToSI => {
                 let c = match from_ty {
                     IrType::F32 => Aarch64Opcode::FCVTZS_S,
-                    _           => Aarch64Opcode::FCVTZS_D,
+                    _ => Aarch64Opcode::FCVTZS_D,
                 };
-                self.emit_instr(c, vec![
-                    MachineOperand::Register(d), MachineOperand::Register(s)]);
+                self.emit_instr(
+                    c,
+                    vec![MachineOperand::Register(d), MachineOperand::Register(s)],
+                );
             }
             CastOp::FPToUI => {
                 let c = match from_ty {
                     IrType::F32 => Aarch64Opcode::FCVTZU_S,
-                    _           => Aarch64Opcode::FCVTZU_D,
+                    _ => Aarch64Opcode::FCVTZU_D,
                 };
-                self.emit_instr(c, vec![
-                    MachineOperand::Register(d), MachineOperand::Register(s)]);
+                self.emit_instr(
+                    c,
+                    vec![MachineOperand::Register(d), MachineOperand::Register(s)],
+                );
             }
             CastOp::SIToFP => {
                 let c = match to_ty {
                     IrType::F32 => Aarch64Opcode::SCVTF_S,
-                    _           => Aarch64Opcode::SCVTF_D,
+                    _ => Aarch64Opcode::SCVTF_D,
                 };
-                self.emit_instr(c, vec![
-                    MachineOperand::Register(d), MachineOperand::Register(s)]);
+                self.emit_instr(
+                    c,
+                    vec![MachineOperand::Register(d), MachineOperand::Register(s)],
+                );
             }
             CastOp::UIToFP => {
                 let c = match to_ty {
                     IrType::F32 => Aarch64Opcode::UCVTF_S,
-                    _           => Aarch64Opcode::UCVTF_D,
+                    _ => Aarch64Opcode::UCVTF_D,
                 };
-                self.emit_instr(c, vec![
-                    MachineOperand::Register(d), MachineOperand::Register(s)]);
+                self.emit_instr(
+                    c,
+                    vec![MachineOperand::Register(d), MachineOperand::Register(s)],
+                );
             }
             CastOp::FPTrunc => {
-                self.emit_instr(Aarch64Opcode::FCVT_D_TO_S, vec![
-                    MachineOperand::Register(d), MachineOperand::Register(s)]);
+                self.emit_instr(
+                    Aarch64Opcode::FCVT_D_TO_S,
+                    vec![MachineOperand::Register(d), MachineOperand::Register(s)],
+                );
             }
             CastOp::FPExt => {
-                self.emit_instr(Aarch64Opcode::FCVT_S_TO_D, vec![
-                    MachineOperand::Register(d), MachineOperand::Register(s)]);
+                self.emit_instr(
+                    Aarch64Opcode::FCVT_S_TO_D,
+                    vec![MachineOperand::Register(d), MachineOperand::Register(s)],
+                );
             }
             CastOp::PtrToInt | CastOp::IntToPtr => {
-                self.emit_instr(Aarch64Opcode::MOV, vec![
-                    MachineOperand::Register(d), MachineOperand::Register(s)]);
+                self.emit_instr(
+                    Aarch64Opcode::MOV,
+                    vec![MachineOperand::Register(d), MachineOperand::Register(s)],
+                );
             }
         }
         Ok(())
     }
 
     fn select_bitcast(
-        &mut self, result: Value, value: Value,
-        from_ty: &IrType, to_ty: &IrType,
+        &mut self,
+        result: Value,
+        value: Value,
+        from_ty: &IrType,
+        to_ty: &IrType,
     ) -> Result<(), CodeGenError> {
         let s = self.get_reg(value);
         let d = self.alloc_vreg();
         self.set_operand(result, MachineOperand::Register(d));
         if from_ty.is_float() != to_ty.is_float() {
-            self.emit_instr(Aarch64Opcode::FMOV, vec![
-                MachineOperand::Register(d), MachineOperand::Register(s)]);
+            self.emit_instr(
+                Aarch64Opcode::FMOV,
+                vec![MachineOperand::Register(d), MachineOperand::Register(s)],
+            );
         } else {
-            self.emit_instr(Aarch64Opcode::MOV, vec![
-                MachineOperand::Register(d), MachineOperand::Register(s)]);
+            self.emit_instr(
+                Aarch64Opcode::MOV,
+                vec![MachineOperand::Register(d), MachineOperand::Register(s)],
+            );
         }
         Ok(())
     }
@@ -1357,8 +1702,12 @@ impl Aarch64InstructionSelector {
     // ---------------------------------------------------------------
 
     fn select_select(
-        &mut self, result: Value, cond: Value,
-        tv: Value, fv: Value, ty: &IrType,
+        &mut self,
+        result: Value,
+        cond: Value,
+        tv: Value,
+        fv: Value,
+        ty: &IrType,
     ) -> Result<(), CodeGenError> {
         let cr = self.get_reg(cond);
         let tr = self.get_reg(tv);
@@ -1367,22 +1716,31 @@ impl Aarch64InstructionSelector {
         self.set_operand(result, MachineOperand::Register(d));
         let xzr = PhysReg(31);
         // CMP cond, #0
-        self.emit_instr(Aarch64Opcode::SUBS, vec![
-            MachineOperand::Register(xzr),
-            MachineOperand::Register(cr),
-            MachineOperand::Register(xzr),
-        ]);
+        self.emit_instr(
+            Aarch64Opcode::SUBS,
+            vec![
+                MachineOperand::Register(xzr),
+                MachineOperand::Register(cr),
+                MachineOperand::Register(xzr),
+            ],
+        );
         let sel = if ty.is_float() {
-            match ty { IrType::F32 => Aarch64Opcode::FCSEL_S, _ => Aarch64Opcode::FCSEL_D }
+            match ty {
+                IrType::F32 => Aarch64Opcode::FCSEL_S,
+                _ => Aarch64Opcode::FCSEL_D,
+            }
         } else {
             Aarch64Opcode::CSEL
         };
-        self.emit_instr(sel, vec![
-            MachineOperand::Register(d),
-            MachineOperand::Register(tr),
-            MachineOperand::Register(fr),
-            MachineOperand::Immediate(Aarch64Condition::NE.encoding() as i64),
-        ]);
+        self.emit_instr(
+            sel,
+            vec![
+                MachineOperand::Register(d),
+                MachineOperand::Register(tr),
+                MachineOperand::Register(fr),
+                MachineOperand::Immediate(Aarch64Condition::NE.encoding() as i64),
+            ],
+        );
         Ok(())
     }
 
@@ -1390,9 +1748,7 @@ impl Aarch64InstructionSelector {
     // Constants
     // ---------------------------------------------------------------
 
-    fn select_const(
-        &mut self, result: Value, constant: &Constant,
-    ) -> Result<(), CodeGenError> {
+    fn select_const(&mut self, result: Value, constant: &Constant) -> Result<(), CodeGenError> {
         // Skip placeholder Const instructions for function parameters —
         // lower_params already mapped them to the correct ABI registers.
         if self.param_value_set.contains(&result) {
@@ -1409,14 +1765,14 @@ impl Aarch64InstructionSelector {
                 self.set_operand(result, MachineOperand::Register(d));
                 let bits = match ty {
                     IrType::F32 => (*value as f32).to_bits() as u64,
-                    _           => value.to_bits(),
+                    _ => value.to_bits(),
                 };
                 let tmp = self.alloc_vreg();
                 self.materialize_constant(bits, tmp);
-                self.emit_instr(Aarch64Opcode::FMOV, vec![
-                    MachineOperand::Register(d),
-                    MachineOperand::Register(tmp),
-                ]);
+                self.emit_instr(
+                    Aarch64Opcode::FMOV,
+                    vec![MachineOperand::Register(d), MachineOperand::Register(tmp)],
+                );
             }
             Constant::Bool(b) => {
                 let d = self.alloc_vreg();
@@ -1437,10 +1793,13 @@ impl Aarch64InstructionSelector {
                 let d = self.alloc_vreg();
                 self.set_operand(result, MachineOperand::Register(d));
                 // ADRP Xd, sym@PAGE
-                self.emit_instr(Aarch64Opcode::ADRP, vec![
-                    MachineOperand::Register(d),
-                    MachineOperand::Symbol(name.clone()),
-                ]);
+                self.emit_instr(
+                    Aarch64Opcode::ADRP,
+                    vec![
+                        MachineOperand::Register(d),
+                        MachineOperand::Symbol(name.clone()),
+                    ],
+                );
                 self.emit_relocation(Relocation {
                     offset: 0,
                     symbol: name.clone(),
@@ -1449,11 +1808,14 @@ impl Aarch64InstructionSelector {
                     section_index: 0,
                 });
                 // ADD Xd, Xd, sym@PAGEOFF
-                self.emit_instr(Aarch64Opcode::ADD, vec![
-                    MachineOperand::Register(d),
-                    MachineOperand::Register(d),
-                    MachineOperand::Symbol(name.clone()),
-                ]);
+                self.emit_instr(
+                    Aarch64Opcode::ADD,
+                    vec![
+                        MachineOperand::Register(d),
+                        MachineOperand::Register(d),
+                        MachineOperand::Symbol(name.clone()),
+                    ],
+                );
                 self.emit_relocation(Relocation {
                     offset: 0,
                     symbol: name.clone(),
@@ -1475,10 +1837,13 @@ impl Aarch64InstructionSelector {
     fn materialize_constant(&mut self, value: u64, dest: PhysReg) {
         if value == 0 {
             let xzr = PhysReg(31);
-            self.emit_instr(Aarch64Opcode::MOV, vec![
-                MachineOperand::Register(dest),
-                MachineOperand::Register(xzr),
-            ]);
+            self.emit_instr(
+                Aarch64Opcode::MOV,
+                vec![
+                    MachineOperand::Register(dest),
+                    MachineOperand::Register(xzr),
+                ],
+            );
             return;
         }
 
@@ -1504,27 +1869,36 @@ impl Aarch64InstructionSelector {
             let mut first = true;
             for (i, &h) in ihw.iter().enumerate() {
                 if first && h != 0 {
-                    self.emit_instr(Aarch64Opcode::MOVN, vec![
-                        MachineOperand::Register(dest),
-                        MachineOperand::Immediate(h as i64),
-                        MachineOperand::Immediate(i as i64 * 16),
-                    ]);
+                    self.emit_instr(
+                        Aarch64Opcode::MOVN,
+                        vec![
+                            MachineOperand::Register(dest),
+                            MachineOperand::Immediate(h as i64),
+                            MachineOperand::Immediate(i as i64 * 16),
+                        ],
+                    );
                     first = false;
                 } else if !first && hw[i] != 0xFFFF {
-                    self.emit_instr(Aarch64Opcode::MOVK, vec![
-                        MachineOperand::Register(dest),
-                        MachineOperand::Immediate(hw[i] as i64),
-                        MachineOperand::Immediate(i as i64 * 16),
-                    ]);
+                    self.emit_instr(
+                        Aarch64Opcode::MOVK,
+                        vec![
+                            MachineOperand::Register(dest),
+                            MachineOperand::Immediate(hw[i] as i64),
+                            MachineOperand::Immediate(i as i64 * 16),
+                        ],
+                    );
                 }
             }
             if first {
                 // All inverted halfwords zero — value is all-ones.
-                self.emit_instr(Aarch64Opcode::MOVN, vec![
-                    MachineOperand::Register(dest),
-                    MachineOperand::Immediate(0),
-                    MachineOperand::Immediate(0),
-                ]);
+                self.emit_instr(
+                    Aarch64Opcode::MOVN,
+                    vec![
+                        MachineOperand::Register(dest),
+                        MachineOperand::Immediate(0),
+                        MachineOperand::Immediate(0),
+                    ],
+                );
             }
         } else {
             // MOVZ + MOVK path.
@@ -1532,27 +1906,36 @@ impl Aarch64InstructionSelector {
             for (i, &h) in hw.iter().enumerate() {
                 if h != 0 || (first && i == 3) {
                     if first {
-                        self.emit_instr(Aarch64Opcode::MOVZ, vec![
-                            MachineOperand::Register(dest),
-                            MachineOperand::Immediate(h as i64),
-                            MachineOperand::Immediate(i as i64 * 16),
-                        ]);
+                        self.emit_instr(
+                            Aarch64Opcode::MOVZ,
+                            vec![
+                                MachineOperand::Register(dest),
+                                MachineOperand::Immediate(h as i64),
+                                MachineOperand::Immediate(i as i64 * 16),
+                            ],
+                        );
                         first = false;
                     } else {
-                        self.emit_instr(Aarch64Opcode::MOVK, vec![
-                            MachineOperand::Register(dest),
-                            MachineOperand::Immediate(h as i64),
-                            MachineOperand::Immediate(i as i64 * 16),
-                        ]);
+                        self.emit_instr(
+                            Aarch64Opcode::MOVK,
+                            vec![
+                                MachineOperand::Register(dest),
+                                MachineOperand::Immediate(h as i64),
+                                MachineOperand::Immediate(i as i64 * 16),
+                            ],
+                        );
                     }
                 }
             }
             if first {
                 let xzr = PhysReg(31);
-                self.emit_instr(Aarch64Opcode::MOV, vec![
-                    MachineOperand::Register(dest),
-                    MachineOperand::Register(xzr),
-                ]);
+                self.emit_instr(
+                    Aarch64Opcode::MOV,
+                    vec![
+                        MachineOperand::Register(dest),
+                        MachineOperand::Register(xzr),
+                    ],
+                );
             }
         }
     }
@@ -1567,15 +1950,19 @@ impl Aarch64InstructionSelector {
                 let lbl = self.block_label(target.0);
                 self.emit_instr(Aarch64Opcode::B, vec![MachineOperand::Label(lbl)]);
             }
-            Terminator::CondBranch { condition, true_block, false_block } => {
+            Terminator::CondBranch {
+                condition,
+                true_block,
+                false_block,
+            } => {
                 let cr = self.get_reg(*condition);
                 let tl = self.block_label(true_block.0);
                 let fl = self.block_label(false_block.0);
                 // CBNZ Xn, true_label  (branch if non-zero)
-                self.emit_instr(Aarch64Opcode::CBNZ, vec![
-                    MachineOperand::Register(cr),
-                    MachineOperand::Label(tl),
-                ]);
+                self.emit_instr(
+                    Aarch64Opcode::CBNZ,
+                    vec![MachineOperand::Register(cr), MachineOperand::Label(tl)],
+                );
                 self.emit_instr(Aarch64Opcode::B, vec![MachineOperand::Label(fl)]);
             }
             Terminator::Return { value } => {
@@ -1583,21 +1970,25 @@ impl Aarch64InstructionSelector {
                     let vr = self.get_reg(*v);
                     if is_fp_reg(vr) {
                         if vr != V0 {
-                            self.emit_instr(Aarch64Opcode::FMOV, vec![
-                                MachineOperand::Register(V0),
-                                MachineOperand::Register(vr),
-                            ]);
+                            self.emit_instr(
+                                Aarch64Opcode::FMOV,
+                                vec![MachineOperand::Register(V0), MachineOperand::Register(vr)],
+                            );
                         }
                     } else if vr != X0 {
-                        self.emit_instr(Aarch64Opcode::MOV, vec![
-                            MachineOperand::Register(X0),
-                            MachineOperand::Register(vr),
-                        ]);
+                        self.emit_instr(
+                            Aarch64Opcode::MOV,
+                            vec![MachineOperand::Register(X0), MachineOperand::Register(vr)],
+                        );
                     }
                 }
                 self.emit_instr(Aarch64Opcode::RET, vec![MachineOperand::Register(LR)]);
             }
-            Terminator::Switch { value, default, cases } => {
+            Terminator::Switch {
+                value,
+                default,
+                cases,
+            } => {
                 let vr = self.get_reg(*value);
                 let dl = self.block_label(default.0);
                 for (cv, tgt) in cases {
@@ -1605,15 +1996,21 @@ impl Aarch64InstructionSelector {
                     let cr = self.alloc_vreg();
                     self.materialize_constant(*cv as u64, cr);
                     let xzr = PhysReg(31);
-                    self.emit_instr(Aarch64Opcode::SUBS, vec![
-                        MachineOperand::Register(xzr),
-                        MachineOperand::Register(vr),
-                        MachineOperand::Register(cr),
-                    ]);
-                    self.emit_instr(Aarch64Opcode::B_cond, vec![
-                        MachineOperand::Label(tl),
-                        MachineOperand::Immediate(Aarch64Condition::EQ.encoding() as i64),
-                    ]);
+                    self.emit_instr(
+                        Aarch64Opcode::SUBS,
+                        vec![
+                            MachineOperand::Register(xzr),
+                            MachineOperand::Register(vr),
+                            MachineOperand::Register(cr),
+                        ],
+                    );
+                    self.emit_instr(
+                        Aarch64Opcode::B_cond,
+                        vec![
+                            MachineOperand::Label(tl),
+                            MachineOperand::Immediate(Aarch64Condition::EQ.encoding() as i64),
+                        ],
+                    );
                 }
                 self.emit_instr(Aarch64Opcode::B, vec![MachineOperand::Label(dl)]);
             }
@@ -1635,7 +2032,11 @@ mod tests {
     use crate::ir::{BasicBlock, BlockId, PhiNode};
 
     fn make_function(name: &str, blocks: Vec<BasicBlock>) -> Function {
-        let entry = if blocks.is_empty() { BlockId(0) } else { blocks[0].id };
+        let entry = if blocks.is_empty() {
+            BlockId(0)
+        } else {
+            blocks[0].id
+        };
         Function {
             name: name.to_string(),
             return_type: IrType::I64,
@@ -1644,8 +2045,11 @@ mod tests {
             blocks,
             entry_block: entry,
             is_definition: true,
-is_static: false,
-is_weak: false,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         }
     }
 
@@ -1661,13 +2065,26 @@ is_weak: false,
     #[test]
     fn test_opcode_roundtrip() {
         let ops = [
-            Aarch64Opcode::ADD, Aarch64Opcode::SUB, Aarch64Opcode::MUL,
-            Aarch64Opcode::SDIV, Aarch64Opcode::AND, Aarch64Opcode::ORR,
-            Aarch64Opcode::EOR, Aarch64Opcode::LSL, Aarch64Opcode::MOV,
-            Aarch64Opcode::MOVZ, Aarch64Opcode::MOVK, Aarch64Opcode::CSEL,
-            Aarch64Opcode::LDR, Aarch64Opcode::STR, Aarch64Opcode::B,
-            Aarch64Opcode::BL, Aarch64Opcode::RET, Aarch64Opcode::FADD_D,
-            Aarch64Opcode::FCVTZS_D, Aarch64Opcode::NOP,
+            Aarch64Opcode::ADD,
+            Aarch64Opcode::SUB,
+            Aarch64Opcode::MUL,
+            Aarch64Opcode::SDIV,
+            Aarch64Opcode::AND,
+            Aarch64Opcode::ORR,
+            Aarch64Opcode::EOR,
+            Aarch64Opcode::LSL,
+            Aarch64Opcode::MOV,
+            Aarch64Opcode::MOVZ,
+            Aarch64Opcode::MOVK,
+            Aarch64Opcode::CSEL,
+            Aarch64Opcode::LDR,
+            Aarch64Opcode::STR,
+            Aarch64Opcode::B,
+            Aarch64Opcode::BL,
+            Aarch64Opcode::RET,
+            Aarch64Opcode::FADD_D,
+            Aarch64Opcode::FCVTZS_D,
+            Aarch64Opcode::NOP,
         ];
         for o in &ops {
             assert_eq!(Aarch64Opcode::from_u32(o.as_u32()), Some(*o));
@@ -1744,16 +2161,31 @@ is_weak: false,
     #[test]
     fn test_select_add_i64() {
         let mut s = Aarch64InstructionSelector::new();
-        let b = make_block(0, vec![
-            Instruction::Add { result: Value(2), lhs: Value(0), rhs: Value(1), ty: IrType::I64 },
-        ], Some(Terminator::Return { value: Some(Value(2)) }));
+        let b = make_block(
+            0,
+            vec![Instruction::Add {
+                result: Value(2),
+                lhs: Value(0),
+                rhs: Value(1),
+                ty: IrType::I64,
+            }],
+            Some(Terminator::Return {
+                value: Some(Value(2)),
+            }),
+        );
         let f = Function {
-            name: "add_test".into(), return_type: IrType::I64,
+            name: "add_test".into(),
+            return_type: IrType::I64,
             params: vec![("a".into(), IrType::I64), ("b".into(), IrType::I64)],
             param_values: Vec::new(),
-            blocks: vec![b], entry_block: BlockId(0), is_definition: true,
-is_static: false,
-is_weak: false,
+            blocks: vec![b],
+            entry_block: BlockId(0),
+            is_definition: true,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         };
         let r = s.select_function(&f).unwrap();
         assert!(r.iter().any(|i| i.opcode == Aarch64Opcode::ADD.as_u32()));
@@ -1762,16 +2194,31 @@ is_weak: false,
     #[test]
     fn test_select_mul() {
         let mut s = Aarch64InstructionSelector::new();
-        let b = make_block(0, vec![
-            Instruction::Mul { result: Value(2), lhs: Value(0), rhs: Value(1), ty: IrType::I64 },
-        ], Some(Terminator::Return { value: Some(Value(2)) }));
+        let b = make_block(
+            0,
+            vec![Instruction::Mul {
+                result: Value(2),
+                lhs: Value(0),
+                rhs: Value(1),
+                ty: IrType::I64,
+            }],
+            Some(Terminator::Return {
+                value: Some(Value(2)),
+            }),
+        );
         let f = Function {
-            name: "mul".into(), return_type: IrType::I64,
+            name: "mul".into(),
+            return_type: IrType::I64,
             params: vec![("a".into(), IrType::I64), ("b".into(), IrType::I64)],
             param_values: Vec::new(),
-            blocks: vec![b], entry_block: BlockId(0), is_definition: true,
-is_static: false,
-is_weak: false,
+            blocks: vec![b],
+            entry_block: BlockId(0),
+            is_definition: true,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         };
         let r = s.select_function(&f).unwrap();
         assert!(r.iter().any(|i| i.opcode == Aarch64Opcode::MUL.as_u32()));
@@ -1780,17 +2227,32 @@ is_weak: false,
     #[test]
     fn test_select_sdiv() {
         let mut s = Aarch64InstructionSelector::new();
-        let b = make_block(0, vec![
-            Instruction::Div { result: Value(2), lhs: Value(0), rhs: Value(1),
-                ty: IrType::I64, is_signed: true },
-        ], Some(Terminator::Return { value: Some(Value(2)) }));
+        let b = make_block(
+            0,
+            vec![Instruction::Div {
+                result: Value(2),
+                lhs: Value(0),
+                rhs: Value(1),
+                ty: IrType::I64,
+                is_signed: true,
+            }],
+            Some(Terminator::Return {
+                value: Some(Value(2)),
+            }),
+        );
         let f = Function {
-            name: "div".into(), return_type: IrType::I64,
+            name: "div".into(),
+            return_type: IrType::I64,
             params: vec![("a".into(), IrType::I64), ("b".into(), IrType::I64)],
             param_values: Vec::new(),
-            blocks: vec![b], entry_block: BlockId(0), is_definition: true,
-is_static: false,
-is_weak: false,
+            blocks: vec![b],
+            entry_block: BlockId(0),
+            is_definition: true,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         };
         let r = s.select_function(&f).unwrap();
         assert!(r.iter().any(|i| i.opcode == Aarch64Opcode::SDIV.as_u32()));
@@ -1799,17 +2261,32 @@ is_weak: false,
     #[test]
     fn test_select_mod_sdiv_msub() {
         let mut s = Aarch64InstructionSelector::new();
-        let b = make_block(0, vec![
-            Instruction::Mod { result: Value(2), lhs: Value(0), rhs: Value(1),
-                ty: IrType::I64, is_signed: true },
-        ], Some(Terminator::Return { value: Some(Value(2)) }));
+        let b = make_block(
+            0,
+            vec![Instruction::Mod {
+                result: Value(2),
+                lhs: Value(0),
+                rhs: Value(1),
+                ty: IrType::I64,
+                is_signed: true,
+            }],
+            Some(Terminator::Return {
+                value: Some(Value(2)),
+            }),
+        );
         let f = Function {
-            name: "modtest".into(), return_type: IrType::I64,
+            name: "modtest".into(),
+            return_type: IrType::I64,
             params: vec![("a".into(), IrType::I64), ("b".into(), IrType::I64)],
             param_values: Vec::new(),
-            blocks: vec![b], entry_block: BlockId(0), is_definition: true,
-is_static: false,
-is_weak: false,
+            blocks: vec![b],
+            entry_block: BlockId(0),
+            is_definition: true,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         };
         let r = s.select_function(&f).unwrap();
         assert!(r.iter().any(|i| i.opcode == Aarch64Opcode::SDIV.as_u32()));
@@ -1821,17 +2298,32 @@ is_weak: false,
     #[test]
     fn test_select_icmp_eq() {
         let mut s = Aarch64InstructionSelector::new();
-        let b = make_block(0, vec![
-            Instruction::ICmp { result: Value(2), op: CompareOp::Equal,
-                lhs: Value(0), rhs: Value(1), ty: IrType::I64 },
-        ], Some(Terminator::Return { value: Some(Value(2)) }));
+        let b = make_block(
+            0,
+            vec![Instruction::ICmp {
+                result: Value(2),
+                op: CompareOp::Equal,
+                lhs: Value(0),
+                rhs: Value(1),
+                ty: IrType::I64,
+            }],
+            Some(Terminator::Return {
+                value: Some(Value(2)),
+            }),
+        );
         let f = Function {
-            name: "cmp".into(), return_type: IrType::I64,
+            name: "cmp".into(),
+            return_type: IrType::I64,
             params: vec![("a".into(), IrType::I64), ("b".into(), IrType::I64)],
             param_values: Vec::new(),
-            blocks: vec![b], entry_block: BlockId(0), is_definition: true,
-is_static: false,
-is_weak: false,
+            blocks: vec![b],
+            entry_block: BlockId(0),
+            is_definition: true,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         };
         let r = s.select_function(&f).unwrap();
         assert!(r.iter().any(|i| i.opcode == Aarch64Opcode::SUBS.as_u32()));
@@ -1841,19 +2333,41 @@ is_weak: false,
     #[test]
     fn test_select_csel() {
         let mut s = Aarch64InstructionSelector::new();
-        let b = make_block(0, vec![
-            Instruction::ICmp { result: Value(2), op: CompareOp::SignedLess,
-                lhs: Value(0), rhs: Value(1), ty: IrType::I64 },
-            Instruction::Select { result: Value(3), condition: Value(2),
-                true_val: Value(0), false_val: Value(1), ty: IrType::I64 },
-        ], Some(Terminator::Return { value: Some(Value(3)) }));
+        let b = make_block(
+            0,
+            vec![
+                Instruction::ICmp {
+                    result: Value(2),
+                    op: CompareOp::SignedLess,
+                    lhs: Value(0),
+                    rhs: Value(1),
+                    ty: IrType::I64,
+                },
+                Instruction::Select {
+                    result: Value(3),
+                    condition: Value(2),
+                    true_val: Value(0),
+                    false_val: Value(1),
+                    ty: IrType::I64,
+                },
+            ],
+            Some(Terminator::Return {
+                value: Some(Value(3)),
+            }),
+        );
         let f = Function {
-            name: "sel".into(), return_type: IrType::I64,
+            name: "sel".into(),
+            return_type: IrType::I64,
             params: vec![("a".into(), IrType::I64), ("b".into(), IrType::I64)],
             param_values: Vec::new(),
-            blocks: vec![b], entry_block: BlockId(0), is_definition: true,
-is_static: false,
-is_weak: false,
+            blocks: vec![b],
+            entry_block: BlockId(0),
+            is_definition: true,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         };
         let r = s.select_function(&f).unwrap();
         assert!(r.iter().any(|i| i.opcode == Aarch64Opcode::CSEL.as_u32()));
@@ -1864,16 +2378,30 @@ is_weak: false,
     #[test]
     fn test_select_load_i64() {
         let mut s = Aarch64InstructionSelector::new();
-        let b = make_block(0, vec![
-            Instruction::Load { result: Value(1), ty: IrType::I64, ptr: Value(0) },
-        ], Some(Terminator::Return { value: Some(Value(1)) }));
+        let b = make_block(
+            0,
+            vec![Instruction::Load {
+                result: Value(1),
+                ty: IrType::I64,
+                ptr: Value(0),
+            }],
+            Some(Terminator::Return {
+                value: Some(Value(1)),
+            }),
+        );
         let f = Function {
-            name: "ld".into(), return_type: IrType::I64,
+            name: "ld".into(),
+            return_type: IrType::I64,
             params: vec![("p".into(), IrType::Pointer(Box::new(IrType::I64)))],
             param_values: Vec::new(),
-            blocks: vec![b], entry_block: BlockId(0), is_definition: true,
-is_static: false,
-is_weak: false,
+            blocks: vec![b],
+            entry_block: BlockId(0),
+            is_definition: true,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         };
         let r = s.select_function(&f).unwrap();
         assert!(r.iter().any(|i| i.opcode == Aarch64Opcode::LDR.as_u32()));
@@ -1882,20 +2410,40 @@ is_weak: false,
     #[test]
     fn test_select_store_and_load_i32() {
         let mut s = Aarch64InstructionSelector::new();
-        let b = make_block(0, vec![
-            Instruction::Store { value: Value(0), ptr: Value(1), store_ty: None },
-            Instruction::Load { result: Value(2), ty: IrType::I32, ptr: Value(1) },
-        ], Some(Terminator::Return { value: Some(Value(2)) }));
+        let b = make_block(
+            0,
+            vec![
+                Instruction::Store {
+                    value: Value(0),
+                    ptr: Value(1),
+                    store_ty: None,
+                },
+                Instruction::Load {
+                    result: Value(2),
+                    ty: IrType::I32,
+                    ptr: Value(1),
+                },
+            ],
+            Some(Terminator::Return {
+                value: Some(Value(2)),
+            }),
+        );
         let f = Function {
-            name: "sl".into(), return_type: IrType::I32,
+            name: "sl".into(),
+            return_type: IrType::I32,
             params: vec![
                 ("v".into(), IrType::I32),
                 ("p".into(), IrType::Pointer(Box::new(IrType::I32))),
             ],
             param_values: Vec::new(),
-            blocks: vec![b], entry_block: BlockId(0), is_definition: true,
-is_static: false,
-is_weak: false,
+            blocks: vec![b],
+            entry_block: BlockId(0),
+            is_definition: true,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         };
         let r = s.select_function(&f).unwrap();
         assert!(r.iter().any(|i| i.opcode == Aarch64Opcode::STR.as_u32()
@@ -1910,25 +2458,39 @@ is_weak: false,
         let mut s = Aarch64InstructionSelector::new();
         let b0 = make_block(0, vec![], Some(Terminator::Branch { target: BlockId(1) }));
         let b1 = make_block(1, vec![], Some(Terminator::Return { value: None }));
-        let r = s.select_function(&make_function("br", vec![b0, b1])).unwrap();
+        let r = s
+            .select_function(&make_function("br", vec![b0, b1]))
+            .unwrap();
         assert!(r.iter().any(|i| i.opcode == Aarch64Opcode::B.as_u32()));
     }
 
     #[test]
     fn test_select_cond_branch() {
         let mut s = Aarch64InstructionSelector::new();
-        let b0 = make_block(0, vec![], Some(Terminator::CondBranch {
-            condition: Value(0), true_block: BlockId(1), false_block: BlockId(2),
-        }));
+        let b0 = make_block(
+            0,
+            vec![],
+            Some(Terminator::CondBranch {
+                condition: Value(0),
+                true_block: BlockId(1),
+                false_block: BlockId(2),
+            }),
+        );
         let b1 = make_block(1, vec![], Some(Terminator::Return { value: None }));
         let b2 = make_block(2, vec![], Some(Terminator::Return { value: None }));
         let f = Function {
-            name: "cb".into(), return_type: IrType::Void,
+            name: "cb".into(),
+            return_type: IrType::Void,
             params: vec![("c".into(), IrType::I1)],
             param_values: Vec::new(),
-            blocks: vec![b0, b1, b2], entry_block: BlockId(0), is_definition: true,
-is_static: false,
-is_weak: false,
+            blocks: vec![b0, b1, b2],
+            entry_block: BlockId(0),
+            is_definition: true,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         };
         let r = s.select_function(&f).unwrap();
         assert!(r.iter().any(|i| i.opcode == Aarch64Opcode::CBNZ.as_u32()));
@@ -1937,14 +2499,26 @@ is_weak: false,
     #[test]
     fn test_select_return() {
         let mut s = Aarch64InstructionSelector::new();
-        let b = make_block(0, vec![], Some(Terminator::Return { value: Some(Value(0)) }));
+        let b = make_block(
+            0,
+            vec![],
+            Some(Terminator::Return {
+                value: Some(Value(0)),
+            }),
+        );
         let f = Function {
-            name: "ret".into(), return_type: IrType::I64,
+            name: "ret".into(),
+            return_type: IrType::I64,
             params: vec![("v".into(), IrType::I64)],
             param_values: Vec::new(),
-            blocks: vec![b], entry_block: BlockId(0), is_definition: true,
-is_static: false,
-is_weak: false,
+            blocks: vec![b],
+            entry_block: BlockId(0),
+            is_definition: true,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         };
         let r = s.select_function(&f).unwrap();
         assert!(r.iter().any(|i| i.opcode == Aarch64Opcode::RET.as_u32()));
@@ -1955,17 +2529,32 @@ is_weak: false,
     #[test]
     fn test_select_sext_i32_to_i64() {
         let mut s = Aarch64InstructionSelector::new();
-        let b = make_block(0, vec![
-            Instruction::Cast { result: Value(1), op: CastOp::SExt,
-                value: Value(0), from_ty: IrType::I32, to_ty: IrType::I64 },
-        ], Some(Terminator::Return { value: Some(Value(1)) }));
+        let b = make_block(
+            0,
+            vec![Instruction::Cast {
+                result: Value(1),
+                op: CastOp::SExt,
+                value: Value(0),
+                from_ty: IrType::I32,
+                to_ty: IrType::I64,
+            }],
+            Some(Terminator::Return {
+                value: Some(Value(1)),
+            }),
+        );
         let f = Function {
-            name: "sx".into(), return_type: IrType::I64,
+            name: "sx".into(),
+            return_type: IrType::I64,
             params: vec![("v".into(), IrType::I32)],
             param_values: Vec::new(),
-            blocks: vec![b], entry_block: BlockId(0), is_definition: true,
-is_static: false,
-is_weak: false,
+            blocks: vec![b],
+            entry_block: BlockId(0),
+            is_definition: true,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         };
         let r = s.select_function(&f).unwrap();
         assert!(r.iter().any(|i| i.opcode == Aarch64Opcode::SXTW.as_u32()));
@@ -1974,39 +2563,73 @@ is_weak: false,
     #[test]
     fn test_select_fpext() {
         let mut s = Aarch64InstructionSelector::new();
-        let b = make_block(0, vec![
-            Instruction::Cast { result: Value(1), op: CastOp::FPExt,
-                value: Value(0), from_ty: IrType::F32, to_ty: IrType::F64 },
-        ], Some(Terminator::Return { value: Some(Value(1)) }));
+        let b = make_block(
+            0,
+            vec![Instruction::Cast {
+                result: Value(1),
+                op: CastOp::FPExt,
+                value: Value(0),
+                from_ty: IrType::F32,
+                to_ty: IrType::F64,
+            }],
+            Some(Terminator::Return {
+                value: Some(Value(1)),
+            }),
+        );
         let f = Function {
-            name: "fpe".into(), return_type: IrType::F64,
+            name: "fpe".into(),
+            return_type: IrType::F64,
             params: vec![("v".into(), IrType::F32)],
             param_values: Vec::new(),
-            blocks: vec![b], entry_block: BlockId(0), is_definition: true,
-is_static: false,
-is_weak: false,
+            blocks: vec![b],
+            entry_block: BlockId(0),
+            is_definition: true,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         };
         let r = s.select_function(&f).unwrap();
-        assert!(r.iter().any(|i| i.opcode == Aarch64Opcode::FCVT_S_TO_D.as_u32()));
+        assert!(r
+            .iter()
+            .any(|i| i.opcode == Aarch64Opcode::FCVT_S_TO_D.as_u32()));
     }
 
     #[test]
     fn test_select_scvtf() {
         let mut s = Aarch64InstructionSelector::new();
-        let b = make_block(0, vec![
-            Instruction::Cast { result: Value(1), op: CastOp::SIToFP,
-                value: Value(0), from_ty: IrType::I64, to_ty: IrType::F64 },
-        ], Some(Terminator::Return { value: Some(Value(1)) }));
+        let b = make_block(
+            0,
+            vec![Instruction::Cast {
+                result: Value(1),
+                op: CastOp::SIToFP,
+                value: Value(0),
+                from_ty: IrType::I64,
+                to_ty: IrType::F64,
+            }],
+            Some(Terminator::Return {
+                value: Some(Value(1)),
+            }),
+        );
         let f = Function {
-            name: "sc".into(), return_type: IrType::F64,
+            name: "sc".into(),
+            return_type: IrType::F64,
             params: vec![("v".into(), IrType::I64)],
             param_values: Vec::new(),
-            blocks: vec![b], entry_block: BlockId(0), is_definition: true,
-is_static: false,
-is_weak: false,
+            blocks: vec![b],
+            entry_block: BlockId(0),
+            is_definition: true,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         };
         let r = s.select_function(&f).unwrap();
-        assert!(r.iter().any(|i| i.opcode == Aarch64Opcode::SCVTF_D.as_u32()));
+        assert!(r
+            .iter()
+            .any(|i| i.opcode == Aarch64Opcode::SCVTF_D.as_u32()));
     }
 
     // -- Relocations -------------------------------------------------------
@@ -2014,16 +2637,26 @@ is_weak: false,
     #[test]
     fn test_global_ref_relocs() {
         let mut s = Aarch64InstructionSelector::new();
-        let b = make_block(0, vec![
-            Instruction::Const { result: Value(0),
-                value: Constant::GlobalRef("myg".into()) },
-        ], Some(Terminator::Return { value: Some(Value(0)) }));
+        let b = make_block(
+            0,
+            vec![Instruction::Const {
+                result: Value(0),
+                value: Constant::GlobalRef("myg".into()),
+            }],
+            Some(Terminator::Return {
+                value: Some(Value(0)),
+            }),
+        );
         let r = s.select_function(&make_function("gr", vec![b])).unwrap();
         assert!(r.iter().any(|i| i.opcode == Aarch64Opcode::ADRP.as_u32()));
         let rels = s.take_relocations();
         assert!(rels.len() >= 2);
-        assert!(rels.iter().any(|r| r.reloc_type == RelocationType::Aarch64_ADR_PREL_PG_HI21));
-        assert!(rels.iter().any(|r| r.reloc_type == RelocationType::Aarch64_ADD_ABS_LO12_NC));
+        assert!(rels
+            .iter()
+            .any(|r| r.reloc_type == RelocationType::Aarch64_ADR_PREL_PG_HI21));
+        assert!(rels
+            .iter()
+            .any(|r| r.reloc_type == RelocationType::Aarch64_ADD_ABS_LO12_NC));
     }
 
     // -- FP arithmetic -----------------------------------------------------
@@ -2031,16 +2664,31 @@ is_weak: false,
     #[test]
     fn test_select_fadd_d() {
         let mut s = Aarch64InstructionSelector::new();
-        let b = make_block(0, vec![
-            Instruction::Add { result: Value(2), lhs: Value(0), rhs: Value(1), ty: IrType::F64 },
-        ], Some(Terminator::Return { value: Some(Value(2)) }));
+        let b = make_block(
+            0,
+            vec![Instruction::Add {
+                result: Value(2),
+                lhs: Value(0),
+                rhs: Value(1),
+                ty: IrType::F64,
+            }],
+            Some(Terminator::Return {
+                value: Some(Value(2)),
+            }),
+        );
         let f = Function {
-            name: "fa".into(), return_type: IrType::F64,
+            name: "fa".into(),
+            return_type: IrType::F64,
             params: vec![("a".into(), IrType::F64), ("b".into(), IrType::F64)],
             param_values: Vec::new(),
-            blocks: vec![b], entry_block: BlockId(0), is_definition: true,
-is_static: false,
-is_weak: false,
+            blocks: vec![b],
+            entry_block: BlockId(0),
+            is_definition: true,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         };
         let r = s.select_function(&f).unwrap();
         assert!(r.iter().any(|i| i.opcode == Aarch64Opcode::FADD_D.as_u32()));
@@ -2051,23 +2699,37 @@ is_weak: false,
     #[test]
     fn test_select_switch() {
         let mut s = Aarch64InstructionSelector::new();
-        let b0 = make_block(0, vec![], Some(Terminator::Switch {
-            value: Value(0), default: BlockId(3),
-            cases: vec![(1, BlockId(1)), (2, BlockId(2))],
-        }));
+        let b0 = make_block(
+            0,
+            vec![],
+            Some(Terminator::Switch {
+                value: Value(0),
+                default: BlockId(3),
+                cases: vec![(1, BlockId(1)), (2, BlockId(2))],
+            }),
+        );
         let b1 = make_block(1, vec![], Some(Terminator::Return { value: None }));
         let b2 = make_block(2, vec![], Some(Terminator::Return { value: None }));
         let b3 = make_block(3, vec![], Some(Terminator::Return { value: None }));
         let f = Function {
-            name: "sw".into(), return_type: IrType::Void,
+            name: "sw".into(),
+            return_type: IrType::Void,
             params: vec![("v".into(), IrType::I64)],
             param_values: Vec::new(),
-            blocks: vec![b0, b1, b2, b3], entry_block: BlockId(0), is_definition: true,
-is_static: false,
-is_weak: false,
+            blocks: vec![b0, b1, b2, b3],
+            entry_block: BlockId(0),
+            is_definition: true,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         };
         let r = s.select_function(&f).unwrap();
-        let n = r.iter().filter(|i| i.opcode == Aarch64Opcode::B_cond.as_u32()).count();
+        let n = r
+            .iter()
+            .filter(|i| i.opcode == Aarch64Opcode::B_cond.as_u32())
+            .count();
         assert_eq!(n, 2);
     }
 }

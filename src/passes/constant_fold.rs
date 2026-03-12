@@ -39,11 +39,9 @@
 
 use std::collections::HashMap;
 
-use crate::ir::cfg::Terminator;
-use crate::ir::instructions::{
-    CastOp, CompareOp, Constant, FloatCompareOp, Instruction, Value,
-};
 use crate::ir::builder::Function;
+use crate::ir::cfg::Terminator;
+use crate::ir::instructions::{CastOp, CompareOp, Constant, FloatCompareOp, Instruction, Value};
 use crate::ir::types::IrType;
 use crate::passes::FunctionPass;
 
@@ -121,11 +119,10 @@ impl FunctionPass for ConstantFoldPass {
                 if let Some(result) = inst.result() {
                     if let Some(folded) = try_fold_instruction(&inst, &constants) {
                         constants.insert(result, folded.clone());
-                        function.blocks[block_idx].instructions[inst_idx] =
-                            Instruction::Const {
-                                result,
-                                value: folded,
-                            };
+                        function.blocks[block_idx].instructions[inst_idx] = Instruction::Const {
+                            result,
+                            value: folded,
+                        };
                         changed = true;
                     }
                 }
@@ -178,15 +175,9 @@ fn try_fold_instruction(
 ) -> Option<Constant> {
     match inst {
         // --- Binary arithmetic (integer or float) ---
-        Instruction::Add { lhs, rhs, ty, .. } => {
-            fold_binary(BinOp::Add, *lhs, *rhs, ty, constants)
-        }
-        Instruction::Sub { lhs, rhs, ty, .. } => {
-            fold_binary(BinOp::Sub, *lhs, *rhs, ty, constants)
-        }
-        Instruction::Mul { lhs, rhs, ty, .. } => {
-            fold_binary(BinOp::Mul, *lhs, *rhs, ty, constants)
-        }
+        Instruction::Add { lhs, rhs, ty, .. } => fold_binary(BinOp::Add, *lhs, *rhs, ty, constants),
+        Instruction::Sub { lhs, rhs, ty, .. } => fold_binary(BinOp::Sub, *lhs, *rhs, ty, constants),
+        Instruction::Mul { lhs, rhs, ty, .. } => fold_binary(BinOp::Mul, *lhs, *rhs, ty, constants),
         Instruction::Div {
             lhs,
             rhs,
@@ -217,18 +208,10 @@ fn try_fold_instruction(
         }
 
         // --- Binary bitwise ---
-        Instruction::And { lhs, rhs, ty, .. } => {
-            fold_binary(BinOp::And, *lhs, *rhs, ty, constants)
-        }
-        Instruction::Or { lhs, rhs, ty, .. } => {
-            fold_binary(BinOp::Or, *lhs, *rhs, ty, constants)
-        }
-        Instruction::Xor { lhs, rhs, ty, .. } => {
-            fold_binary(BinOp::Xor, *lhs, *rhs, ty, constants)
-        }
-        Instruction::Shl { lhs, rhs, ty, .. } => {
-            fold_binary(BinOp::Shl, *lhs, *rhs, ty, constants)
-        }
+        Instruction::And { lhs, rhs, ty, .. } => fold_binary(BinOp::And, *lhs, *rhs, ty, constants),
+        Instruction::Or { lhs, rhs, ty, .. } => fold_binary(BinOp::Or, *lhs, *rhs, ty, constants),
+        Instruction::Xor { lhs, rhs, ty, .. } => fold_binary(BinOp::Xor, *lhs, *rhs, ty, constants),
+        Instruction::Shl { lhs, rhs, ty, .. } => fold_binary(BinOp::Shl, *lhs, *rhs, ty, constants),
         Instruction::Shr {
             lhs,
             rhs,
@@ -487,12 +470,7 @@ fn fold_fcmp(op: &FloatCompareOp, a: f64, b: f64) -> Constant {
 ///
 /// Returns `None` for pointer-related casts (`PtrToInt`, `IntToPtr`) which
 /// depend on runtime addresses.
-fn fold_cast(
-    op: &CastOp,
-    value: &Constant,
-    from_ty: &IrType,
-    to_ty: &IrType,
-) -> Option<Constant> {
+fn fold_cast(op: &CastOp, value: &Constant, from_ty: &IrType, to_ty: &IrType) -> Option<Constant> {
     match op {
         CastOp::Trunc => {
             // Integer truncation: mask to target bit width and sign-extend.
@@ -854,10 +832,7 @@ fn logical_shr(a: i64, shift: u32, bits: u32) -> i64 {
 /// Extracts integer values from a pair of constants.
 fn get_int_pair(lc: &Constant, rc: &Constant) -> Option<(i64, i64)> {
     match (lc, rc) {
-        (
-            Constant::Integer { value: a, .. },
-            Constant::Integer { value: b, .. },
-        ) => Some((*a, *b)),
+        (Constant::Integer { value: a, .. }, Constant::Integer { value: b, .. }) => Some((*a, *b)),
         _ => None,
     }
 }
@@ -865,10 +840,7 @@ fn get_int_pair(lc: &Constant, rc: &Constant) -> Option<(i64, i64)> {
 /// Extracts float values from a pair of constants.
 fn get_float_pair(lc: &Constant, rc: &Constant) -> Option<(f64, f64)> {
     match (lc, rc) {
-        (
-            Constant::Float { value: a, .. },
-            Constant::Float { value: b, .. },
-        ) => Some((*a, *b)),
+        (Constant::Float { value: a, .. }, Constant::Float { value: b, .. }) => Some((*a, *b)),
         _ => None,
     }
 }
@@ -925,8 +897,11 @@ mod tests {
             blocks: vec![block],
             entry_block: BlockId(0),
             is_definition: true,
-is_static: false,
-is_weak: false,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         }
     }
 
@@ -953,8 +928,11 @@ is_weak: false,
             blocks: vec![entry, true_block, false_block],
             entry_block: BlockId(0),
             is_definition: true,
-is_static: false,
-is_weak: false,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         }
     }
 
@@ -981,11 +959,17 @@ is_weak: false,
         let insts = vec![
             Instruction::Const {
                 result: Value(0),
-                value: Constant::Integer { value: 2, ty: IrType::I32 },
+                value: Constant::Integer {
+                    value: 2,
+                    ty: IrType::I32,
+                },
             },
             Instruction::Const {
                 result: Value(1),
-                value: Constant::Integer { value: 3, ty: IrType::I32 },
+                value: Constant::Integer {
+                    value: 3,
+                    ty: IrType::I32,
+                },
             },
             Instruction::Add {
                 result: Value(2),
@@ -999,7 +983,10 @@ is_weak: false,
         assert!(pass.run_on_function(&mut func));
         assert_eq!(
             find_const(&func, Value(2)),
-            Some(Constant::Integer { value: 5, ty: IrType::I32 })
+            Some(Constant::Integer {
+                value: 5,
+                ty: IrType::I32
+            })
         );
     }
 
@@ -1008,11 +995,17 @@ is_weak: false,
         let insts = vec![
             Instruction::Const {
                 result: Value(0),
-                value: Constant::Integer { value: 10, ty: IrType::I32 },
+                value: Constant::Integer {
+                    value: 10,
+                    ty: IrType::I32,
+                },
             },
             Instruction::Const {
                 result: Value(1),
-                value: Constant::Integer { value: 3, ty: IrType::I32 },
+                value: Constant::Integer {
+                    value: 3,
+                    ty: IrType::I32,
+                },
             },
             Instruction::Sub {
                 result: Value(2),
@@ -1026,7 +1019,10 @@ is_weak: false,
         assert!(pass.run_on_function(&mut func));
         assert_eq!(
             find_const(&func, Value(2)),
-            Some(Constant::Integer { value: 7, ty: IrType::I32 })
+            Some(Constant::Integer {
+                value: 7,
+                ty: IrType::I32
+            })
         );
     }
 
@@ -1035,11 +1031,17 @@ is_weak: false,
         let insts = vec![
             Instruction::Const {
                 result: Value(0),
-                value: Constant::Integer { value: 4, ty: IrType::I32 },
+                value: Constant::Integer {
+                    value: 4,
+                    ty: IrType::I32,
+                },
             },
             Instruction::Const {
                 result: Value(1),
-                value: Constant::Integer { value: 5, ty: IrType::I32 },
+                value: Constant::Integer {
+                    value: 5,
+                    ty: IrType::I32,
+                },
             },
             Instruction::Mul {
                 result: Value(2),
@@ -1053,7 +1055,10 @@ is_weak: false,
         assert!(pass.run_on_function(&mut func));
         assert_eq!(
             find_const(&func, Value(2)),
-            Some(Constant::Integer { value: 20, ty: IrType::I32 })
+            Some(Constant::Integer {
+                value: 20,
+                ty: IrType::I32
+            })
         );
     }
 
@@ -1062,11 +1067,17 @@ is_weak: false,
         let insts = vec![
             Instruction::Const {
                 result: Value(0),
-                value: Constant::Integer { value: 10, ty: IrType::I32 },
+                value: Constant::Integer {
+                    value: 10,
+                    ty: IrType::I32,
+                },
             },
             Instruction::Const {
                 result: Value(1),
-                value: Constant::Integer { value: 3, ty: IrType::I32 },
+                value: Constant::Integer {
+                    value: 3,
+                    ty: IrType::I32,
+                },
             },
             Instruction::Div {
                 result: Value(2),
@@ -1081,7 +1092,10 @@ is_weak: false,
         assert!(pass.run_on_function(&mut func));
         assert_eq!(
             find_const(&func, Value(2)),
-            Some(Constant::Integer { value: 3, ty: IrType::I32 })
+            Some(Constant::Integer {
+                value: 3,
+                ty: IrType::I32
+            })
         );
     }
 
@@ -1090,11 +1104,17 @@ is_weak: false,
         let insts = vec![
             Instruction::Const {
                 result: Value(0),
-                value: Constant::Integer { value: 10, ty: IrType::I32 },
+                value: Constant::Integer {
+                    value: 10,
+                    ty: IrType::I32,
+                },
             },
             Instruction::Const {
                 result: Value(1),
-                value: Constant::Integer { value: 3, ty: IrType::I32 },
+                value: Constant::Integer {
+                    value: 3,
+                    ty: IrType::I32,
+                },
             },
             Instruction::Mod {
                 result: Value(2),
@@ -1109,7 +1129,10 @@ is_weak: false,
         assert!(pass.run_on_function(&mut func));
         assert_eq!(
             find_const(&func, Value(2)),
-            Some(Constant::Integer { value: 1, ty: IrType::I32 })
+            Some(Constant::Integer {
+                value: 1,
+                ty: IrType::I32
+            })
         );
     }
 
@@ -1118,11 +1141,17 @@ is_weak: false,
         let insts = vec![
             Instruction::Const {
                 result: Value(0),
-                value: Constant::Integer { value: 10, ty: IrType::I32 },
+                value: Constant::Integer {
+                    value: 10,
+                    ty: IrType::I32,
+                },
             },
             Instruction::Const {
                 result: Value(1),
-                value: Constant::Integer { value: 0, ty: IrType::I32 },
+                value: Constant::Integer {
+                    value: 0,
+                    ty: IrType::I32,
+                },
             },
             Instruction::Div {
                 result: Value(2),
@@ -1150,11 +1179,17 @@ is_weak: false,
         let insts = vec![
             Instruction::Const {
                 result: Value(0),
-                value: Constant::Integer { value: i32::MAX as i64, ty: IrType::I32 },
+                value: Constant::Integer {
+                    value: i32::MAX as i64,
+                    ty: IrType::I32,
+                },
             },
             Instruction::Const {
                 result: Value(1),
-                value: Constant::Integer { value: 1, ty: IrType::I32 },
+                value: Constant::Integer {
+                    value: 1,
+                    ty: IrType::I32,
+                },
             },
             Instruction::Add {
                 result: Value(2),
@@ -1168,7 +1203,10 @@ is_weak: false,
         assert!(pass.run_on_function(&mut func));
         assert_eq!(
             find_const(&func, Value(2)),
-            Some(Constant::Integer { value: i32::MIN as i64, ty: IrType::I32 })
+            Some(Constant::Integer {
+                value: i32::MIN as i64,
+                ty: IrType::I32
+            })
         );
     }
 
@@ -1181,11 +1219,17 @@ is_weak: false,
         let insts = vec![
             Instruction::Const {
                 result: Value(0),
-                value: Constant::Integer { value: 0xFF, ty: IrType::I32 },
+                value: Constant::Integer {
+                    value: 0xFF,
+                    ty: IrType::I32,
+                },
             },
             Instruction::Const {
                 result: Value(1),
-                value: Constant::Integer { value: 0x0F, ty: IrType::I32 },
+                value: Constant::Integer {
+                    value: 0x0F,
+                    ty: IrType::I32,
+                },
             },
             Instruction::And {
                 result: Value(2),
@@ -1199,7 +1243,10 @@ is_weak: false,
         assert!(pass.run_on_function(&mut func));
         assert_eq!(
             find_const(&func, Value(2)),
-            Some(Constant::Integer { value: 0x0F, ty: IrType::I32 })
+            Some(Constant::Integer {
+                value: 0x0F,
+                ty: IrType::I32
+            })
         );
     }
 
@@ -1208,11 +1255,17 @@ is_weak: false,
         let insts = vec![
             Instruction::Const {
                 result: Value(0),
-                value: Constant::Integer { value: 0xF0, ty: IrType::I32 },
+                value: Constant::Integer {
+                    value: 0xF0,
+                    ty: IrType::I32,
+                },
             },
             Instruction::Const {
                 result: Value(1),
-                value: Constant::Integer { value: 0x0F, ty: IrType::I32 },
+                value: Constant::Integer {
+                    value: 0x0F,
+                    ty: IrType::I32,
+                },
             },
             Instruction::Or {
                 result: Value(2),
@@ -1226,7 +1279,10 @@ is_weak: false,
         assert!(pass.run_on_function(&mut func));
         assert_eq!(
             find_const(&func, Value(2)),
-            Some(Constant::Integer { value: 0xFF, ty: IrType::I32 })
+            Some(Constant::Integer {
+                value: 0xFF,
+                ty: IrType::I32
+            })
         );
     }
 
@@ -1235,11 +1291,17 @@ is_weak: false,
         let insts = vec![
             Instruction::Const {
                 result: Value(0),
-                value: Constant::Integer { value: 0xFF, ty: IrType::I32 },
+                value: Constant::Integer {
+                    value: 0xFF,
+                    ty: IrType::I32,
+                },
             },
             Instruction::Const {
                 result: Value(1),
-                value: Constant::Integer { value: 0xFF, ty: IrType::I32 },
+                value: Constant::Integer {
+                    value: 0xFF,
+                    ty: IrType::I32,
+                },
             },
             Instruction::Xor {
                 result: Value(2),
@@ -1253,7 +1315,10 @@ is_weak: false,
         assert!(pass.run_on_function(&mut func));
         assert_eq!(
             find_const(&func, Value(2)),
-            Some(Constant::Integer { value: 0, ty: IrType::I32 })
+            Some(Constant::Integer {
+                value: 0,
+                ty: IrType::I32
+            })
         );
     }
 
@@ -1262,11 +1327,17 @@ is_weak: false,
         let insts = vec![
             Instruction::Const {
                 result: Value(0),
-                value: Constant::Integer { value: 1, ty: IrType::I32 },
+                value: Constant::Integer {
+                    value: 1,
+                    ty: IrType::I32,
+                },
             },
             Instruction::Const {
                 result: Value(1),
-                value: Constant::Integer { value: 4, ty: IrType::I32 },
+                value: Constant::Integer {
+                    value: 4,
+                    ty: IrType::I32,
+                },
             },
             Instruction::Shl {
                 result: Value(2),
@@ -1280,7 +1351,10 @@ is_weak: false,
         assert!(pass.run_on_function(&mut func));
         assert_eq!(
             find_const(&func, Value(2)),
-            Some(Constant::Integer { value: 16, ty: IrType::I32 })
+            Some(Constant::Integer {
+                value: 16,
+                ty: IrType::I32
+            })
         );
     }
 
@@ -1289,11 +1363,17 @@ is_weak: false,
         let insts = vec![
             Instruction::Const {
                 result: Value(0),
-                value: Constant::Integer { value: 16, ty: IrType::I32 },
+                value: Constant::Integer {
+                    value: 16,
+                    ty: IrType::I32,
+                },
             },
             Instruction::Const {
                 result: Value(1),
-                value: Constant::Integer { value: 2, ty: IrType::I32 },
+                value: Constant::Integer {
+                    value: 2,
+                    ty: IrType::I32,
+                },
             },
             Instruction::Shr {
                 result: Value(2),
@@ -1308,7 +1388,10 @@ is_weak: false,
         assert!(pass.run_on_function(&mut func));
         assert_eq!(
             find_const(&func, Value(2)),
-            Some(Constant::Integer { value: 4, ty: IrType::I32 })
+            Some(Constant::Integer {
+                value: 4,
+                ty: IrType::I32
+            })
         );
     }
 
@@ -1321,11 +1404,17 @@ is_weak: false,
         let insts = vec![
             Instruction::Const {
                 result: Value(0),
-                value: Constant::Integer { value: 5, ty: IrType::I32 },
+                value: Constant::Integer {
+                    value: 5,
+                    ty: IrType::I32,
+                },
             },
             Instruction::Const {
                 result: Value(1),
-                value: Constant::Integer { value: 5, ty: IrType::I32 },
+                value: Constant::Integer {
+                    value: 5,
+                    ty: IrType::I32,
+                },
             },
             Instruction::ICmp {
                 result: Value(2),
@@ -1340,7 +1429,10 @@ is_weak: false,
         assert!(pass.run_on_function(&mut func));
         assert_eq!(
             find_const(&func, Value(2)),
-            Some(Constant::Integer { value: 1, ty: IrType::I1 })
+            Some(Constant::Integer {
+                value: 1,
+                ty: IrType::I1
+            })
         );
     }
 
@@ -1349,11 +1441,17 @@ is_weak: false,
         let insts = vec![
             Instruction::Const {
                 result: Value(0),
-                value: Constant::Integer { value: 5, ty: IrType::I32 },
+                value: Constant::Integer {
+                    value: 5,
+                    ty: IrType::I32,
+                },
             },
             Instruction::Const {
                 result: Value(1),
-                value: Constant::Integer { value: 3, ty: IrType::I32 },
+                value: Constant::Integer {
+                    value: 3,
+                    ty: IrType::I32,
+                },
             },
             Instruction::ICmp {
                 result: Value(2),
@@ -1368,7 +1466,10 @@ is_weak: false,
         assert!(pass.run_on_function(&mut func));
         assert_eq!(
             find_const(&func, Value(2)),
-            Some(Constant::Integer { value: 0, ty: IrType::I1 })
+            Some(Constant::Integer {
+                value: 0,
+                ty: IrType::I1
+            })
         );
     }
 
@@ -1378,11 +1479,17 @@ is_weak: false,
         let insts = vec![
             Instruction::Const {
                 result: Value(0),
-                value: Constant::Integer { value: -1, ty: IrType::I32 },
+                value: Constant::Integer {
+                    value: -1,
+                    ty: IrType::I32,
+                },
             },
             Instruction::Const {
                 result: Value(1),
-                value: Constant::Integer { value: 0, ty: IrType::I32 },
+                value: Constant::Integer {
+                    value: 0,
+                    ty: IrType::I32,
+                },
             },
             Instruction::ICmp {
                 result: Value(2),
@@ -1397,7 +1504,10 @@ is_weak: false,
         assert!(pass.run_on_function(&mut func));
         assert_eq!(
             find_const(&func, Value(2)),
-            Some(Constant::Integer { value: 1, ty: IrType::I1 })
+            Some(Constant::Integer {
+                value: 1,
+                ty: IrType::I1
+            })
         );
     }
 
@@ -1407,11 +1517,17 @@ is_weak: false,
         let insts = vec![
             Instruction::Const {
                 result: Value(0),
-                value: Constant::Integer { value: -1, ty: IrType::I64 },
+                value: Constant::Integer {
+                    value: -1,
+                    ty: IrType::I64,
+                },
             },
             Instruction::Const {
                 result: Value(1),
-                value: Constant::Integer { value: 0, ty: IrType::I64 },
+                value: Constant::Integer {
+                    value: 0,
+                    ty: IrType::I64,
+                },
             },
             Instruction::ICmp {
                 result: Value(2),
@@ -1426,7 +1542,10 @@ is_weak: false,
         assert!(pass.run_on_function(&mut func));
         assert_eq!(
             find_const(&func, Value(2)),
-            Some(Constant::Integer { value: 0, ty: IrType::I1 })
+            Some(Constant::Integer {
+                value: 0,
+                ty: IrType::I1
+            })
         );
     }
 
@@ -1439,11 +1558,17 @@ is_weak: false,
         let insts = vec![
             Instruction::Const {
                 result: Value(0),
-                value: Constant::Float { value: 1.5, ty: IrType::F64 },
+                value: Constant::Float {
+                    value: 1.5,
+                    ty: IrType::F64,
+                },
             },
             Instruction::Const {
                 result: Value(1),
-                value: Constant::Float { value: 2.5, ty: IrType::F64 },
+                value: Constant::Float {
+                    value: 2.5,
+                    ty: IrType::F64,
+                },
             },
             Instruction::Add {
                 result: Value(2),
@@ -1457,7 +1582,10 @@ is_weak: false,
         assert!(pass.run_on_function(&mut func));
         assert_eq!(
             find_const(&func, Value(2)),
-            Some(Constant::Float { value: 4.0, ty: IrType::F64 })
+            Some(Constant::Float {
+                value: 4.0,
+                ty: IrType::F64
+            })
         );
     }
 
@@ -1466,11 +1594,17 @@ is_weak: false,
         let insts = vec![
             Instruction::Const {
                 result: Value(0),
-                value: Constant::Float { value: 2.0, ty: IrType::F64 },
+                value: Constant::Float {
+                    value: 2.0,
+                    ty: IrType::F64,
+                },
             },
             Instruction::Const {
                 result: Value(1),
-                value: Constant::Float { value: 3.0, ty: IrType::F64 },
+                value: Constant::Float {
+                    value: 3.0,
+                    ty: IrType::F64,
+                },
             },
             Instruction::Mul {
                 result: Value(2),
@@ -1484,7 +1618,10 @@ is_weak: false,
         assert!(pass.run_on_function(&mut func));
         assert_eq!(
             find_const(&func, Value(2)),
-            Some(Constant::Float { value: 6.0, ty: IrType::F64 })
+            Some(Constant::Float {
+                value: 6.0,
+                ty: IrType::F64
+            })
         );
     }
 
@@ -1498,7 +1635,10 @@ is_weak: false,
         let insts = vec![
             Instruction::Const {
                 result: Value(0),
-                value: Constant::Integer { value: 256, ty: IrType::I64 },
+                value: Constant::Integer {
+                    value: 256,
+                    ty: IrType::I64,
+                },
             },
             Instruction::Cast {
                 result: Value(1),
@@ -1513,7 +1653,10 @@ is_weak: false,
         assert!(pass.run_on_function(&mut func));
         assert_eq!(
             find_const(&func, Value(1)),
-            Some(Constant::Integer { value: 0, ty: IrType::I8 })
+            Some(Constant::Integer {
+                value: 0,
+                ty: IrType::I8
+            })
         );
     }
 
@@ -1523,7 +1666,10 @@ is_weak: false,
         let insts = vec![
             Instruction::Const {
                 result: Value(0),
-                value: Constant::Integer { value: -1, ty: IrType::I8 },
+                value: Constant::Integer {
+                    value: -1,
+                    ty: IrType::I8,
+                },
             },
             Instruction::Cast {
                 result: Value(1),
@@ -1538,7 +1684,10 @@ is_weak: false,
         assert!(pass.run_on_function(&mut func));
         assert_eq!(
             find_const(&func, Value(1)),
-            Some(Constant::Integer { value: 255, ty: IrType::I32 })
+            Some(Constant::Integer {
+                value: 255,
+                ty: IrType::I32
+            })
         );
     }
 
@@ -1548,7 +1697,10 @@ is_weak: false,
         let insts = vec![
             Instruction::Const {
                 result: Value(0),
-                value: Constant::Integer { value: 42, ty: IrType::I64 },
+                value: Constant::Integer {
+                    value: 42,
+                    ty: IrType::I64,
+                },
             },
             Instruction::Cast {
                 result: Value(1),
@@ -1563,7 +1715,10 @@ is_weak: false,
         assert!(pass.run_on_function(&mut func));
         assert_eq!(
             find_const(&func, Value(1)),
-            Some(Constant::Float { value: 42.0, ty: IrType::F64 })
+            Some(Constant::Float {
+                value: 42.0,
+                ty: IrType::F64
+            })
         );
     }
 
@@ -1573,12 +1728,13 @@ is_weak: false,
 
     #[test]
     fn test_condbranch_true_folded() {
-        let insts = vec![
-            Instruction::Const {
-                result: Value(0),
-                value: Constant::Integer { value: 1, ty: IrType::I1 },
+        let insts = vec![Instruction::Const {
+            result: Value(0),
+            value: Constant::Integer {
+                value: 1,
+                ty: IrType::I1,
             },
-        ];
+        }];
         let term = Terminator::CondBranch {
             condition: Value(0),
             true_block: BlockId(1),
@@ -1595,12 +1751,13 @@ is_weak: false,
 
     #[test]
     fn test_condbranch_false_folded() {
-        let insts = vec![
-            Instruction::Const {
-                result: Value(0),
-                value: Constant::Integer { value: 0, ty: IrType::I1 },
+        let insts = vec![Instruction::Const {
+            result: Value(0),
+            value: Constant::Integer {
+                value: 0,
+                ty: IrType::I1,
             },
-        ];
+        }];
         let term = Terminator::CondBranch {
             condition: Value(0),
             true_block: BlockId(1),
@@ -1622,14 +1779,12 @@ is_weak: false,
     #[test]
     fn test_no_constants_returns_false() {
         // Function with only non-constant instructions — no folding possible.
-        let insts = vec![
-            Instruction::Add {
-                result: Value(2),
-                lhs: Value(0),
-                rhs: Value(1),
-                ty: IrType::I32,
-            },
-        ];
+        let insts = vec![Instruction::Add {
+            result: Value(2),
+            lhs: Value(0),
+            rhs: Value(1),
+            ty: IrType::I32,
+        }];
         let mut func = make_function(insts);
         let mut pass = ConstantFoldPass::new();
         assert!(!pass.run_on_function(&mut func));
@@ -1646,11 +1801,17 @@ is_weak: false,
         let insts = vec![
             Instruction::Const {
                 result: Value(0),
-                value: Constant::Integer { value: 2, ty: IrType::I32 },
+                value: Constant::Integer {
+                    value: 2,
+                    ty: IrType::I32,
+                },
             },
             Instruction::Const {
                 result: Value(1),
-                value: Constant::Integer { value: 3, ty: IrType::I32 },
+                value: Constant::Integer {
+                    value: 3,
+                    ty: IrType::I32,
+                },
             },
             Instruction::Add {
                 result: Value(2),
@@ -1660,7 +1821,10 @@ is_weak: false,
             },
             Instruction::Const {
                 result: Value(3),
-                value: Constant::Integer { value: 4, ty: IrType::I32 },
+                value: Constant::Integer {
+                    value: 4,
+                    ty: IrType::I32,
+                },
             },
             Instruction::Mul {
                 result: Value(4),
@@ -1674,11 +1838,17 @@ is_weak: false,
         assert!(pass.run_on_function(&mut func));
         assert_eq!(
             find_const(&func, Value(2)),
-            Some(Constant::Integer { value: 5, ty: IrType::I32 })
+            Some(Constant::Integer {
+                value: 5,
+                ty: IrType::I32
+            })
         );
         assert_eq!(
             find_const(&func, Value(4)),
-            Some(Constant::Integer { value: 20, ty: IrType::I32 })
+            Some(Constant::Integer {
+                value: 20,
+                ty: IrType::I32
+            })
         );
     }
 
@@ -1692,7 +1862,10 @@ is_weak: false,
         let insts = vec![
             Instruction::Const {
                 result: Value(1),
-                value: Constant::Integer { value: 0, ty: IrType::I32 },
+                value: Constant::Integer {
+                    value: 0,
+                    ty: IrType::I32,
+                },
             },
             Instruction::Mul {
                 result: Value(2),
@@ -1706,7 +1879,10 @@ is_weak: false,
         assert!(pass.run_on_function(&mut func));
         assert_eq!(
             find_const(&func, Value(2)),
-            Some(Constant::Integer { value: 0, ty: IrType::I32 })
+            Some(Constant::Integer {
+                value: 0,
+                ty: IrType::I32
+            })
         );
     }
 
@@ -1716,7 +1892,10 @@ is_weak: false,
         let insts = vec![
             Instruction::Const {
                 result: Value(1),
-                value: Constant::Integer { value: 0, ty: IrType::I32 },
+                value: Constant::Integer {
+                    value: 0,
+                    ty: IrType::I32,
+                },
             },
             Instruction::And {
                 result: Value(2),
@@ -1730,7 +1909,10 @@ is_weak: false,
         assert!(pass.run_on_function(&mut func));
         assert_eq!(
             find_const(&func, Value(2)),
-            Some(Constant::Integer { value: 0, ty: IrType::I32 })
+            Some(Constant::Integer {
+                value: 0,
+                ty: IrType::I32
+            })
         );
     }
 
@@ -1744,11 +1926,17 @@ is_weak: false,
         let insts = vec![
             Instruction::Const {
                 result: Value(0),
-                value: Constant::Float { value: nan, ty: IrType::F64 },
+                value: Constant::Float {
+                    value: nan,
+                    ty: IrType::F64,
+                },
             },
             Instruction::Const {
                 result: Value(1),
-                value: Constant::Float { value: 1.0, ty: IrType::F64 },
+                value: Constant::Float {
+                    value: 1.0,
+                    ty: IrType::F64,
+                },
             },
             Instruction::FCmp {
                 result: Value(2),
@@ -1764,7 +1952,10 @@ is_weak: false,
         // Ordered comparison with NaN is always false.
         assert_eq!(
             find_const(&func, Value(2)),
-            Some(Constant::Integer { value: 0, ty: IrType::I1 })
+            Some(Constant::Integer {
+                value: 0,
+                ty: IrType::I1
+            })
         );
     }
 
@@ -1774,12 +1965,13 @@ is_weak: false,
 
     #[test]
     fn test_switch_folded() {
-        let insts = vec![
-            Instruction::Const {
-                result: Value(0),
-                value: Constant::Integer { value: 2, ty: IrType::I32 },
+        let insts = vec![Instruction::Const {
+            result: Value(0),
+            value: Constant::Integer {
+                value: 2,
+                ty: IrType::I32,
             },
-        ];
+        }];
         let term = Terminator::Switch {
             value: Value(0),
             default: BlockId(1),
@@ -1804,8 +1996,11 @@ is_weak: false,
             blocks: vec![entry, b1, b2, b3],
             entry_block: BlockId(0),
             is_definition: true,
-is_static: false,
-is_weak: false,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         };
 
         let mut pass = ConstantFoldPass::new();
@@ -1823,10 +2018,10 @@ is_weak: false,
 
     #[test]
     fn test_wrap_to_width() {
-        assert_eq!(wrap_to_width(256, 8), 0);      // 256 as i8 = 0
-        assert_eq!(wrap_to_width(255, 8), -1);      // 255 as i8 = -1
+        assert_eq!(wrap_to_width(256, 8), 0); // 256 as i8 = 0
+        assert_eq!(wrap_to_width(255, 8), -1); // 255 as i8 = -1
         assert_eq!(wrap_to_width(0x1_0000_0000, 32), 0); // overflow wraps
-        assert_eq!(wrap_to_width(-1, 32), -1);       // sign-preserving
+        assert_eq!(wrap_to_width(-1, 32), -1); // sign-preserving
     }
 
     #[test]
@@ -1868,11 +2063,17 @@ is_weak: false,
         let insts = vec![
             Instruction::Const {
                 result: Value(0),
-                value: Constant::Integer { value: -128, ty: IrType::I8 },
+                value: Constant::Integer {
+                    value: -128,
+                    ty: IrType::I8,
+                },
             },
             Instruction::Const {
                 result: Value(1),
-                value: Constant::Integer { value: 3, ty: IrType::I8 },
+                value: Constant::Integer {
+                    value: 3,
+                    ty: IrType::I8,
+                },
             },
             Instruction::Shr {
                 result: Value(2),
@@ -1887,7 +2088,10 @@ is_weak: false,
         assert!(pass.run_on_function(&mut func));
         assert_eq!(
             find_const(&func, Value(2)),
-            Some(Constant::Integer { value: -16, ty: IrType::I8 })
+            Some(Constant::Integer {
+                value: -16,
+                ty: IrType::I8
+            })
         );
     }
 
@@ -1901,8 +2105,11 @@ is_weak: false,
             blocks: Vec::new(),
             entry_block: BlockId(0),
             is_definition: true,
-is_static: false,
-is_weak: false,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         };
         let mut pass = ConstantFoldPass::new();
         assert!(!pass.run_on_function(&mut func));
@@ -1914,7 +2121,10 @@ is_weak: false,
         let insts = vec![
             Instruction::Const {
                 result: Value(0),
-                value: Constant::Float { value: 3.7, ty: IrType::F64 },
+                value: Constant::Float {
+                    value: 3.7,
+                    ty: IrType::F64,
+                },
             },
             Instruction::Cast {
                 result: Value(1),
@@ -1929,7 +2139,10 @@ is_weak: false,
         assert!(pass.run_on_function(&mut func));
         assert_eq!(
             find_const(&func, Value(1)),
-            Some(Constant::Integer { value: 3, ty: IrType::I32 })
+            Some(Constant::Integer {
+                value: 3,
+                ty: IrType::I32
+            })
         );
     }
 
@@ -1939,7 +2152,10 @@ is_weak: false,
         let insts = vec![
             Instruction::Const {
                 result: Value(0),
-                value: Constant::Float { value: 1.0, ty: IrType::F64 },
+                value: Constant::Float {
+                    value: 1.0,
+                    ty: IrType::F64,
+                },
             },
             Instruction::Cast {
                 result: Value(1),
@@ -1954,19 +2170,23 @@ is_weak: false,
         assert!(pass.run_on_function(&mut func));
         assert_eq!(
             find_const(&func, Value(1)),
-            Some(Constant::Float { value: 1.0, ty: IrType::F32 })
+            Some(Constant::Float {
+                value: 1.0,
+                ty: IrType::F32
+            })
         );
     }
 
     #[test]
     fn test_switch_default_case() {
         // Switch value doesn't match any case → default
-        let insts = vec![
-            Instruction::Const {
-                result: Value(0),
-                value: Constant::Integer { value: 99, ty: IrType::I32 },
+        let insts = vec![Instruction::Const {
+            result: Value(0),
+            value: Constant::Integer {
+                value: 99,
+                ty: IrType::I32,
             },
-        ];
+        }];
         let term = Terminator::Switch {
             value: Value(0),
             default: BlockId(1),
@@ -1990,8 +2210,11 @@ is_weak: false,
             blocks: vec![entry, b1, b2, b3],
             entry_block: BlockId(0),
             is_definition: true,
-is_static: false,
-is_weak: false,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         };
 
         let mut pass = ConstantFoldPass::new();
@@ -2008,11 +2231,17 @@ is_weak: false,
         let insts = vec![
             Instruction::Const {
                 result: Value(0),
-                value: Constant::Integer { value: i64::MAX, ty: IrType::I64 },
+                value: Constant::Integer {
+                    value: i64::MAX,
+                    ty: IrType::I64,
+                },
             },
             Instruction::Const {
                 result: Value(1),
-                value: Constant::Integer { value: 1, ty: IrType::I64 },
+                value: Constant::Integer {
+                    value: 1,
+                    ty: IrType::I64,
+                },
             },
             Instruction::Add {
                 result: Value(2),
@@ -2026,7 +2255,10 @@ is_weak: false,
         assert!(pass.run_on_function(&mut func));
         assert_eq!(
             find_const(&func, Value(2)),
-            Some(Constant::Integer { value: i64::MIN, ty: IrType::I64 })
+            Some(Constant::Integer {
+                value: i64::MIN,
+                ty: IrType::I64
+            })
         );
     }
 }

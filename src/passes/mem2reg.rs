@@ -154,8 +154,7 @@ impl FunctionPass for Mem2RegPass {
         let mut next_val = find_max_value_id(function).wrapping_add(1);
 
         // Step 4: Collect the set of promoted alloca values for cleanup.
-        let promoted_set: HashSet<Value> =
-            promotable.iter().map(|(v, _)| *v).collect();
+        let promoted_set: HashSet<Value> = promotable.iter().map(|(v, _)| *v).collect();
 
         // Step 5: Global replacement map — load results → replacement values.
         let mut replacements: HashMap<Value, Value> = HashMap::new();
@@ -164,8 +163,7 @@ impl FunctionPass for Mem2RegPass {
         // pipeline: collect info → place phi nodes → rename variables.
         for (alloca_val, alloca_ty) in &promotable {
             let info = collect_alloca_info(*alloca_val, alloca_ty.clone(), function);
-            let phi_values =
-                place_phi_nodes(&info, &dom_frontiers, function, &mut next_val);
+            let phi_values = place_phi_nodes(&info, &dom_frontiers, function, &mut next_val);
             rename_variables(
                 *alloca_val,
                 &phi_values,
@@ -222,12 +220,7 @@ fn find_promotable_allocas(function: &Function) -> Vec<(Value, IrType)> {
     // Only scan the entry block for allocas. In well-formed IR from the builder,
     // all allocas reside in the entry block.
     for inst in &function.blocks[entry_idx].instructions {
-        if let Instruction::Alloca {
-            result,
-            ty,
-            count,
-        } = inst
-        {
+        if let Instruction::Alloca { result, ty, count } = inst {
             // Only promote scalar allocas (no dynamic array count).
             if count.is_some() {
                 continue;
@@ -395,11 +388,7 @@ fn is_alloca_promotable(alloca_val: Value, function: &Function) -> bool {
 /// The returned [`AllocaInfo`] drives phi node placement via the iterated dominance
 /// frontier algorithm: `def_blocks` are the initial worklist entries, and `use_blocks`
 /// indicate where the promoted value is read.
-fn collect_alloca_info(
-    alloca_val: Value,
-    alloca_ty: IrType,
-    function: &Function,
-) -> AllocaInfo {
+fn collect_alloca_info(alloca_val: Value, alloca_ty: IrType, function: &Function) -> AllocaInfo {
     let mut info = AllocaInfo {
         ty: alloca_ty,
         def_blocks: HashSet::new(),
@@ -606,22 +595,25 @@ fn rename_block(
 
     // --- Step 3: Fill successor phi nodes. ---
     // The current reaching definition is the top of the value stack.
-    let current_val = value_stack
-        .last()
-        .copied()
-        .unwrap_or(Value::undef());
+    let current_val = value_stack.last().copied().unwrap_or(Value::undef());
 
     // Extract successors from the terminator (the canonical source of truth).
     // block.successors is not populated by the IR builder, so we must read
     // the targets from the terminator directly — same approach as build_cfg.
     let successors: Vec<BlockId> = match &function.blocks[block_idx].terminator {
         Some(crate::ir::Terminator::Branch { target }) => vec![*target],
-        Some(crate::ir::Terminator::CondBranch { true_block, false_block, .. }) => {
+        Some(crate::ir::Terminator::CondBranch {
+            true_block,
+            false_block,
+            ..
+        }) => {
             vec![*true_block, *false_block]
         }
         Some(crate::ir::Terminator::Switch { default, cases, .. }) => {
             let mut targets = vec![*default];
-            for &(_, t) in cases { targets.push(t); }
+            for &(_, t) in cases {
+                targets.push(t);
+            }
             targets
         }
         _ => Vec::new(),
@@ -750,19 +742,11 @@ fn cleanup_promoted(
     replacements: &HashMap<Value, Value>,
 ) {
     for block in &mut function.blocks {
-        block.instructions.retain(|inst| {
-            match inst {
-                Instruction::Alloca { result, .. } => {
-                    !promoted_set.contains(result)
-                }
-                Instruction::Load { result, .. } => {
-                    !replacements.contains_key(result)
-                }
-                Instruction::Store { ptr, .. } => {
-                    !promoted_set.contains(ptr)
-                }
-                _ => true,
-            }
+        block.instructions.retain(|inst| match inst {
+            Instruction::Alloca { result, .. } => !promoted_set.contains(result),
+            Instruction::Load { result, .. } => !replacements.contains_key(result),
+            Instruction::Store { ptr, .. } => !promoted_set.contains(ptr),
+            _ => true,
         });
     }
 }
@@ -882,7 +866,11 @@ fn build_cfg(function: &Function) -> ControlFlowGraph {
                 crate::ir::Terminator::Branch { target } => {
                     cfg.add_edge(from, *target);
                 }
-                crate::ir::Terminator::CondBranch { true_block, false_block, .. } => {
+                crate::ir::Terminator::CondBranch {
+                    true_block,
+                    false_block,
+                    ..
+                } => {
                     cfg.add_edge(from, *true_block);
                     cfg.add_edge(from, *false_block);
                 }
@@ -1028,7 +1016,11 @@ mod tests {
                     ty: IrType::I32,
                 },
             },
-            Instruction::Store { value: Value(1), ptr: Value(0), store_ty: None },
+            Instruction::Store {
+                value: Value(1),
+                ptr: Value(0),
+                store_ty: None,
+            },
             Instruction::Load {
                 result: Value(2),
                 ty: IrType::I32,
@@ -1047,8 +1039,11 @@ mod tests {
             blocks: vec![block],
             entry_block: entry,
             is_definition: true,
-is_static: false,
-is_weak: false,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         };
 
         let promotable = find_promotable_allocas(&function);
@@ -1083,8 +1078,11 @@ is_weak: false,
             blocks: vec![block],
             entry_block: entry,
             is_definition: true,
-is_static: false,
-is_weak: false,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         };
 
         let promotable = find_promotable_allocas(&function);
@@ -1126,8 +1124,11 @@ is_weak: false,
             blocks: vec![block],
             entry_block: entry,
             is_definition: true,
-is_static: false,
-is_weak: false,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         };
 
         let promotable = find_promotable_allocas(&function);
@@ -1150,7 +1151,11 @@ is_weak: false,
                 count: None,
             },
             // Storing the ADDRESS of alloca %0 into alloca %1.
-            Instruction::Store { value: Value(0), ptr: Value(1), store_ty: None },
+            Instruction::Store {
+                value: Value(0),
+                ptr: Value(1),
+                store_ty: None,
+            },
         ];
         block.terminator = Some(Terminator::Return { value: None });
 
@@ -1162,8 +1167,11 @@ is_weak: false,
             blocks: vec![block],
             entry_block: entry,
             is_definition: true,
-is_static: false,
-is_weak: false,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         };
 
         let promotable = find_promotable_allocas(&function);
@@ -1199,8 +1207,11 @@ is_weak: false,
             blocks: vec![block],
             entry_block: entry,
             is_definition: true,
-is_static: false,
-is_weak: false,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         };
 
         let promotable = find_promotable_allocas(&function);
@@ -1234,8 +1245,16 @@ is_weak: false,
                     ty: IrType::I32,
                 },
             },
-            Instruction::Store { value: Value(3), ptr: Value(0), store_ty: None },
-            Instruction::Store { value: Value(3), ptr: Value(2), store_ty: None },
+            Instruction::Store {
+                value: Value(3),
+                ptr: Value(0),
+                store_ty: None,
+            },
+            Instruction::Store {
+                value: Value(3),
+                ptr: Value(2),
+                store_ty: None,
+            },
             Instruction::Call {
                 result: None,
                 callee: Callee::Direct("bar".to_string()),
@@ -1253,8 +1272,11 @@ is_weak: false,
             blocks: vec![block],
             entry_block: entry,
             is_definition: true,
-is_static: false,
-is_weak: false,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         };
 
         let promotable = find_promotable_allocas(&function);
@@ -1286,7 +1308,11 @@ is_weak: false,
                     ty: IrType::I32,
                 },
             },
-            Instruction::Store { value: Value(1), ptr: Value(0), store_ty: None },
+            Instruction::Store {
+                value: Value(1),
+                ptr: Value(0),
+                store_ty: None,
+            },
             Instruction::Load {
                 result: Value(2),
                 ty: IrType::I32,
@@ -1305,8 +1331,11 @@ is_weak: false,
             blocks: vec![block],
             entry_block: entry,
             is_definition: true,
-is_static: false,
-is_weak: false,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         };
         setup_edges(&mut function);
 
@@ -1381,11 +1410,13 @@ is_weak: false,
                     ty: IrType::I32,
                 },
             },
-            Instruction::Store { value: Value(2), ptr: Value(0), store_ty: None },
+            Instruction::Store {
+                value: Value(2),
+                ptr: Value(0),
+                store_ty: None,
+            },
         ];
-        then_blk.terminator = Some(Terminator::Branch {
-            target: BlockId(3),
-        });
+        then_blk.terminator = Some(Terminator::Branch { target: BlockId(3) });
 
         else_blk.instructions = vec![
             Instruction::Const {
@@ -1395,11 +1426,13 @@ is_weak: false,
                     ty: IrType::I32,
                 },
             },
-            Instruction::Store { value: Value(3), ptr: Value(0), store_ty: None },
+            Instruction::Store {
+                value: Value(3),
+                ptr: Value(0),
+                store_ty: None,
+            },
         ];
-        else_blk.terminator = Some(Terminator::Branch {
-            target: BlockId(3),
-        });
+        else_blk.terminator = Some(Terminator::Branch { target: BlockId(3) });
 
         merge_blk.instructions = vec![Instruction::Load {
             result: Value(4),
@@ -1418,8 +1451,11 @@ is_weak: false,
             blocks: vec![entry_blk, then_blk, else_blk, merge_blk],
             entry_block: BlockId(0),
             is_definition: true,
-is_static: false,
-is_weak: false,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         };
         setup_edges(&mut function);
 
@@ -1437,8 +1473,7 @@ is_weak: false,
         let phi = &merge.phi_nodes[0];
         assert_eq!(phi.incoming.len(), 2, "Phi should have 2 incoming values");
 
-        let incoming_blocks: HashSet<BlockId> =
-            phi.incoming.iter().map(|(_, b)| *b).collect();
+        let incoming_blocks: HashSet<BlockId> = phi.incoming.iter().map(|(_, b)| *b).collect();
         assert!(incoming_blocks.contains(&BlockId(1)));
         assert!(incoming_blocks.contains(&BlockId(2)));
     }
@@ -1470,8 +1505,11 @@ is_weak: false,
             blocks: vec![block],
             entry_block: entry,
             is_definition: true,
-is_static: false,
-is_weak: false,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         };
         setup_edges(&mut function);
 
@@ -1506,8 +1544,11 @@ is_weak: false,
             blocks: vec![block],
             entry_block: entry,
             is_definition: true,
-is_static: false,
-is_weak: false,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         };
         setup_edges(&mut function);
 
@@ -1525,8 +1566,11 @@ is_weak: false,
             blocks: Vec::new(),
             entry_block: BlockId(0),
             is_definition: false,
-is_static: false,
-is_weak: false,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         };
 
         let mut pass = Mem2RegPass::new();
@@ -1638,8 +1682,16 @@ is_weak: false,
                     ty: IrType::I64,
                 },
             },
-            Instruction::Store { value: Value(3), ptr: Value(0), store_ty: None },
-            Instruction::Store { value: Value(4), ptr: Value(2), store_ty: None },
+            Instruction::Store {
+                value: Value(3),
+                ptr: Value(0),
+                store_ty: None,
+            },
+            Instruction::Store {
+                value: Value(4),
+                ptr: Value(2),
+                store_ty: None,
+            },
             Instruction::Call {
                 result: None,
                 callee: Callee::Direct("sink".to_string()),
@@ -1669,8 +1721,11 @@ is_weak: false,
             blocks: vec![block],
             entry_block: entry,
             is_definition: true,
-is_static: false,
-is_weak: false,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         };
         setup_edges(&mut function);
 
@@ -1737,20 +1792,20 @@ is_weak: false,
                     ty: IrType::I32,
                 },
             },
-            Instruction::Store { value: Value(1), ptr: Value(0), store_ty: None },
+            Instruction::Store {
+                value: Value(1),
+                ptr: Value(0),
+                store_ty: None,
+            },
         ];
-        entry_blk.terminator = Some(Terminator::Branch {
-            target: BlockId(1),
-        });
+        entry_blk.terminator = Some(Terminator::Branch { target: BlockId(1) });
 
         blk1.instructions = vec![Instruction::Load {
             result: Value(2),
             ty: IrType::I32,
             ptr: Value(0),
         }];
-        blk1.terminator = Some(Terminator::Branch {
-            target: BlockId(2),
-        });
+        blk1.terminator = Some(Terminator::Branch { target: BlockId(2) });
 
         blk2.instructions = vec![
             Instruction::Const {
@@ -1760,7 +1815,11 @@ is_weak: false,
                     ty: IrType::I32,
                 },
             },
-            Instruction::Store { value: Value(3), ptr: Value(0), store_ty: None },
+            Instruction::Store {
+                value: Value(3),
+                ptr: Value(0),
+                store_ty: None,
+            },
         ];
         blk2.terminator = Some(Terminator::Return { value: None });
 
@@ -1772,8 +1831,11 @@ is_weak: false,
             blocks: vec![entry_blk, blk1, blk2],
             entry_block: BlockId(0),
             is_definition: true,
-is_static: false,
-is_weak: false,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         };
 
         let info = collect_alloca_info(Value(0), IrType::I32, &function);
@@ -1835,7 +1897,11 @@ is_weak: false,
                     ty: IrType::I32,
                 },
             },
-            Instruction::Store { value: Value(10), ptr: Value(5), store_ty: None },
+            Instruction::Store {
+                value: Value(10),
+                ptr: Value(5),
+                store_ty: None,
+            },
             Instruction::Load {
                 result: Value(15),
                 ty: IrType::I32,
@@ -1854,8 +1920,11 @@ is_weak: false,
             blocks: vec![block],
             entry_block: BlockId(0),
             is_definition: true,
-is_static: false,
-is_weak: false,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         };
 
         let max_id = find_max_value_id(&function);
@@ -1872,9 +1941,7 @@ is_weak: false,
         let mut b1 = BasicBlock::new(BlockId(1), "b1".to_string());
 
         b0.successors = vec![BlockId(1)];
-        b0.terminator = Some(Terminator::Branch {
-            target: BlockId(1),
-        });
+        b0.terminator = Some(Terminator::Branch { target: BlockId(1) });
         b1.predecessors = vec![BlockId(0)];
         b1.terminator = Some(Terminator::Return { value: None });
 
@@ -1886,8 +1953,11 @@ is_weak: false,
             blocks: vec![b0, b1],
             entry_block: BlockId(0),
             is_definition: true,
-is_static: false,
-is_weak: false,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         };
 
         let cfg = build_cfg(&function);

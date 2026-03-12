@@ -48,12 +48,12 @@
 // Submodule declarations
 // ===========================================================================
 
-pub mod types;
+pub mod scope;
+pub mod storage;
+pub mod symbol_table;
 pub mod type_check;
 pub mod type_conversion;
-pub mod scope;
-pub mod symbol_table;
-pub mod storage;
+pub mod types;
 
 // ===========================================================================
 // Public re-exports — downstream consumers use `crate::sema::CType`, etc.
@@ -86,9 +86,9 @@ use crate::common::intern::{InternId, Interner};
 use crate::common::source_map::SourceSpan;
 use crate::driver::target::TargetConfig;
 use crate::frontend::parser::ast::{
-    AssignmentOp, BlockItem, Declaration, Declarator, DeclSpecifiers, DirectDeclarator,
-    Expression, ForInit, FunctionDef, InitDeclarator, Initializer, Statement, StorageClass,
-    TranslationUnit, TypeName, TypeSpecifier,
+    AssignmentOp, BlockItem, DeclSpecifiers, Declaration, Declarator, DirectDeclarator, Expression,
+    ForInit, FunctionDef, InitDeclarator, Initializer, Statement, StorageClass, TranslationUnit,
+    TypeName, TypeSpecifier,
 };
 
 // ===========================================================================
@@ -334,9 +334,7 @@ impl<'a> SemanticAnalyzer<'a> {
                 self.analyze_typedef(specifiers, declarators, *span);
                 // Typedefs don't produce IR, but we still don't push them at local scope.
             }
-            Declaration::StaticAssert {
-                expr, ..
-            } => {
+            Declaration::StaticAssert { expr, .. } => {
                 let _ = self.analyze_expression(expr);
                 // Static asserts don't produce IR.
             }
@@ -347,6 +345,9 @@ impl<'a> SemanticAnalyzer<'a> {
                 // For now, skip — nested functions are out of scope.
             }
             Declaration::Empty { .. } => {}
+            Declaration::TopLevelAsm { .. } => {
+                // Top-level asm is a passthrough — no semantic analysis needed.
+            }
         }
     }
 
@@ -411,6 +412,15 @@ impl<'a> SemanticAnalyzer<'a> {
                     resolved_type: None,
                 });
             }
+            Declaration::TopLevelAsm { .. } => {
+                // Top-level asm declarations are passed through to the IR
+                // builder without semantic analysis (they contain opaque
+                // assembly text).
+                self.typed_declarations.push(TypedDeclaration {
+                    decl: decl.clone(),
+                    resolved_type: None,
+                });
+            }
         }
     }
 
@@ -452,8 +462,7 @@ impl<'a> SemanticAnalyzer<'a> {
         }
 
         for init_decl in declarators {
-            let decl_type =
-                self.apply_declarator_to_type(&base_type, &init_decl.declarator);
+            let decl_type = self.apply_declarator_to_type(&base_type, &init_decl.declarator);
             let name = self.extract_declarator_name(&init_decl.declarator);
 
             if let Some(name_id) = name {
@@ -536,8 +545,7 @@ impl<'a> SemanticAnalyzer<'a> {
         };
 
         // Build the function type from the declarator.
-        let (func_name, func_type) =
-            self.build_function_type(&func_def.declarator, &return_type);
+        let (func_name, func_type) = self.build_function_type(&func_def.declarator, &return_type);
 
         if let Some(name_id) = func_name {
             // Register function in the symbol table.
@@ -663,12 +671,7 @@ impl<'a> SemanticAnalyzer<'a> {
     ///
     /// Evaluates the constant expression. If it evaluates to zero, emits an
     /// error with the provided message string.
-    fn analyze_static_assert(
-        &mut self,
-        expr: &Expression,
-        message: &str,
-        span: SourceSpan,
-    ) {
+    fn analyze_static_assert(&mut self, expr: &Expression, message: &str, span: SourceSpan) {
         let expr_type = self.analyze_expression(expr);
         if !expr_type.is_integer() && !expr_type.is_error() {
             self.diagnostics.error(
@@ -724,10 +727,7 @@ impl<'a> SemanticAnalyzer<'a> {
                 if !cond_type.is_scalar() && !cond_type.is_error() {
                     self.diagnostics.error(
                         span.start,
-                        format!(
-                            "controlling expression type '{}' is not scalar",
-                            cond_type
-                        ),
+                        format!("controlling expression type '{}' is not scalar", cond_type),
                     );
                 }
                 self.analyze_statement(then_branch);
@@ -763,10 +763,7 @@ impl<'a> SemanticAnalyzer<'a> {
                     if !cond_type.is_scalar() && !cond_type.is_error() {
                         self.diagnostics.error(
                             span.start,
-                            format!(
-                                "controlling expression type '{}' is not scalar",
-                                cond_type
-                            ),
+                            format!("controlling expression type '{}' is not scalar", cond_type),
                         );
                     }
                 }
@@ -793,10 +790,7 @@ impl<'a> SemanticAnalyzer<'a> {
                 if !cond_type.is_scalar() && !cond_type.is_error() {
                     self.diagnostics.error(
                         span.start,
-                        format!(
-                            "controlling expression type '{}' is not scalar",
-                            cond_type
-                        ),
+                        format!("controlling expression type '{}' is not scalar", cond_type),
                     );
                 }
 
@@ -820,10 +814,7 @@ impl<'a> SemanticAnalyzer<'a> {
                 if !cond_type.is_scalar() && !cond_type.is_error() {
                     self.diagnostics.error(
                         span.start,
-                        format!(
-                            "controlling expression type '{}' is not scalar",
-                            cond_type
-                        ),
+                        format!("controlling expression type '{}' is not scalar", cond_type),
                     );
                 }
             }
@@ -849,12 +840,15 @@ impl<'a> SemanticAnalyzer<'a> {
                 self.in_switch = prev_in_switch;
             }
 
-            Statement::Case { value, range_end, body, span } => {
+            Statement::Case {
+                value,
+                range_end,
+                body,
+                span,
+            } => {
                 if !self.in_switch {
-                    self.diagnostics.error(
-                        span.start,
-                        "'case' label not within a switch statement",
-                    );
+                    self.diagnostics
+                        .error(span.start, "'case' label not within a switch statement");
                 }
                 let val_type = self.analyze_expression(value);
                 if !val_type.is_integer() && !val_type.is_error() {
@@ -877,10 +871,8 @@ impl<'a> SemanticAnalyzer<'a> {
 
             Statement::Default { body, span } => {
                 if !self.in_switch {
-                    self.diagnostics.error(
-                        span.start,
-                        "'default' label not within a switch statement",
-                    );
+                    self.diagnostics
+                        .error(span.start, "'default' label not within a switch statement");
                 }
                 self.analyze_statement(body);
             }
@@ -896,39 +888,26 @@ impl<'a> SemanticAnalyzer<'a> {
 
             Statement::Continue { span } => {
                 if !self.in_loop {
-                    self.diagnostics.error(
-                        span.start,
-                        "'continue' statement not in loop statement",
-                    );
+                    self.diagnostics
+                        .error(span.start, "'continue' statement not in loop statement");
                 }
             }
 
             Statement::Return { value, span } => {
-                let return_type = value
-                    .as_ref()
-                    .map(|expr| self.analyze_expression(expr));
+                let return_type = value.as_ref().map(|expr| self.analyze_expression(expr));
 
                 if let Some(ref expected) = self.current_function_return_type {
-                    type_check::check_return(
-                        &return_type,
-                        expected,
-                        self.diagnostics,
-                        *span,
-                    );
+                    type_check::check_return(&return_type, expected, self.diagnostics, *span);
                 } else {
-                    self.diagnostics.error(
-                        span.start,
-                        "'return' statement outside of function body",
-                    );
+                    self.diagnostics
+                        .error(span.start, "'return' statement outside of function body");
                 }
             }
 
             Statement::Goto { label, span } => {
                 if !self.scope_stack.is_in_function() {
-                    self.diagnostics.error(
-                        span.start,
-                        "'goto' statement outside of function body",
-                    );
+                    self.diagnostics
+                        .error(span.start, "'goto' statement outside of function body");
                 }
                 // Register label as a forward reference (not defined).
                 let label_symbol = Symbol {
@@ -989,10 +968,8 @@ impl<'a> SemanticAnalyzer<'a> {
             Statement::ComputedGoto { target, span } => {
                 let target_type = self.analyze_expression(target);
                 if !target_type.is_pointer() && !target_type.is_error() {
-                    self.diagnostics.error(
-                        span.start,
-                        "argument to computed goto must be a pointer",
-                    );
+                    self.diagnostics
+                        .error(span.start, "argument to computed goto must be a pointer");
                 }
             }
         }
@@ -1010,9 +987,7 @@ impl<'a> SemanticAnalyzer<'a> {
     pub fn analyze_expression(&mut self, expr: &Expression) -> CType {
         match expr {
             // --- Literals ---
-            Expression::IntegerLiteral { suffix, .. } => {
-                self.resolve_integer_literal_type(suffix)
-            }
+            Expression::IntegerLiteral { suffix, .. } => self.resolve_integer_literal_type(suffix),
 
             Expression::FloatLiteral { suffix, .. } => {
                 use crate::frontend::parser::ast::FloatSuffix;
@@ -1045,11 +1020,38 @@ impl<'a> SemanticAnalyzer<'a> {
                     sym.ty.clone()
                 } else {
                     let name_str = self.interner.resolve(*name);
-                    self.diagnostics.error(
-                        span.start,
-                        format!("use of undeclared identifier '{}'", name_str),
-                    );
-                    CType::Error
+                    // GCC builtins: implicitly declare __builtin_* functions
+                    // with a generic signature returning int and accepting
+                    // variadic arguments.  This enables kernel code that
+                    // calls builtins like __builtin_memcmp, __builtin_memcpy
+                    // etc. without explicit declarations.
+                    if name_str.starts_with("__builtin_")
+                        || name_str.starts_with("__sync_")
+                        || name_str.starts_with("__atomic_")
+                        || Self::is_implicit_libc_function(name_str)
+                    {
+                        self.diagnostics.warning(
+                            span.start,
+                            format!("implicit declaration of builtin function '{}'", name_str),
+                        );
+                        // Return a function type so that call expressions
+                        // type-check.  The exact return type varies per
+                        // builtin but `int` is a safe default; the backend
+                        // lowers these to the appropriate IR.
+                        let builtin_ret = Self::builtin_return_type(name_str);
+                        CType::Function(crate::sema::types::FunctionType {
+                            return_type: Box::new(builtin_ret),
+                            params: Vec::new(),
+                            is_variadic: true,
+                            is_old_style: false,
+                        })
+                    } else {
+                        self.diagnostics.error(
+                            span.start,
+                            format!("use of undeclared identifier '{}'", name_str),
+                        );
+                        CType::Error
+                    }
                 }
             }
 
@@ -1075,33 +1077,19 @@ impl<'a> SemanticAnalyzer<'a> {
             // --- Unary prefix operations ---
             Expression::UnaryPrefix { op, operand, span } => {
                 let operand_type = self.analyze_expression(operand);
-                type_check::check_unary_op(
-                    *op,
-                    &operand_type,
-                    self.target,
-                    self.diagnostics,
-                    *span,
-                )
+                type_check::check_unary_op(*op, &operand_type, self.target, self.diagnostics, *span)
             }
 
             // --- Postfix increment/decrement ---
             Expression::PostIncrement { operand, span } => {
                 let operand_type = self.analyze_expression(operand);
-                type_check::check_postfix_op(
-                    &operand_type,
-                    self.diagnostics,
-                    *span,
-                );
+                type_check::check_postfix_op(&operand_type, self.diagnostics, *span);
                 operand_type
             }
 
             Expression::PostDecrement { operand, span } => {
                 let operand_type = self.analyze_expression(operand);
-                type_check::check_postfix_op(
-                    &operand_type,
-                    self.diagnostics,
-                    *span,
-                );
+                type_check::check_postfix_op(&operand_type, self.diagnostics, *span);
                 operand_type
             }
 
@@ -1122,19 +1110,10 @@ impl<'a> SemanticAnalyzer<'a> {
             }
 
             // --- Array subscript ---
-            Expression::Subscript {
-                array,
-                index,
-                span,
-            } => {
+            Expression::Subscript { array, index, span } => {
                 let array_type = self.analyze_expression(array);
                 let index_type = self.analyze_expression(index);
-                type_check::check_subscript(
-                    &array_type,
-                    &index_type,
-                    self.diagnostics,
-                    *span,
-                )
+                type_check::check_subscript(&array_type, &index_type, self.diagnostics, *span)
             }
 
             // --- Member access ---
@@ -1191,12 +1170,7 @@ impl<'a> SemanticAnalyzer<'a> {
                 let value_type = self.analyze_expression(value);
 
                 // Validate lvalue.
-                type_check::check_lvalue(
-                    target,
-                    &self.symbol_table,
-                    self.diagnostics,
-                    *span,
-                );
+                type_check::check_lvalue(target, &self.symbol_table, self.diagnostics, *span);
 
                 match op {
                     AssignmentOp::Assign => {
@@ -1228,10 +1202,7 @@ impl<'a> SemanticAnalyzer<'a> {
                 if !cond_type.is_scalar() && !cond_type.is_error() {
                     self.diagnostics.error(
                         span.start,
-                        format!(
-                            "controlling expression type '{}' is not scalar",
-                            cond_type
-                        ),
+                        format!("controlling expression type '{}' is not scalar", cond_type),
                     );
                 }
 
@@ -1265,12 +1236,7 @@ impl<'a> SemanticAnalyzer<'a> {
             } => {
                 let target_type = self.resolve_type_name(type_name);
                 let operand_type = self.analyze_expression(operand);
-                type_check::check_cast(
-                    &target_type,
-                    &operand_type,
-                    self.diagnostics,
-                    *span,
-                );
+                type_check::check_cast(&target_type, &operand_type, self.diagnostics, *span);
                 target_type
             }
 
@@ -1363,10 +1329,7 @@ impl<'a> SemanticAnalyzer<'a> {
                                 self.analyze_local_declaration(decl);
                                 last_expr_type = CType::Void;
                             }
-                            BlockItem::Statement(Statement::Expression {
-                                expr,
-                                ..
-                            }) => {
+                            BlockItem::Statement(Statement::Expression { expr, .. }) => {
                                 last_expr_type = self.analyze_expression(expr);
                             }
                             BlockItem::Statement(stmt) => {
@@ -1482,7 +1445,10 @@ impl<'a> SemanticAnalyzer<'a> {
                 }
                 ty.clone()
             }
-            CType::Pointer { pointee, qualifiers } => {
+            CType::Pointer {
+                pointee,
+                qualifiers,
+            } => {
                 let resolved_pointee = self.resolve_complete_type(pointee);
                 CType::Pointer {
                     pointee: Box::new(resolved_pointee),
@@ -1490,6 +1456,125 @@ impl<'a> SemanticAnalyzer<'a> {
                 }
             }
             _ => ty.clone(),
+        }
+    }
+
+    /// Returns `true` if the given name is a standard C library function
+    /// that should be implicitly declared when encountered without a prior
+    /// declaration (common in freestanding kernel code where builtins
+    /// expand to bare library names).
+    fn is_implicit_libc_function(name: &str) -> bool {
+        matches!(
+            name,
+            "memcpy"
+                | "memmove"
+                | "memset"
+                | "memcmp"
+                | "memchr"
+                | "strlen"
+                | "strcmp"
+                | "strncmp"
+                | "strcpy"
+                | "strncpy"
+                | "strcat"
+                | "strncat"
+                | "strchr"
+                | "strrchr"
+                | "strstr"
+                | "strtol"
+                | "strtoul"
+                | "strtoll"
+                | "strtoull"
+                | "printf"
+                | "fprintf"
+                | "sprintf"
+                | "snprintf"
+                | "vprintf"
+                | "vfprintf"
+                | "vsprintf"
+                | "vsnprintf"
+                | "puts"
+                | "putchar"
+                | "getchar"
+                | "malloc"
+                | "calloc"
+                | "realloc"
+                | "free"
+                | "abort"
+                | "exit"
+                | "_exit"
+                | "abs"
+                | "labs"
+                | "llabs"
+        )
+    }
+
+    /// Returns the appropriate return type for a known GCC builtin
+    /// function.  Builtins that return pointers (memcpy, memset, etc.)
+    /// get `void *`; builtins that return sizes get `unsigned long`;
+    /// everything else defaults to `int`.
+    fn builtin_return_type(name: &str) -> CType {
+        match name {
+            // Memory builtins returning void*
+            "__builtin_memcpy"
+            | "__builtin_memmove"
+            | "__builtin_memset"
+            | "__builtin_memcpy_inline"
+            | "__builtin_alloca"
+            | "__builtin_return_address"
+            | "__builtin_frame_address"
+            | "__builtin___memcpy_chk"
+            | "__builtin___memmove_chk"
+            | "__builtin___memset_chk" => CType::Pointer {
+                pointee: Box::new(CType::Void),
+                qualifiers: TypeQualifiers::default(),
+            },
+            // Size/length builtins returning unsigned long
+            "__builtin_strlen"
+            | "__builtin_object_size"
+            | "__builtin_offsetof"
+            | "__builtin_sizeof" => CType::Integer(IntegerKind::UnsignedLong),
+            // Boolean-like builtins returning int
+            "__builtin_memcmp"
+            | "__builtin_strcmp"
+            | "__builtin_strncmp"
+            | "__builtin_constant_p"
+            | "__builtin_expect"
+            | "__builtin_expect_with_probability"
+            | "__builtin_types_compatible_p"
+            | "__builtin_clz"
+            | "__builtin_clzl"
+            | "__builtin_clzll"
+            | "__builtin_ctz"
+            | "__builtin_ctzl"
+            | "__builtin_ctzll"
+            | "__builtin_ffs"
+            | "__builtin_ffsl"
+            | "__builtin_ffsll"
+            | "__builtin_popcount"
+            | "__builtin_popcountl"
+            | "__builtin_popcountll"
+            | "__builtin_parity"
+            | "__builtin_parityl"
+            | "__builtin_parityll"
+            | "__builtin_add_overflow"
+            | "__builtin_sub_overflow"
+            | "__builtin_mul_overflow"
+            | "__builtin_unreachable"
+            | "__builtin_trap"
+            | "__builtin_prefetch"
+            | "__builtin_ia32_pause"
+            | "__builtin_bswap16"
+            | "__builtin_bswap32"
+            | "__builtin_bswap64"
+            | "__builtin_assume_aligned"
+            | "__builtin_choose_expr"
+            | "__builtin_va_start"
+            | "__builtin_va_end"
+            | "__builtin_va_copy"
+            | "__builtin_va_arg" => CType::Integer(IntegerKind::Int),
+            // Default: int
+            _ => CType::Integer(IntegerKind::Int),
         }
     }
 
@@ -1550,17 +1635,11 @@ impl<'a> SemanticAnalyzer<'a> {
                 }
             }
 
-            TypeSpecifier::Struct(struct_def) => {
-                self.analyze_struct_def(struct_def, false)
-            }
+            TypeSpecifier::Struct(struct_def) => self.analyze_struct_def(struct_def, false),
 
-            TypeSpecifier::Union(union_def) => {
-                self.analyze_union_def(union_def)
-            }
+            TypeSpecifier::Union(union_def) => self.analyze_union_def(union_def),
 
-            TypeSpecifier::Enum(enum_def) => {
-                self.analyze_enum_def(enum_def)
-            }
+            TypeSpecifier::Enum(enum_def) => self.analyze_enum_def(enum_def),
 
             TypeSpecifier::StructRef { tag, span } => {
                 if let Some(sym) = self.symbol_table.lookup_tag(*tag) {
@@ -1661,10 +1740,8 @@ impl<'a> SemanticAnalyzer<'a> {
                     sym.ty.clone()
                 } else {
                     let name_str = self.interner.resolve(*name);
-                    self.diagnostics.error(
-                        span.start,
-                        format!("unknown type name '{}'", name_str),
-                    );
+                    self.diagnostics
+                        .error(span.start, format!("unknown type name '{}'", name_str));
                     CType::Error
                 }
             }
@@ -1718,7 +1795,7 @@ impl<'a> SemanticAnalyzer<'a> {
     /// Used for array size evaluation in declarations like `int arr[1024]`.
     /// Supports integer literals and simple binary/unary operations on constants.
     fn try_eval_array_size(expr: &crate::frontend::parser::ast::Expression) -> usize {
-        use crate::frontend::parser::ast::{Expression, BinaryOp, UnaryOp};
+        use crate::frontend::parser::ast::{BinaryOp, Expression, UnaryOp};
         match expr {
             Expression::IntegerLiteral { value, .. } => *value as usize,
             Expression::UnaryPrefix { op, operand, .. } => {
@@ -1732,7 +1809,9 @@ impl<'a> SemanticAnalyzer<'a> {
                     _ => 0,
                 }
             }
-            Expression::Binary { op, left, right, .. } => {
+            Expression::Binary {
+                op, left, right, ..
+            } => {
                 let l = Self::try_eval_array_size(left);
                 let r = Self::try_eval_array_size(right);
                 match op {
@@ -1828,7 +1907,7 @@ impl<'a> SemanticAnalyzer<'a> {
         base: CType,
         direct: &crate::frontend::parser::ast::DirectAbstractDeclarator,
     ) -> CType {
-        use crate::frontend::parser::ast::{DirectAbstractDeclarator, ArraySize};
+        use crate::frontend::parser::ast::{ArraySize, DirectAbstractDeclarator};
 
         match direct {
             DirectAbstractDeclarator::Parenthesized(inner_abs) => {
@@ -1836,7 +1915,10 @@ impl<'a> SemanticAnalyzer<'a> {
                 self.apply_abstract_declarator(base, inner_abs)
             }
 
-            DirectAbstractDeclarator::Function { base: inner_base, params } => {
+            DirectAbstractDeclarator::Function {
+                base: inner_base,
+                params,
+            } => {
                 // Function suffix: create a function type with `base` as the
                 // return type and `params` as the parameter types.
                 let param_types: Vec<crate::sema::types::FunctionParam> = params
@@ -1880,7 +1962,11 @@ impl<'a> SemanticAnalyzer<'a> {
                 }
             }
 
-            DirectAbstractDeclarator::Array { base: inner_base, size, .. } => {
+            DirectAbstractDeclarator::Array {
+                base: inner_base,
+                size,
+                ..
+            } => {
                 // Array suffix: create an array type.
                 let array_size = match size {
                     ArraySize::Fixed(expr) => {
@@ -1911,11 +1997,7 @@ impl<'a> SemanticAnalyzer<'a> {
     }
 
     /// Applies a declarator's pointer/array/function modifiers to a base type.
-    fn apply_declarator_to_type(
-        &mut self,
-        base: &CType,
-        declarator: &Declarator,
-    ) -> CType {
+    fn apply_declarator_to_type(&mut self, base: &CType, declarator: &Declarator) -> CType {
         let mut result = base.clone();
 
         // Apply pointer modifiers.
@@ -1934,18 +2016,12 @@ impl<'a> SemanticAnalyzer<'a> {
     }
 
     /// Applies direct declarator modifiers (array sizes, function parameters).
-    fn apply_direct_declarator(
-        &mut self,
-        base: &CType,
-        direct: &DirectDeclarator,
-    ) -> CType {
+    fn apply_direct_declarator(&mut self, base: &CType, direct: &DirectDeclarator) -> CType {
         match direct {
             DirectDeclarator::Identifier(_) => base.clone(),
             DirectDeclarator::Abstract => base.clone(),
 
-            DirectDeclarator::Parenthesized(inner) => {
-                self.apply_declarator_to_type(base, inner)
-            }
+            DirectDeclarator::Parenthesized(inner) => self.apply_declarator_to_type(base, inner),
 
             DirectDeclarator::Array {
                 base: inner_base,
@@ -1963,9 +2039,7 @@ impl<'a> SemanticAnalyzer<'a> {
                     crate::frontend::parser::ast::ArraySize::Unspecified => {
                         types::ArraySize::Incomplete
                     }
-                    crate::frontend::parser::ast::ArraySize::VLA => {
-                        types::ArraySize::Variable
-                    }
+                    crate::frontend::parser::ast::ArraySize::VLA => types::ArraySize::Variable,
                     crate::frontend::parser::ast::ArraySize::Static(expr) => {
                         let _ty = self.analyze_expression(expr);
                         let size_val = Self::try_eval_array_size(expr);
@@ -2015,8 +2089,7 @@ impl<'a> SemanticAnalyzer<'a> {
 
                 let mut func_params = Vec::new();
                 for param in &params.params {
-                    let param_type =
-                        self.resolve_type_specifier(&param.specifiers.type_specifier);
+                    let param_type = self.resolve_type_specifier(&param.specifiers.type_specifier);
                     let adjusted = if let Some(ref decl) = param.declarator {
                         self.apply_declarator_to_type(&param_type, decl)
                     } else {
@@ -2030,10 +2103,7 @@ impl<'a> SemanticAnalyzer<'a> {
                         .as_ref()
                         .and_then(|d| self.extract_declarator_name(d))
                         .map(|id| self.interner.resolve(id).to_string());
-                    func_params.push(FunctionParam {
-                        name,
-                        ty: adjusted,
-                    });
+                    func_params.push(FunctionParam { name, ty: adjusted });
                 }
                 let mut result = CType::Function(FunctionType {
                     return_type: Box::new(return_type),
@@ -2063,21 +2133,12 @@ impl<'a> SemanticAnalyzer<'a> {
     }
 
     /// Extracts the identifier name from a direct declarator.
-    fn extract_direct_declarator_name(
-        &self,
-        direct: &DirectDeclarator,
-    ) -> Option<InternId> {
+    fn extract_direct_declarator_name(&self, direct: &DirectDeclarator) -> Option<InternId> {
         match direct {
             DirectDeclarator::Identifier(id) => Some(*id),
-            DirectDeclarator::Parenthesized(inner) => {
-                self.extract_declarator_name(inner)
-            }
-            DirectDeclarator::Array { base, .. } => {
-                self.extract_direct_declarator_name(base)
-            }
-            DirectDeclarator::Function { base, .. } => {
-                self.extract_direct_declarator_name(base)
-            }
+            DirectDeclarator::Parenthesized(inner) => self.extract_declarator_name(inner),
+            DirectDeclarator::Array { base, .. } => self.extract_direct_declarator_name(base),
+            DirectDeclarator::Function { base, .. } => self.extract_direct_declarator_name(base),
             DirectDeclarator::Abstract => None,
         }
     }
@@ -2111,23 +2172,13 @@ impl<'a> SemanticAnalyzer<'a> {
     }
 
     /// Analyzes an initializer for type compatibility with the target type.
-    fn analyze_initializer(
-        &mut self,
-        init: &Initializer,
-        target_type: &CType,
-        span: SourceSpan,
-    ) {
+    fn analyze_initializer(&mut self, init: &Initializer, target_type: &CType, span: SourceSpan) {
         match init {
             Initializer::Expression(expr) => {
                 let init_type = self.analyze_expression(expr);
                 // Use check_initialization instead of check_assignment
                 // because initializing a const variable is valid in C.
-                type_check::check_initialization(
-                    target_type,
-                    &init_type,
-                    self.diagnostics,
-                    span,
-                );
+                type_check::check_initialization(target_type, &init_type, self.diagnostics, span);
             }
             Initializer::Compound { items, .. } => {
                 // Compound initializers: validate each item against the
@@ -2144,11 +2195,7 @@ impl<'a> SemanticAnalyzer<'a> {
                     CType::Struct(st) if !st.is_union => {
                         for (i, item) in items.iter().enumerate() {
                             if i < st.fields.len() {
-                                self.analyze_initializer(
-                                    &item.initializer,
-                                    &st.fields[i].ty,
-                                    span,
-                                );
+                                self.analyze_initializer(&item.initializer, &st.fields[i].ty, span);
                             }
                         }
                     }
@@ -2156,11 +2203,7 @@ impl<'a> SemanticAnalyzer<'a> {
                         // Union initialization: only the first member.
                         if let Some(item) = items.first() {
                             if let Some(field) = st.fields.first() {
-                                self.analyze_initializer(
-                                    &item.initializer,
-                                    &field.ty,
-                                    span,
-                                );
+                                self.analyze_initializer(&item.initializer, &field.ty, span);
                             }
                         }
                     }
@@ -2193,8 +2236,25 @@ impl<'a> SemanticAnalyzer<'a> {
                     declarators,
                     ..
                 } => {
-                    let base_type =
-                        self.resolve_type_specifier(&specifiers.type_specifier);
+                    let base_type = self.resolve_type_specifier(&specifiers.type_specifier);
+
+                    // C11 §6.7.2.1p13: If the member declaration list
+                    // has no declarators and the type is a struct/union,
+                    // this is an anonymous struct/union member whose
+                    // fields are promoted into the enclosing type.
+                    if declarators.is_empty() {
+                        if matches!(base_type.unqualified().canonical(), CType::Struct(_)) {
+                            fields.push(StructField {
+                                name: None,
+                                ty: base_type.clone(),
+                                bit_width: None,
+                                offset: 0,
+                            });
+                        }
+                        // Else: bare type specifier like `int;` — valid
+                        // but has no effect.
+                    }
+
                     for field_decl in declarators {
                         let field_type = if let Some(ref decl) = field_decl.declarator {
                             self.apply_declarator_to_type(&base_type, decl)
@@ -2215,9 +2275,7 @@ impl<'a> SemanticAnalyzer<'a> {
                         });
                     }
                 }
-                crate::frontend::parser::ast::StructMember::Anonymous {
-                    type_spec, ..
-                } => {
+                crate::frontend::parser::ast::StructMember::Anonymous { type_spec, .. } => {
                     let anon_type = self.resolve_type_specifier(type_spec);
                     fields.push(StructField {
                         name: None,
@@ -2240,7 +2298,7 @@ impl<'a> SemanticAnalyzer<'a> {
             tag: tag_name,
             fields,
             is_union,
-            is_packed: false, // TODO: check __attribute__((packed))
+            is_packed: false,
             custom_alignment: None,
             is_complete: true,
         };
@@ -2274,10 +2332,7 @@ impl<'a> SemanticAnalyzer<'a> {
     }
 
     /// Analyzes a union definition.
-    fn analyze_union_def(
-        &mut self,
-        union_def: &crate::frontend::parser::ast::UnionDef,
-    ) -> CType {
+    fn analyze_union_def(&mut self, union_def: &crate::frontend::parser::ast::UnionDef) -> CType {
         // Unions reuse the struct analysis with is_union = true.
         // Convert UnionDef to the same struct analysis flow.
         let tag_name = union_def
@@ -2292,8 +2347,25 @@ impl<'a> SemanticAnalyzer<'a> {
                     declarators,
                     ..
                 } => {
-                    let base_type =
-                        self.resolve_type_specifier(&specifiers.type_specifier);
+                    let base_type = self.resolve_type_specifier(&specifiers.type_specifier);
+
+                    // C11 §6.7.2.1p13: If the member declaration list
+                    // has no declarators and the type is a struct/union,
+                    // this is an anonymous struct/union member whose
+                    // fields are promoted into the enclosing type.
+                    if declarators.is_empty() {
+                        if matches!(base_type.unqualified().canonical(), CType::Struct(_)) {
+                            fields.push(StructField {
+                                name: None,
+                                ty: base_type.clone(),
+                                bit_width: None,
+                                offset: 0,
+                            });
+                        }
+                        // Else: bare type specifier like `int;` — valid
+                        // but has no effect.
+                    }
+
                     for field_decl in declarators {
                         let field_type = if let Some(ref decl) = field_decl.declarator {
                             self.apply_declarator_to_type(&base_type, decl)
@@ -2314,9 +2386,7 @@ impl<'a> SemanticAnalyzer<'a> {
                         });
                     }
                 }
-                crate::frontend::parser::ast::StructMember::Anonymous {
-                    type_spec, ..
-                } => {
+                crate::frontend::parser::ast::StructMember::Anonymous { type_spec, .. } => {
                     let anon_type = self.resolve_type_specifier(type_spec);
                     fields.push(StructField {
                         name: None,
@@ -2367,13 +2437,8 @@ impl<'a> SemanticAnalyzer<'a> {
     }
 
     /// Analyzes an enum definition and returns the corresponding CType.
-    fn analyze_enum_def(
-        &mut self,
-        enum_def: &crate::frontend::parser::ast::EnumDef,
-    ) -> CType {
-        let tag_name = enum_def
-            .tag
-            .map(|id| self.interner.resolve(id).to_string());
+    fn analyze_enum_def(&mut self, enum_def: &crate::frontend::parser::ast::EnumDef) -> CType {
+        let tag_name = enum_def.tag.map(|id| self.interner.resolve(id).to_string());
 
         let mut variants = Vec::new();
         let mut next_value: i64 = 0;
@@ -2388,10 +2453,7 @@ impl<'a> SemanticAnalyzer<'a> {
                 next_value
             };
 
-            variants.push((
-                self.interner.resolve(variant.name).to_string(),
-                value,
-            ));
+            variants.push((self.interner.resolve(variant.name).to_string(), value));
 
             // Register enum constant in ordinary namespace.
             let _ = self.symbol_table.insert_enum_constant(

@@ -19,21 +19,15 @@
 
 use std::collections::HashMap;
 
-use crate::codegen::{MachineInstr, MachineOperand, align_to};
-use crate::codegen::regalloc::{PhysReg, AllocationResult};
-use crate::ir::{IrType, Function, Value, Callee};
+use crate::codegen::regalloc::{AllocationResult, PhysReg};
+use crate::codegen::{align_to, MachineInstr, MachineOperand};
 use crate::driver::target::TargetConfig;
+use crate::ir::{Callee, Function, IrType, Value};
 
 // Re-import RISC-V register constants from the parent module
 use super::{
-    RA, SP, FP, ZERO,
-    X0, X5, X8, X9,
-    X10, X11, X12, X13, X14, X15, X16, X17,
-    X18, X27,
-    F8, F9,
-    F10, F11, F12, F13, F14, F15, F16, F17,
-    F18, F27,
-    riscv64_register_info,
+    riscv64_register_info, F10, F11, F12, F13, F14, F15, F16, F17, F18, F27, F8, F9, FP, RA, SP,
+    X0, X10, X11, X12, X13, X14, X15, X16, X17, X18, X27, X5, X8, X9, ZERO,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -265,59 +259,74 @@ fn mi(opcode: u32, operands: Vec<MachineOperand>) -> MachineInstr {
 
 /// Emit an `addi rd, rs1, imm` instruction.
 fn emit_addi(rd: PhysReg, rs1: PhysReg, imm: i32) -> MachineInstr {
-    mi(OP_ADDI, vec![
-        MachineOperand::Register(rd),
-        MachineOperand::Register(rs1),
-        MachineOperand::Immediate(imm as i64),
-    ])
+    mi(
+        OP_ADDI,
+        vec![
+            MachineOperand::Register(rd),
+            MachineOperand::Register(rs1),
+            MachineOperand::Immediate(imm as i64),
+        ],
+    )
 }
 
 /// Emit `sd rs2, offset(rs1)` — store 8-byte doubleword.
 fn emit_sd(rs2: PhysReg, base: PhysReg, offset: i32) -> MachineInstr {
-    mi(OP_SD, vec![
-        MachineOperand::Register(rs2),
-        MachineOperand::Memory { base, offset },
-    ])
+    mi(
+        OP_SD,
+        vec![
+            MachineOperand::Register(rs2),
+            MachineOperand::Memory { base, offset },
+        ],
+    )
 }
 
 /// Emit `ld rd, offset(rs1)` — load 8-byte doubleword.
 fn emit_ld(rd: PhysReg, base: PhysReg, offset: i32) -> MachineInstr {
-    mi(OP_LD, vec![
-        MachineOperand::Register(rd),
-        MachineOperand::Memory { base, offset },
-    ])
+    mi(
+        OP_LD,
+        vec![
+            MachineOperand::Register(rd),
+            MachineOperand::Memory { base, offset },
+        ],
+    )
 }
 
 /// Emit `fsd rs2, offset(rs1)` — store double-precision float.
 fn emit_fsd(rs2: PhysReg, base: PhysReg, offset: i32) -> MachineInstr {
-    mi(OP_FSD, vec![
-        MachineOperand::Register(rs2),
-        MachineOperand::Memory { base, offset },
-    ])
+    mi(
+        OP_FSD,
+        vec![
+            MachineOperand::Register(rs2),
+            MachineOperand::Memory { base, offset },
+        ],
+    )
 }
 
 /// Emit `fld rd, offset(rs1)` — load double-precision float.
 fn emit_fld(rd: PhysReg, base: PhysReg, offset: i32) -> MachineInstr {
-    mi(OP_FLD, vec![
-        MachineOperand::Register(rd),
-        MachineOperand::Memory { base, offset },
-    ])
+    mi(
+        OP_FLD,
+        vec![
+            MachineOperand::Register(rd),
+            MachineOperand::Memory { base, offset },
+        ],
+    )
 }
 
 /// Emit `mv rd, rs1` (pseudo for `addi rd, rs, 0`).
 fn emit_mv(rd: PhysReg, rs1: PhysReg) -> MachineInstr {
-    mi(OP_MV, vec![
-        MachineOperand::Register(rd),
-        MachineOperand::Register(rs1),
-    ])
+    mi(
+        OP_MV,
+        vec![MachineOperand::Register(rd), MachineOperand::Register(rs1)],
+    )
 }
 
 /// Emit `fmv.d rd, rs1` — move double-precision FP register.
 fn emit_fmv_d(rd: PhysReg, rs1: PhysReg) -> MachineInstr {
-    mi(OP_FMV_D, vec![
-        MachineOperand::Register(rd),
-        MachineOperand::Register(rs1),
-    ])
+    mi(
+        OP_FMV_D,
+        vec![MachineOperand::Register(rd), MachineOperand::Register(rs1)],
+    )
 }
 
 /// Emit a large-frame SP adjustment when |offset| > 2047.
@@ -329,8 +338,8 @@ fn emit_fmv_d(rd: PhysReg, rs1: PhysReg) -> MachineInstr {
 ///   add  sp, sp, t0
 fn emit_large_sp_adjust(offset: i32) -> Vec<MachineInstr> {
     let t0 = X5; // t0
-    // Compute hi20 and lo12 with sign extension correction:
-    // If lo12 is negative (bit 11 set), the LUI constant needs +1 page.
+                 // Compute hi20 and lo12 with sign extension correction:
+                 // If lo12 is negative (bit 11 set), the LUI constant needs +1 page.
     let lo12 = ((offset as i32) << 20) >> 20; // sign-extend low 12 bits
     let hi20 = if lo12 < 0 {
         ((offset as i64 + 0x800) >> 12) as i32
@@ -338,16 +347,22 @@ fn emit_large_sp_adjust(offset: i32) -> Vec<MachineInstr> {
         (offset >> 12) as i32
     };
     vec![
-        mi(OP_LUI, vec![
-            MachineOperand::Register(t0),
-            MachineOperand::Immediate(hi20 as i64),
-        ]),
+        mi(
+            OP_LUI,
+            vec![
+                MachineOperand::Register(t0),
+                MachineOperand::Immediate(hi20 as i64),
+            ],
+        ),
         emit_addi(t0, t0, lo12),
-        mi(OP_ADD, vec![
-            MachineOperand::Register(SP),
-            MachineOperand::Register(SP),
-            MachineOperand::Register(t0),
-        ]),
+        mi(
+            OP_ADD,
+            vec![
+                MachineOperand::Register(SP),
+                MachineOperand::Register(SP),
+                MachineOperand::Register(t0),
+            ],
+        ),
     ]
 }
 
@@ -390,7 +405,13 @@ pub fn classify_struct_fields(struct_type: &IrType, target: &TargetConfig) -> St
     let mut field_order: Vec<bool> = Vec::new(); // true = float, false = integer
 
     for field in fields.iter() {
-        classify_field_recursive(field, target, &mut int_count, &mut float_count, &mut field_order);
+        classify_field_recursive(
+            field,
+            target,
+            &mut int_count,
+            &mut float_count,
+            &mut field_order,
+        );
     }
 
     // If there are more than 2 "slots", fall back to integer passing
@@ -470,10 +491,7 @@ fn classify_field_recursive(
 /// **Variadic arguments**: When the callee is variadic, all arguments past the
 /// last named parameter are forced into integer registers (or the stack).
 /// Floats in variadic positions are bit-cast to integer representation.
-pub fn classify_arguments(
-    params: &[(String, IrType)],
-    target: &TargetConfig,
-) -> Vec<ArgClass> {
+pub fn classify_arguments(params: &[(String, IrType)], target: &TargetConfig) -> Vec<ArgClass> {
     let xlen: usize = target.pointer_size as usize; // 8 for RV64
     let mut int_reg_idx: usize = 0;
     let mut fp_reg_idx: usize = 0;
@@ -527,19 +545,21 @@ fn classify_single_argument(
         }
 
         // ── Struct types ────────────────────────────────────────────
-        IrType::Struct { .. } => {
-            classify_struct_argument(ty, target, int_reg_idx, fp_reg_idx, stack_offset, xlen, is_variadic)
-        }
+        IrType::Struct { .. } => classify_struct_argument(
+            ty,
+            target,
+            int_reg_idx,
+            fp_reg_idx,
+            stack_offset,
+            xlen,
+            is_variadic,
+        ),
 
         // ── Void (should not appear as a parameter, but handle gracefully) ──
-        IrType::Void => {
-            allocate_int_reg_or_stack(int_reg_idx, stack_offset, xlen)
-        }
+        IrType::Void => allocate_int_reg_or_stack(int_reg_idx, stack_offset, xlen),
 
         // ── All other types: integer, pointer, bool, array, etc. ───
-        _ => {
-            allocate_int_reg_or_stack(int_reg_idx, stack_offset, xlen)
-        }
+        _ => allocate_int_reg_or_stack(int_reg_idx, stack_offset, xlen),
     }
 }
 
@@ -654,7 +674,9 @@ fn classify_struct_argument(
         }
 
         // Variadic: all struct-like args go through integer registers
-        StructArgClass::AllFloat(_) | StructArgClass::MixedIntFloat | StructArgClass::MixedFloatInt => {
+        StructArgClass::AllFloat(_)
+        | StructArgClass::MixedIntFloat
+        | StructArgClass::MixedFloatInt => {
             classify_struct_as_integer(ty, target, int_reg_idx, stack_offset, xlen)
         }
     }
@@ -796,8 +818,13 @@ pub fn compute_frame_layout(
     let arg_area_size: u32 = compute_outgoing_arg_area(function, target);
 
     // Total raw frame size
-    let raw_total = ra_size + fp_save_size + gpr_save_size + fpr_save_size
-        + spill_size + locals_size + arg_area_size;
+    let raw_total = ra_size
+        + fp_save_size
+        + gpr_save_size
+        + fpr_save_size
+        + spill_size
+        + locals_size
+        + arg_area_size;
 
     // Align to 16 bytes
     let frame_size = align_to(raw_total as u64, stack_align as u64) as u32;
@@ -952,16 +979,22 @@ pub fn generate_prologue(
             } else {
                 (frame_i32 >> 12) as i32
             };
-            instrs.push(mi(OP_LUI, vec![
-                MachineOperand::Register(X5),
-                MachineOperand::Immediate(hi20 as i64),
-            ]));
+            instrs.push(mi(
+                OP_LUI,
+                vec![
+                    MachineOperand::Register(X5),
+                    MachineOperand::Immediate(hi20 as i64),
+                ],
+            ));
             instrs.push(emit_addi(X5, X5, lo12));
-            instrs.push(mi(OP_ADD, vec![
-                MachineOperand::Register(FP),
-                MachineOperand::Register(SP),
-                MachineOperand::Register(X5),
-            ]));
+            instrs.push(mi(
+                OP_ADD,
+                vec![
+                    MachineOperand::Register(FP),
+                    MachineOperand::Register(SP),
+                    MachineOperand::Register(X5),
+                ],
+            ));
         }
     }
 
@@ -1083,10 +1116,13 @@ pub fn generate_argument_loads(
                             instrs.push(emit_fmv_d(dest, src_reg));
                         } else {
                             // FP to int register: use FMV.X.D
-                            instrs.push(mi(OP_FMV_X_D, vec![
-                                MachineOperand::Register(dest),
-                                MachineOperand::Register(src_reg),
-                            ]));
+                            instrs.push(mi(
+                                OP_FMV_X_D,
+                                vec![
+                                    MachineOperand::Register(dest),
+                                    MachineOperand::Register(src_reg),
+                                ],
+                            ));
                         }
                     }
                 }
@@ -1095,7 +1131,8 @@ pub fn generate_argument_loads(
             ArgClass::Stack(offset) => {
                 if let Some(dest) = dest_reg {
                     // Determine if float or integer load based on the parameter type
-                    let is_fp = idx < params.len() && (params[idx].1 == IrType::F32 || params[idx].1 == IrType::F64);
+                    let is_fp = idx < params.len()
+                        && (params[idx].1 == IrType::F32 || params[idx].1 == IrType::F64);
                     if is_fp && is_fp_register(dest) {
                         instrs.push(emit_fld(dest, FP, offset));
                     } else {
@@ -1198,7 +1235,10 @@ fn get_param_dest_register(param_idx: usize, alloc_result: &AllocationResult) ->
 }
 
 /// Attempt to find a floating-point destination register for a paired argument.
-fn get_param_fp_dest_register(param_idx: usize, alloc_result: &AllocationResult) -> Option<PhysReg> {
+fn get_param_fp_dest_register(
+    param_idx: usize,
+    alloc_result: &AllocationResult,
+) -> Option<PhysReg> {
     // For paired arguments, the FP component typically comes after the int component
     // in the live interval list. We try param_idx + some offset.
     let fp_idx = param_idx + alloc_result.intervals.len() / 2;
@@ -1252,10 +1292,13 @@ pub fn generate_call_sequence(
                     // FP regs exhausted; pass in int reg via FMV.X.D
                     let dest = ARG_INT_REGS[int_reg_idx];
                     int_reg_idx += 1;
-                    instrs.push(mi(OP_FMV_X_D, vec![
-                        MachineOperand::Register(dest),
-                        MachineOperand::Register(reg),
-                    ]));
+                    instrs.push(mi(
+                        OP_FMV_X_D,
+                        vec![
+                            MachineOperand::Register(dest),
+                            MachineOperand::Register(reg),
+                        ],
+                    ));
                 } else {
                     // Stack: store double to outgoing arg area
                     instrs.push(emit_fsd(reg, SP, stack_offset));
@@ -1284,10 +1327,10 @@ pub fn generate_call_sequence(
                 if int_reg_idx < 8 {
                     let dest = ARG_INT_REGS[int_reg_idx];
                     int_reg_idx += 1;
-                    instrs.push(mi(OP_LI, vec![
-                        MachineOperand::Register(dest),
-                        MachineOperand::Immediate(0),
-                    ]));
+                    instrs.push(mi(
+                        OP_LI,
+                        vec![MachineOperand::Register(dest), MachineOperand::Immediate(0)],
+                    ));
                 } else {
                     instrs.push(emit_sd(ZERO, SP, stack_offset));
                     stack_offset += xlen as i32;
@@ -1299,25 +1342,29 @@ pub fn generate_call_sequence(
     // Phase 2: Emit the call instruction.
     match callee {
         Callee::Direct(name) => {
-            instrs.push(mi(OP_CALL, vec![
-                MachineOperand::Symbol(name.clone()),
-            ]));
+            instrs.push(mi(OP_CALL, vec![MachineOperand::Symbol(name.clone())]));
         }
         Callee::Indirect(val) => {
             // Load the function pointer from value_map and call via JALR
             if let Some(&target_reg) = value_map.get(val) {
-                instrs.push(mi(OP_JALR, vec![
-                    MachineOperand::Register(RA),
-                    MachineOperand::Register(target_reg),
-                    MachineOperand::Immediate(0),
-                ]));
+                instrs.push(mi(
+                    OP_JALR,
+                    vec![
+                        MachineOperand::Register(RA),
+                        MachineOperand::Register(target_reg),
+                        MachineOperand::Immediate(0),
+                    ],
+                ));
             } else {
                 // Fallback: call through x0 (this should not happen in practice)
-                instrs.push(mi(OP_JALR, vec![
-                    MachineOperand::Register(RA),
-                    MachineOperand::Register(X0),
-                    MachineOperand::Immediate(0),
-                ]));
+                instrs.push(mi(
+                    OP_JALR,
+                    vec![
+                        MachineOperand::Register(RA),
+                        MachineOperand::Register(X0),
+                        MachineOperand::Immediate(0),
+                    ],
+                ));
             }
         }
     }
@@ -1371,7 +1418,11 @@ mod tests {
         }
     }
 
-    fn make_basic_block(id: u32, label: &str, term: crate::ir::Terminator) -> crate::ir::BasicBlock {
+    fn make_basic_block(
+        id: u32,
+        label: &str,
+        term: crate::ir::Terminator,
+    ) -> crate::ir::BasicBlock {
         crate::ir::BasicBlock {
             id: crate::ir::BlockId(id),
             label: label.to_string(),
@@ -1389,13 +1440,18 @@ mod tests {
             return_type: ret,
             params,
             param_values: Vec::new(),
-            blocks: vec![
-                make_basic_block(0, "entry", crate::ir::Terminator::Return { value: None }),
-            ],
+            blocks: vec![make_basic_block(
+                0,
+                "entry",
+                crate::ir::Terminator::Return { value: None },
+            )],
             entry_block: crate::ir::BlockId(0),
             is_definition: true,
-is_static: false,
-is_weak: false,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         }
     }
 
@@ -1406,15 +1462,22 @@ is_weak: false,
             params: params.clone(),
             param_values: Vec::new(),
             blocks: vec![
-                make_basic_block(0, "entry", crate::ir::Terminator::Branch {
-                    target: crate::ir::BlockId(1),
-                }),
+                make_basic_block(
+                    0,
+                    "entry",
+                    crate::ir::Terminator::Branch {
+                        target: crate::ir::BlockId(1),
+                    },
+                ),
                 make_basic_block(1, "exit", crate::ir::Terminator::Return { value: None }),
             ],
             entry_block: crate::ir::BlockId(0),
             is_definition: true,
-is_static: false,
-is_weak: false,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         }
     }
 
@@ -1450,11 +1513,11 @@ is_weak: false,
 
     #[test]
     fn test_register_conventions_special_regs() {
-        assert_eq!(RA, PhysReg(1));   // x1
-        assert_eq!(SP, PhysReg(2));   // x2
-        assert_eq!(FP, PhysReg(8));   // x8 = s0
+        assert_eq!(RA, PhysReg(1)); // x1
+        assert_eq!(SP, PhysReg(2)); // x2
+        assert_eq!(FP, PhysReg(8)); // x8 = s0
         assert_eq!(ZERO, PhysReg(0)); // x0
-        assert_eq!(X0, ZERO);         // x0 = zero
+        assert_eq!(X0, ZERO); // x0 = zero
     }
 
     #[test]
@@ -1472,8 +1535,8 @@ is_weak: false,
     #[test]
     fn test_callee_saved_gprs() {
         // s0–s11 = x8–x9, x18–x27
-        assert_eq!(CALLEE_SAVED_GPRS[0], PhysReg(8));  // s0
-        assert_eq!(CALLEE_SAVED_GPRS[1], PhysReg(9));  // s1
+        assert_eq!(CALLEE_SAVED_GPRS[0], PhysReg(8)); // s0
+        assert_eq!(CALLEE_SAVED_GPRS[1], PhysReg(9)); // s1
         assert_eq!(CALLEE_SAVED_GPRS[2], PhysReg(18)); // s2
         assert_eq!(CALLEE_SAVED_GPRS[11], PhysReg(27)); // s11
     }
@@ -1481,18 +1544,18 @@ is_weak: false,
     #[test]
     fn test_callee_saved_fprs() {
         // fs0–fs11 = f8–f9, f18–f27 → PhysReg(40–41, 50–59)
-        assert_eq!(CALLEE_SAVED_FPRS[0], PhysReg(40));  // fs0
-        assert_eq!(CALLEE_SAVED_FPRS[1], PhysReg(41));  // fs1
-        assert_eq!(CALLEE_SAVED_FPRS[2], PhysReg(50));  // fs2
+        assert_eq!(CALLEE_SAVED_FPRS[0], PhysReg(40)); // fs0
+        assert_eq!(CALLEE_SAVED_FPRS[1], PhysReg(41)); // fs1
+        assert_eq!(CALLEE_SAVED_FPRS[2], PhysReg(50)); // fs2
         assert_eq!(CALLEE_SAVED_FPRS[11], PhysReg(59)); // fs11
     }
 
     #[test]
     fn test_is_fp_register() {
-        assert!(!is_fp_register(PhysReg(0)));  // x0
+        assert!(!is_fp_register(PhysReg(0))); // x0
         assert!(!is_fp_register(PhysReg(31))); // x31
-        assert!(is_fp_register(PhysReg(32)));  // f0
-        assert!(is_fp_register(PhysReg(63)));  // f31
+        assert!(is_fp_register(PhysReg(32))); // f0
+        assert!(is_fp_register(PhysReg(63))); // f31
     }
 
     // ───────────────────────────────────────────────────────────────────
@@ -1541,9 +1604,8 @@ is_weak: false,
 
     #[test]
     fn test_classify_8_integer_args() {
-        let params: Vec<(String, IrType)> = (0..8)
-            .map(|i| (format!("x{}", i), IrType::I64))
-            .collect();
+        let params: Vec<(String, IrType)> =
+            (0..8).map(|i| (format!("x{}", i), IrType::I64)).collect();
         let classes = classify_arguments(&params, &rv64_target());
         assert_eq!(classes.len(), 8);
         for (i, class) in classes.iter().enumerate() {
@@ -1553,9 +1615,8 @@ is_weak: false,
 
     #[test]
     fn test_classify_9_integer_args_overflow() {
-        let params: Vec<(String, IrType)> = (0..9)
-            .map(|i| (format!("x{}", i), IrType::I64))
-            .collect();
+        let params: Vec<(String, IrType)> =
+            (0..9).map(|i| (format!("x{}", i), IrType::I64)).collect();
         let classes = classify_arguments(&params, &rv64_target());
         assert_eq!(classes.len(), 9);
         // First 8 in registers
@@ -1568,9 +1629,8 @@ is_weak: false,
 
     #[test]
     fn test_classify_8_float_args() {
-        let params: Vec<(String, IrType)> = (0..8)
-            .map(|i| (format!("f{}", i), IrType::F64))
-            .collect();
+        let params: Vec<(String, IrType)> =
+            (0..8).map(|i| (format!("f{}", i), IrType::F64)).collect();
         let classes = classify_arguments(&params, &rv64_target());
         assert_eq!(classes.len(), 8);
         for (i, class) in classes.iter().enumerate() {
@@ -1589,9 +1649,9 @@ is_weak: false,
         let classes = classify_arguments(&params, &rv64_target());
         assert_eq!(classes.len(), 4);
         assert_eq!(classes[0], ArgClass::IntegerReg(X10)); // a0
-        assert_eq!(classes[1], ArgClass::FloatReg(F10));   // fa0
+        assert_eq!(classes[1], ArgClass::FloatReg(F10)); // fa0
         assert_eq!(classes[2], ArgClass::IntegerReg(X11)); // a1
-        assert_eq!(classes[3], ArgClass::FloatReg(F11));   // fa1
+        assert_eq!(classes[3], ArgClass::FloatReg(F11)); // fa1
     }
 
     #[test]
@@ -1746,33 +1806,51 @@ is_weak: false,
 
     #[test]
     fn test_return_void() {
-        assert_eq!(classify_return(&IrType::Void, &rv64_target()), ReturnClass::Void);
+        assert_eq!(
+            classify_return(&IrType::Void, &rv64_target()),
+            ReturnClass::Void
+        );
     }
 
     #[test]
     fn test_return_i32() {
-        assert_eq!(classify_return(&IrType::I32, &rv64_target()), ReturnClass::IntegerReg);
+        assert_eq!(
+            classify_return(&IrType::I32, &rv64_target()),
+            ReturnClass::IntegerReg
+        );
     }
 
     #[test]
     fn test_return_i64() {
-        assert_eq!(classify_return(&IrType::I64, &rv64_target()), ReturnClass::IntegerReg);
+        assert_eq!(
+            classify_return(&IrType::I64, &rv64_target()),
+            ReturnClass::IntegerReg
+        );
     }
 
     #[test]
     fn test_return_pointer() {
         let ptr = IrType::Pointer(Box::new(IrType::I8));
-        assert_eq!(classify_return(&ptr, &rv64_target()), ReturnClass::IntegerReg);
+        assert_eq!(
+            classify_return(&ptr, &rv64_target()),
+            ReturnClass::IntegerReg
+        );
     }
 
     #[test]
     fn test_return_f64() {
-        assert_eq!(classify_return(&IrType::F64, &rv64_target()), ReturnClass::FloatReg);
+        assert_eq!(
+            classify_return(&IrType::F64, &rv64_target()),
+            ReturnClass::FloatReg
+        );
     }
 
     #[test]
     fn test_return_f32() {
-        assert_eq!(classify_return(&IrType::F32, &rv64_target()), ReturnClass::FloatReg);
+        assert_eq!(
+            classify_return(&IrType::F32, &rv64_target()),
+            ReturnClass::FloatReg
+        );
     }
 
     #[test]
@@ -1781,7 +1859,10 @@ is_weak: false,
             fields: vec![IrType::I64, IrType::I64],
             packed: false,
         };
-        assert_eq!(classify_return(&ty, &rv64_target()), ReturnClass::IntegerRegPair);
+        assert_eq!(
+            classify_return(&ty, &rv64_target()),
+            ReturnClass::IntegerRegPair
+        );
     }
 
     #[test]
@@ -1790,7 +1871,10 @@ is_weak: false,
             fields: vec![IrType::F64, IrType::F64],
             packed: false,
         };
-        assert_eq!(classify_return(&ty, &rv64_target()), ReturnClass::FloatRegPair);
+        assert_eq!(
+            classify_return(&ty, &rv64_target()),
+            ReturnClass::FloatRegPair
+        );
     }
 
     #[test]
@@ -1799,7 +1883,10 @@ is_weak: false,
             fields: vec![IrType::I64, IrType::F64],
             packed: false,
         };
-        assert_eq!(classify_return(&ty, &rv64_target()), ReturnClass::IntegerFloatPair);
+        assert_eq!(
+            classify_return(&ty, &rv64_target()),
+            ReturnClass::IntegerFloatPair
+        );
     }
 
     #[test]
@@ -1845,14 +1932,18 @@ is_weak: false,
 
     #[test]
     fn test_frame_layout_16byte_aligned() {
-        let params: Vec<(String, IrType)> = (0..3)
-            .map(|i| (format!("p{}", i), IrType::I64))
-            .collect();
+        let params: Vec<(String, IrType)> =
+            (0..3).map(|i| (format!("p{}", i), IrType::I64)).collect();
         let func = simple_function("aligned", params, IrType::I64);
         let alloc = alloc_with_callee_saved(vec![PhysReg(9)], 3); // s1, 3 spill slots
         let layout = compute_frame_layout(&func, &alloc, &rv64_target());
 
-        assert_eq!(layout.frame_size % 16, 0, "Frame size {} is not 16-byte aligned", layout.frame_size);
+        assert_eq!(
+            layout.frame_size % 16,
+            0,
+            "Frame size {} is not 16-byte aligned",
+            layout.frame_size
+        );
     }
 
     #[test]
@@ -1917,7 +2008,11 @@ is_weak: false,
         // Count LD (restore) instructions in epilogue (excluding RET and ADDI)
         let restores = epilogue.iter().filter(|i| i.opcode == OP_LD).count();
 
-        assert_eq!(saves, restores, "Save/restore count mismatch: {} saves, {} restores", saves, restores);
+        assert_eq!(
+            saves, restores,
+            "Save/restore count mismatch: {} saves, {} restores",
+            saves, restores
+        );
     }
 
     #[test]
@@ -1929,9 +2024,13 @@ is_weak: false,
         // Should contain an instruction that sets up FP
         // The FP setup uses ADDI or ADD with FP as destination
         let has_fp_setup = instrs.iter().any(|i| {
-            if i.operands.is_empty() { return false; }
+            if i.operands.is_empty() {
+                return false;
+            }
             match &i.operands[0] {
-                MachineOperand::Register(r) => *r == FP && (i.opcode == OP_ADDI || i.opcode == OP_ADD),
+                MachineOperand::Register(r) => {
+                    *r == FP && (i.opcode == OP_ADDI || i.opcode == OP_ADD)
+                }
                 _ => false,
             }
         });
@@ -2036,7 +2135,7 @@ is_weak: false,
     fn test_argument_loads_no_move_needed() {
         let params = vec![("x".into(), IrType::I64)];
         let classes = vec![ArgClass::IntegerReg(X10)]; // a0
-        // Allocator assigns the same register (a0 = X10)
+                                                       // Allocator assigns the same register (a0 = X10)
         let alloc = AllocationResult {
             intervals: vec![make_live_interval(0, Some(X10), false)],
             num_spill_slots: 0,
@@ -2051,7 +2150,7 @@ is_weak: false,
     fn test_argument_loads_move_needed() {
         let params = vec![("x".into(), IrType::I64)];
         let classes = vec![ArgClass::IntegerReg(X10)]; // a0
-        // Allocator assigns a different register (s1 = PhysReg(9))
+                                                       // Allocator assigns a different register (s1 = PhysReg(9))
         let alloc = AllocationResult {
             intervals: vec![make_live_interval(0, Some(PhysReg(9)), false)],
             num_spill_slots: 0,

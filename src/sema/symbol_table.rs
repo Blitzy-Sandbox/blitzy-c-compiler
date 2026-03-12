@@ -277,8 +277,14 @@ impl SymbolTable {
                 )
             });
 
-        if let Some((types_compatible, _existing_is_extern, _existing_tentative, existing_defined, existing_location, existing_kind)) =
-            redecl_info
+        if let Some((
+            types_compatible,
+            _existing_is_extern,
+            _existing_tentative,
+            existing_defined,
+            existing_location,
+            existing_kind,
+        )) = redecl_info
         {
             // Rule 1: Incompatible types → error (unless either is Error type,
             // which is_compatible already handles).
@@ -303,8 +309,8 @@ impl SymbolTable {
             //     tolerated (common in system headers that define static inline
             //     helper functions included through multiple header paths).
             if existing_defined && symbol.is_defined {
-                let both_typedefs = existing_kind == SymbolKind::Typedef
-                    && symbol.kind == SymbolKind::Typedef;
+                let both_typedefs =
+                    existing_kind == SymbolKind::Typedef && symbol.kind == SymbolKind::Typedef;
                 if both_typedefs && types_compatible {
                     // C11 compatible typedef redefinition — silently allow.
                     let frame = self.scopes.last_mut().unwrap();
@@ -314,17 +320,14 @@ impl SymbolTable {
                 // Allow static function/variable redefinition with compatible types.
                 // This handles cases like `static inline` functions defined in
                 // multiple headers that get included into the same TU.
-                let is_static_redef = types_compatible
-                    && symbol.storage_class == Some(StorageClass::Static);
+                let is_static_redef =
+                    types_compatible && symbol.storage_class == Some(StorageClass::Static);
                 if is_static_redef {
                     let frame = self.scopes.last_mut().unwrap();
                     frame.symbols.insert(name, symbol);
                     return Ok(());
                 }
-                diagnostics.error(
-                    symbol.location.start,
-                    format!("redefinition of '{}'", name),
-                );
+                diagnostics.error(symbol.location.start, format!("redefinition of '{}'", name));
                 return Err(());
             }
 
@@ -482,10 +485,7 @@ impl SymbolTable {
         if let Some((existing_defined, _existing_loc)) = existing_info {
             // If both are defined labels → duplicate label error.
             if existing_defined && symbol.is_defined {
-                diagnostics.error(
-                    symbol.location.start,
-                    format!("duplicate label '{}'", name),
-                );
+                diagnostics.error(symbol.location.start, format!("duplicate label '{}'", name));
                 return Err(());
             }
             // One is a forward reference (goto before label) and the other is
@@ -900,7 +900,9 @@ mod tests {
         let name_x = id(0);
 
         // File scope: int x
-        assert!(st.insert(name_x, make_var(name_x, int_ty()), &mut diag).is_ok());
+        assert!(st
+            .insert(name_x, make_var(name_x, int_ty()), &mut diag)
+            .is_ok());
         assert_eq!(st.depth(), 0);
 
         // Function scope
@@ -912,7 +914,9 @@ mod tests {
         // Block scope: float x
         st.push_scope(ScopeKind::Block);
         assert_eq!(st.depth(), 2);
-        assert!(st.insert(name_x, make_var(name_x, float_ty()), &mut diag).is_ok());
+        assert!(st
+            .insert(name_x, make_var(name_x, float_ty()), &mut diag)
+            .is_ok());
 
         // Lookup returns innermost (float)
         let found = st.lookup(name_x).unwrap();
@@ -935,7 +939,9 @@ mod tests {
         let mut diag = DiagnosticEmitter::new();
 
         let name_x = id(0);
-        assert!(st.insert(name_x, make_var(name_x, int_ty()), &mut diag).is_ok());
+        assert!(st
+            .insert(name_x, make_var(name_x, int_ty()), &mut diag)
+            .is_ok());
 
         // In file scope, x is found.
         assert!(st.lookup_in_current_scope(name_x).is_some());
@@ -960,7 +966,9 @@ mod tests {
         let name_x = id(0);
 
         // Insert int x (defined)
-        assert!(st.insert(name_x, make_var(name_x, int_ty()), &mut diag).is_ok());
+        assert!(st
+            .insert(name_x, make_var(name_x, int_ty()), &mut diag)
+            .is_ok());
 
         // Insert int x again (defined) → redefinition error
         let result = st.insert(name_x, make_var(name_x, int_ty()), &mut diag);
@@ -975,10 +983,14 @@ mod tests {
         let name_x = id(0);
 
         // extern int x (first)
-        assert!(st.insert(name_x, make_extern_var(name_x, int_ty()), &mut diag).is_ok());
+        assert!(st
+            .insert(name_x, make_extern_var(name_x, int_ty()), &mut diag)
+            .is_ok());
 
         // extern int x (second) → OK, compatible extern merge
-        assert!(st.insert(name_x, make_extern_var(name_x, int_ty()), &mut diag).is_ok());
+        assert!(st
+            .insert(name_x, make_extern_var(name_x, int_ty()), &mut diag)
+            .is_ok());
     }
 
     #[test]
@@ -989,7 +1001,9 @@ mod tests {
         let name_x = id(0);
 
         // int x
-        assert!(st.insert(name_x, make_var(name_x, int_ty()), &mut diag).is_ok());
+        assert!(st
+            .insert(name_x, make_var(name_x, int_ty()), &mut diag)
+            .is_ok());
 
         // float x → conflicting types error
         let result = st.insert(name_x, make_var(name_x, float_ty()), &mut diag);
@@ -1004,7 +1018,9 @@ mod tests {
         let name_x = id(0);
 
         // Tentative definition: int x; (no initializer at file scope)
-        assert!(st.insert(name_x, make_tentative(name_x, int_ty()), &mut diag).is_ok());
+        assert!(st
+            .insert(name_x, make_tentative(name_x, int_ty()), &mut diag)
+            .is_ok());
 
         // Actual definition: int x = 5;
         let mut defined = make_var(name_x, int_ty());
@@ -1029,10 +1045,14 @@ mod tests {
         let name_s = id(0);
 
         // struct S (tag namespace)
-        assert!(st.insert_tag(name_s, make_struct_tag(name_s), &mut diag).is_ok());
+        assert!(st
+            .insert_tag(name_s, make_struct_tag(name_s), &mut diag)
+            .is_ok());
 
         // variable S (ordinary namespace) — should coexist
-        assert!(st.insert(name_s, make_var(name_s, int_ty()), &mut diag).is_ok());
+        assert!(st
+            .insert(name_s, make_var(name_s, int_ty()), &mut diag)
+            .is_ok());
 
         // Both should be findable in their respective namespaces.
         assert!(st.lookup_tag(name_s).is_some());
@@ -1049,7 +1069,9 @@ mod tests {
         let name_s = id(0);
 
         // struct S
-        assert!(st.insert_tag(name_s, make_struct_tag(name_s), &mut diag).is_ok());
+        assert!(st
+            .insert_tag(name_s, make_struct_tag(name_s), &mut diag)
+            .is_ok());
 
         // union S → error: wrong kind of tag
         let result = st.insert_tag(name_s, make_union_tag(name_s), &mut diag);
@@ -1062,7 +1084,9 @@ mod tests {
         let mut diag = DiagnosticEmitter::new();
 
         let name_s = id(0);
-        assert!(st.insert_tag(name_s, make_struct_tag(name_s), &mut diag).is_ok());
+        assert!(st
+            .insert_tag(name_s, make_struct_tag(name_s), &mut diag)
+            .is_ok());
 
         let found = st.lookup_tag(name_s).unwrap();
         assert_eq!(found.kind, SymbolKind::StructTag);
@@ -1076,24 +1100,22 @@ mod tests {
         let name_s = id(0);
 
         // File scope: struct S
-        assert!(st.insert_tag(name_s, make_struct_tag(name_s), &mut diag).is_ok());
+        assert!(st
+            .insert_tag(name_s, make_struct_tag(name_s), &mut diag)
+            .is_ok());
 
         // Block scope: union S (shadows file-scope struct S in tag namespace)
         st.push_scope(ScopeKind::Block);
-        assert!(st.insert_tag(name_s, make_union_tag(name_s), &mut diag).is_ok());
+        assert!(st
+            .insert_tag(name_s, make_union_tag(name_s), &mut diag)
+            .is_ok());
 
         // Lookup finds inner union tag
-        assert_eq!(
-            st.lookup_tag(name_s).unwrap().kind,
-            SymbolKind::UnionTag
-        );
+        assert_eq!(st.lookup_tag(name_s).unwrap().kind, SymbolKind::UnionTag);
 
         // Pop scope: lookup finds outer struct tag
         st.pop_scope();
-        assert_eq!(
-            st.lookup_tag(name_s).unwrap().kind,
-            SymbolKind::StructTag
-        );
+        assert_eq!(st.lookup_tag(name_s).unwrap().kind, SymbolKind::StructTag);
     }
 
     // -----------------------------------------------------------------------
@@ -1121,7 +1143,9 @@ mod tests {
         let name_loop = id(0);
 
         // First label definition
-        assert!(st.insert_label(name_loop, make_label(name_loop, true), &mut diag).is_ok());
+        assert!(st
+            .insert_label(name_loop, make_label(name_loop, true), &mut diag)
+            .is_ok());
 
         // Duplicate label definition → error
         let result = st.insert_label(name_loop, make_label(name_loop, true), &mut diag);
@@ -1136,8 +1160,12 @@ mod tests {
         let name_a = id(0);
         let name_b = id(1);
 
-        assert!(st.insert_label(name_a, make_label(name_a, true), &mut diag).is_ok());
-        assert!(st.insert_label(name_b, make_label(name_b, true), &mut diag).is_ok());
+        assert!(st
+            .insert_label(name_a, make_label(name_a, true), &mut diag)
+            .is_ok());
+        assert!(st
+            .insert_label(name_b, make_label(name_b, true), &mut diag)
+            .is_ok());
 
         // Both labels exist
         assert!(st.lookup_label(name_a).is_some());
@@ -1159,11 +1187,15 @@ mod tests {
         let name_lbl = id(0);
 
         // Forward reference (goto before label definition)
-        assert!(st.insert_label(name_lbl, make_label(name_lbl, false), &mut diag).is_ok());
+        assert!(st
+            .insert_label(name_lbl, make_label(name_lbl, false), &mut diag)
+            .is_ok());
         assert!(!st.lookup_label(name_lbl).unwrap().is_defined);
 
         // Now the label definition arrives
-        assert!(st.insert_label(name_lbl, make_label(name_lbl, true), &mut diag).is_ok());
+        assert!(st
+            .insert_label(name_lbl, make_label(name_lbl, true), &mut diag)
+            .is_ok());
         assert!(st.lookup_label(name_lbl).unwrap().is_defined);
     }
 
@@ -1177,13 +1209,7 @@ mod tests {
         let mut diag = DiagnosticEmitter::new();
 
         let name_red = id(0);
-        let result = st.insert_enum_constant(
-            name_red,
-            0,
-            int_ty(),
-            &mut diag,
-            dummy_span(),
-        );
+        let result = st.insert_enum_constant(name_red, 0, int_ty(), &mut diag, dummy_span());
         assert!(result.is_ok());
 
         let found = st.lookup(name_red).unwrap();
@@ -1199,7 +1225,9 @@ mod tests {
         let name_red = id(0);
 
         // Insert enum constant RED
-        assert!(st.insert_enum_constant(name_red, 0, int_ty(), &mut diag, dummy_span()).is_ok());
+        assert!(st
+            .insert_enum_constant(name_red, 0, int_ty(), &mut diag, dummy_span())
+            .is_ok());
 
         // Insert variable RED in same scope → error (redefinition)
         let result = st.insert(name_red, make_var(name_red, int_ty()), &mut diag);
@@ -1219,10 +1247,14 @@ mod tests {
         let name_x = id(1);
 
         // Insert typedef MyInt
-        assert!(st.insert(name_myint, make_typedef(name_myint, int_ty()), &mut diag).is_ok());
+        assert!(st
+            .insert(name_myint, make_typedef(name_myint, int_ty()), &mut diag)
+            .is_ok());
 
         // Insert variable x
-        assert!(st.insert(name_x, make_var(name_x, int_ty()), &mut diag).is_ok());
+        assert!(st
+            .insert(name_x, make_var(name_x, int_ty()), &mut diag)
+            .is_ok());
 
         // MyInt is a typedef, x is not
         assert!(st.is_typedef(name_myint));
@@ -1243,7 +1275,9 @@ mod tests {
         let name_myint = id(0);
 
         // Insert typedef at file scope
-        assert!(st.insert(name_myint, make_typedef(name_myint, int_ty()), &mut diag).is_ok());
+        assert!(st
+            .insert(name_myint, make_typedef(name_myint, int_ty()), &mut diag)
+            .is_ok());
 
         // Push block scope — typedef still visible
         st.push_scope(ScopeKind::Block);
@@ -1303,7 +1337,13 @@ mod tests {
         let name_x = id(2);
 
         // extern int printf (declared, not defined)
-        assert!(st.insert(name_printf, make_extern_var(name_printf, int_ty()), &mut diag).is_ok());
+        assert!(st
+            .insert(
+                name_printf,
+                make_extern_var(name_printf, int_ty()),
+                &mut diag
+            )
+            .is_ok());
 
         // int main() { ... } (defined)
         let mut main_sym = make_func(name_main, int_ty());
@@ -1311,7 +1351,9 @@ mod tests {
         assert!(st.insert(name_main, main_sym, &mut diag).is_ok());
 
         // int x (local, not extern)
-        assert!(st.insert(name_x, make_var(name_x, int_ty()), &mut diag).is_ok());
+        assert!(st
+            .insert(name_x, make_var(name_x, int_ty()), &mut diag)
+            .is_ok());
 
         let undefs = st.get_undefined_externals();
         assert_eq!(undefs.len(), 1);
@@ -1415,17 +1457,23 @@ mod tests {
 
         // File scope: a=0
         let name_a = id(0);
-        assert!(st.insert(name_a, make_var(name_a, int_ty()), &mut diag).is_ok());
+        assert!(st
+            .insert(name_a, make_var(name_a, int_ty()), &mut diag)
+            .is_ok());
 
         // Block 1: b=1
         st.push_scope(ScopeKind::Block);
         let name_b = id(1);
-        assert!(st.insert(name_b, make_var(name_b, int_ty()), &mut diag).is_ok());
+        assert!(st
+            .insert(name_b, make_var(name_b, int_ty()), &mut diag)
+            .is_ok());
 
         // Block 2: c=2
         st.push_scope(ScopeKind::Block);
         let name_c = id(2);
-        assert!(st.insert(name_c, make_var(name_c, int_ty()), &mut diag).is_ok());
+        assert!(st
+            .insert(name_c, make_var(name_c, int_ty()), &mut diag)
+            .is_ok());
 
         // All three visible from innermost scope
         assert!(st.lookup(name_a).is_some());
@@ -1458,9 +1506,15 @@ mod tests {
         let green = id(1);
         let blue = id(2);
 
-        assert!(st.insert_enum_constant(red, 0, int_ty(), &mut diag, dummy_span()).is_ok());
-        assert!(st.insert_enum_constant(green, 1, int_ty(), &mut diag, dummy_span()).is_ok());
-        assert!(st.insert_enum_constant(blue, 2, int_ty(), &mut diag, dummy_span()).is_ok());
+        assert!(st
+            .insert_enum_constant(red, 0, int_ty(), &mut diag, dummy_span())
+            .is_ok());
+        assert!(st
+            .insert_enum_constant(green, 1, int_ty(), &mut diag, dummy_span())
+            .is_ok());
+        assert!(st
+            .insert_enum_constant(blue, 2, int_ty(), &mut diag, dummy_span())
+            .is_ok());
 
         // All three are findable
         assert_eq!(st.lookup(red).unwrap().kind, SymbolKind::EnumConstant);
@@ -1477,12 +1531,16 @@ mod tests {
         let name_b = id(1);
 
         // File scope (depth 0)
-        assert!(st.insert(name_a, make_var(name_a, int_ty()), &mut diag).is_ok());
+        assert!(st
+            .insert(name_a, make_var(name_a, int_ty()), &mut diag)
+            .is_ok());
         assert_eq!(st.lookup(name_a).unwrap().scope_depth, 0);
 
         // Block scope (depth 1)
         st.push_scope(ScopeKind::Block);
-        assert!(st.insert(name_b, make_var(name_b, int_ty()), &mut diag).is_ok());
+        assert!(st
+            .insert(name_b, make_var(name_b, int_ty()), &mut diag)
+            .is_ok());
         assert_eq!(st.lookup(name_b).unwrap().scope_depth, 1);
     }
 
@@ -1500,7 +1558,9 @@ mod tests {
         let name_f = id(0);
 
         // Declare function at file scope
-        assert!(st.insert(name_f, make_func(name_f, int_ty()), &mut diag).is_ok());
+        assert!(st
+            .insert(name_f, make_func(name_f, int_ty()), &mut diag)
+            .is_ok());
 
         // Push block scope, mark defined from within block scope
         st.push_scope(ScopeKind::Block);

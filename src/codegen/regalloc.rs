@@ -40,11 +40,11 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
-use crate::ir::{
-    BasicBlock, BlockId, ControlFlowGraph, Function, Instruction, IrType, PhiNode,
-    Terminator, Value,
-};
 use crate::ir::cfg::reverse_postorder;
+use crate::ir::{
+    BasicBlock, BlockId, ControlFlowGraph, Function, Instruction, IrType, PhiNode, Terminator,
+    Value,
+};
 
 // ---------------------------------------------------------------------------
 // PhysReg — physical register identifier
@@ -452,12 +452,15 @@ pub fn compute_live_intervals(function: &Function) -> Vec<LiveInterval> {
             global_index += 1;
         }
 
-        block_layout.insert(block.id, BlockLayout {
-            phi_start,
-            instr_start,
-            term_index,
-            next_start: global_index,
-        });
+        block_layout.insert(
+            block.id,
+            BlockLayout {
+                phi_start,
+                instr_start,
+                term_index,
+                next_start: global_index,
+            },
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -493,7 +496,9 @@ pub fn compute_live_intervals(function: &Function) -> Vec<LiveInterval> {
         for phi in phi_nodes {
             // The phi result is defined at this index.
             let rc = classify_type(&phi.ty);
-            value_def.entry(phi.result).or_insert((phi_idx, rc, false, false));
+            value_def
+                .entry(phi.result)
+                .or_insert((phi_idx, rc, false, false));
 
             // Phi incoming values are logically used at the end of their
             // respective predecessor blocks (the value flows along the edge).
@@ -527,14 +532,16 @@ pub fn compute_live_intervals(function: &Function) -> Vec<LiveInterval> {
             if let Some(result) = instr.result() {
                 let rc = classify_instruction_result(instr);
                 // Detect parameters: first N allocas in the entry block.
-                let is_param_val =
-                    is_entry && matches!(instr, Instruction::Alloca { .. })
+                let is_param_val = is_entry
+                    && matches!(instr, Instruction::Alloca { .. })
                     && (param_alloca_count as usize) < num_params;
                 if matches!(instr, Instruction::Alloca { .. }) && is_entry {
                     param_alloca_count += 1;
                 }
                 let is_alloca = matches!(instr, Instruction::Alloca { .. });
-                value_def.entry(result).or_insert((instr_idx, rc, is_param_val, is_alloca));
+                value_def
+                    .entry(result)
+                    .or_insert((instr_idx, rc, is_param_val, is_alloca));
             }
 
             // Record uses for all operands.
@@ -588,30 +595,39 @@ pub fn compute_live_intervals(function: &Function) -> Vec<LiveInterval> {
     //      to cover the source block's terminator.
     {
         // Build RPO index map for O(1) lookups.
-        let rpo_index: HashMap<BlockId, usize> = rpo.iter().enumerate()
-            .map(|(i, &bid)| (bid, i))
-            .collect();
+        let rpo_index: HashMap<BlockId, usize> =
+            rpo.iter().enumerate().map(|(i, &bid)| (bid, i)).collect();
 
         // Collect loop back-edges: (source_block, header_block)
         let mut back_edges: Vec<(BlockId, BlockId)> = Vec::new();
         for &block_id in &rpo {
             let idx = block_id.0 as usize;
-            if idx >= function.blocks.len() { continue; }
+            if idx >= function.blocks.len() {
+                continue;
+            }
             if let Some(ref term) = function.blocks[idx].terminator {
                 let succs: Vec<BlockId> = match term {
                     crate::ir::Terminator::Branch { target } => vec![*target],
-                    crate::ir::Terminator::CondBranch { true_block, false_block, .. } => {
+                    crate::ir::Terminator::CondBranch {
+                        true_block,
+                        false_block,
+                        ..
+                    } => {
                         vec![*true_block, *false_block]
                     }
                     crate::ir::Terminator::Switch { default, cases, .. } => {
                         let mut s = vec![*default];
-                        for &(_, t) in cases { s.push(t); }
+                        for &(_, t) in cases {
+                            s.push(t);
+                        }
                         s
                     }
                     _ => Vec::new(),
                 };
                 for succ in succs {
-                    if let (Some(&src_rpo), Some(&dst_rpo)) = (rpo_index.get(&block_id), rpo_index.get(&succ)) {
+                    if let (Some(&src_rpo), Some(&dst_rpo)) =
+                        (rpo_index.get(&block_id), rpo_index.get(&succ))
+                    {
                         if dst_rpo <= src_rpo {
                             back_edges.push((block_id, succ));
                         }
@@ -632,7 +648,9 @@ pub fn compute_live_intervals(function: &Function) -> Vec<LiveInterval> {
                 None => continue,
             };
             let header_idx = header_block.0 as usize;
-            if header_idx >= function.blocks.len() { continue; }
+            if header_idx >= function.blocks.len() {
+                continue;
+            }
             let header = &function.blocks[header_idx];
             let back_edge_point = source_layout.term_index + 1;
 
@@ -705,9 +723,7 @@ pub fn compute_live_intervals(function: &Function) -> Vec<LiveInterval> {
 
         // An interval crosses a call if any Call instruction falls strictly
         // within the open interval (start, end).
-        let crosses_call = call_indices
-            .iter()
-            .any(|&ci| ci > start && ci < end);
+        let crosses_call = call_indices.iter().any(|&ci| ci > start && ci < end);
 
         intervals.push(LiveInterval {
             value: *value,
@@ -823,13 +839,11 @@ pub fn linear_scan_allocate(
     intervals.sort_by(|a, b| a.start.cmp(&b.start).then(a.value.0.cmp(&b.value.0)));
 
     // Initialize free register sets.
-    let mut free_int: HashSet<PhysReg> =
-        HashSet::with_capacity(reg_info.int_regs.len());
+    let mut free_int: HashSet<PhysReg> = HashSet::with_capacity(reg_info.int_regs.len());
     for &r in &reg_info.int_regs {
         free_int.insert(r);
     }
-    let mut free_float: HashSet<PhysReg> =
-        HashSet::with_capacity(reg_info.float_regs.len());
+    let mut free_float: HashSet<PhysReg> = HashSet::with_capacity(reg_info.float_regs.len());
     for &r in &reg_info.float_regs {
         free_float.insert(r);
     }
@@ -850,8 +864,12 @@ pub fn linear_scan_allocate(
                 // Free the register.
                 if let Some(reg) = intervals[idx].assigned_reg {
                     match intervals[idx].reg_class {
-                        RegClass::Integer => { free_int.insert(reg); }
-                        RegClass::Float => { free_float.insert(reg); }
+                        RegClass::Integer => {
+                            free_int.insert(reg);
+                        }
+                        RegClass::Float => {
+                            free_float.insert(reg);
+                        }
                     }
                 }
             } else {
@@ -867,8 +885,12 @@ pub fn linear_scan_allocate(
         // through the normal allocation/spill logic.
         if let Some(fixed_reg) = intervals[i].assigned_reg {
             match intervals[i].reg_class {
-                RegClass::Integer => { free_int.remove(&fixed_reg); }
-                RegClass::Float => { free_float.remove(&fixed_reg); }
+                RegClass::Integer => {
+                    free_int.remove(&fixed_reg);
+                }
+                RegClass::Float => {
+                    free_float.remove(&fixed_reg);
+                }
             }
             if reg_info.is_callee_saved(fixed_reg) {
                 used_callee_saved.insert(fixed_reg);
@@ -892,8 +914,12 @@ pub fn linear_scan_allocate(
             // Successfully allocated.
             intervals[i].assigned_reg = Some(reg);
             match rc {
-                RegClass::Integer => { free_int.remove(&reg); }
-                RegClass::Float => { free_float.remove(&reg); }
+                RegClass::Integer => {
+                    free_int.remove(&reg);
+                }
+                RegClass::Float => {
+                    free_float.remove(&reg);
+                }
             }
 
             if reg_info.is_callee_saved(reg) {
@@ -929,9 +955,7 @@ pub fn linear_scan_allocate(
 
                     // Remove victim from active, insert current.
                     active.retain(|&idx| idx != victim_idx);
-                    let pos = active.partition_point(|&idx| {
-                        intervals[idx].end <= intervals[i].end
-                    });
+                    let pos = active.partition_point(|&idx| intervals[idx].end <= intervals[i].end);
                     active.insert(pos, i);
                 } else {
                     // Spill the current interval (it extends further or equally).
@@ -977,10 +1001,7 @@ pub fn linear_scan_allocate(
 /// # Returns
 ///
 /// A [`SpillInfo`] with slot offsets and total spill size.
-pub fn insert_spill_code(
-    function: &mut Function,
-    alloc_result: &AllocationResult,
-) -> SpillInfo {
+pub fn insert_spill_code(function: &mut Function, alloc_result: &AllocationResult) -> SpillInfo {
     // Each spill slot occupies 8 bytes (the maximum register width across all
     // supported architectures: 64-bit GPRs and 64-bit FP/SIMD scalar).
     const SPILL_SLOT_SIZE: u32 = 8;
@@ -1054,11 +1075,11 @@ pub fn build_value_to_class_map(alloc_result: &AllocationResult) -> HashMap<Valu
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::cfg::BasicBlock;
-    use crate::ir::instructions::{BlockId, Constant, Instruction, Value};
-    use crate::ir::cfg::Terminator;
-    use crate::ir::types::IrType;
     use crate::ir::builder::Function;
+    use crate::ir::cfg::BasicBlock;
+    use crate::ir::cfg::Terminator;
+    use crate::ir::instructions::{BlockId, Constant, Instruction, Value};
+    use crate::ir::types::IrType;
 
     // -----------------------------------------------------------------------
     // Test helpers
@@ -1147,8 +1168,11 @@ mod tests {
             blocks: vec![entry],
             entry_block: entry_id,
             is_definition: true,
-is_static: false,
-is_weak: false,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         }
     }
 
@@ -1226,8 +1250,11 @@ is_weak: false,
             blocks: vec![entry, then_block, else_block, merge_block],
             entry_block: entry_id,
             is_definition: true,
-is_static: false,
-is_weak: false,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         }
     }
 
@@ -1270,8 +1297,11 @@ is_weak: false,
             blocks: vec![entry],
             entry_block: entry_id,
             is_definition: true,
-is_static: false,
-is_weak: false,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         }
     }
 
@@ -1337,7 +1367,7 @@ is_weak: false,
         let ri = make_test_reg_info();
         assert!(!ri.is_callee_saved(PhysReg(0))); // caller-saved
         assert!(!ri.is_callee_saved(PhysReg(1))); // caller-saved
-        assert!(ri.is_callee_saved(PhysReg(2)));  // callee-saved int
+        assert!(ri.is_callee_saved(PhysReg(2))); // callee-saved int
         assert!(!ri.is_callee_saved(PhysReg(10))); // caller-saved float
         assert!(ri.is_callee_saved(PhysReg(11))); // callee-saved float
     }
@@ -1363,8 +1393,11 @@ is_weak: false,
             blocks: vec![],
             entry_block: BlockId(0),
             is_definition: true,
-is_static: false,
-is_weak: false,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         };
         let intervals = compute_live_intervals(&func);
         assert!(intervals.is_empty());
@@ -1462,7 +1495,7 @@ is_weak: false,
                 spill_slot: None,
                 is_param: false,
                 crosses_call: false,
-                    is_alloca: false,
+                is_alloca: false,
             },
             LiveInterval {
                 value: Value(1),
@@ -1473,7 +1506,7 @@ is_weak: false,
                 spill_slot: None,
                 is_param: false,
                 crosses_call: false,
-                    is_alloca: false,
+                is_alloca: false,
             },
         ];
 
@@ -1489,7 +1522,10 @@ is_weak: false,
         // register is freed and can be reused.
         let r0 = result.intervals[0].assigned_reg.unwrap();
         let r1 = result.intervals[1].assigned_reg.unwrap();
-        assert_eq!(r0, r1, "Non-overlapping intervals should reuse the same register");
+        assert_eq!(
+            r0, r1,
+            "Non-overlapping intervals should reuse the same register"
+        );
     }
 
     #[test]
@@ -1505,7 +1541,7 @@ is_weak: false,
                 spill_slot: None,
                 is_param: false,
                 crosses_call: false,
-                    is_alloca: false,
+                is_alloca: false,
             },
             LiveInterval {
                 value: Value(1),
@@ -1516,7 +1552,7 @@ is_weak: false,
                 spill_slot: None,
                 is_param: false,
                 crosses_call: false,
-                    is_alloca: false,
+                is_alloca: false,
             },
         ];
 
@@ -1542,7 +1578,7 @@ is_weak: false,
                 spill_slot: None,
                 is_param: false,
                 crosses_call: false,
-                    is_alloca: false,
+                is_alloca: false,
             },
             LiveInterval {
                 value: Value(1),
@@ -1553,7 +1589,7 @@ is_weak: false,
                 spill_slot: None,
                 is_param: false,
                 crosses_call: false,
-                    is_alloca: false,
+                is_alloca: false,
             },
         ];
 
@@ -1588,7 +1624,7 @@ is_weak: false,
             spill_slot: None,
             is_param: false,
             crosses_call: true, // crosses a call
-                    is_alloca: false,
+            is_alloca: false,
         }];
 
         let result = linear_scan_allocate(&mut intervals, &ri);
@@ -1613,7 +1649,7 @@ is_weak: false,
             spill_slot: None,
             is_param: false,
             crosses_call: false, // does not cross a call
-                    is_alloca: false,
+            is_alloca: false,
         }];
 
         let result = linear_scan_allocate(&mut intervals, &ri);
@@ -1645,7 +1681,7 @@ is_weak: false,
                 spill_slot: None,
                 is_param: false,
                 crosses_call: false,
-                    is_alloca: false,
+                is_alloca: false,
             },
             LiveInterval {
                 value: Value(1),
@@ -1656,7 +1692,7 @@ is_weak: false,
                 spill_slot: None,
                 is_param: false,
                 crosses_call: false,
-                    is_alloca: false,
+                is_alloca: false,
             },
             LiveInterval {
                 value: Value(2),
@@ -1667,7 +1703,7 @@ is_weak: false,
                 spill_slot: None,
                 is_param: false,
                 crosses_call: false,
-                    is_alloca: false,
+                is_alloca: false,
             },
         ];
 
@@ -1694,7 +1730,7 @@ is_weak: false,
             spill_slot: None,
             is_param: false,
             crosses_call: false,
-                    is_alloca: false,
+            is_alloca: false,
         }];
 
         let result = linear_scan_allocate(&mut intervals, &ri);
@@ -1722,7 +1758,7 @@ is_weak: false,
                 spill_slot: None,
                 is_param: false,
                 crosses_call: false,
-                    is_alloca: false,
+                is_alloca: false,
             },
             LiveInterval {
                 value: Value(1),
@@ -1733,7 +1769,7 @@ is_weak: false,
                 spill_slot: None,
                 is_param: false,
                 crosses_call: false,
-                    is_alloca: false,
+                is_alloca: false,
             },
             LiveInterval {
                 value: Value(2),
@@ -1744,7 +1780,7 @@ is_weak: false,
                 spill_slot: None,
                 is_param: false,
                 crosses_call: false,
-                    is_alloca: false,
+                is_alloca: false,
             },
         ];
 
@@ -1776,7 +1812,7 @@ is_weak: false,
                 spill_slot: None,
                 is_param: false,
                 crosses_call: false,
-                    is_alloca: false,
+                is_alloca: false,
             },
             LiveInterval {
                 value: Value(1),
@@ -1787,7 +1823,7 @@ is_weak: false,
                 spill_slot: None,
                 is_param: false,
                 crosses_call: false,
-                    is_alloca: false,
+                is_alloca: false,
             },
         ];
 
@@ -1931,7 +1967,7 @@ is_weak: false,
             spill_slot: None,
             is_param: false,
             crosses_call: false,
-                    is_alloca: false,
+            is_alloca: false,
         };
         let s = format!("{}", iv);
         assert!(s.contains("%5"));
@@ -1950,7 +1986,7 @@ is_weak: false,
             spill_slot: Some(0),
             is_param: false,
             crosses_call: false,
-                    is_alloca: false,
+            is_alloca: false,
         };
         let s = format!("{}", iv);
         assert!(s.contains("%8"));
@@ -1969,7 +2005,7 @@ is_weak: false,
             spill_slot: None,
             is_param: false,
             crosses_call: false,
-                    is_alloca: false,
+            is_alloca: false,
         };
         let s = format!("{}", iv);
         assert!(s.contains("unassigned"));
@@ -2053,12 +2089,18 @@ is_weak: false,
             blocks: vec![entry],
             entry_block: entry_id,
             is_definition: true,
-is_static: false,
-is_weak: false,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         };
 
         let intervals = compute_live_intervals(&func);
-        assert!(intervals.is_empty(), "Void return function should have no intervals");
+        assert!(
+            intervals.is_empty(),
+            "Void return function should have no intervals"
+        );
     }
 
     #[test]
@@ -2084,8 +2126,11 @@ is_weak: false,
             blocks: vec![entry],
             entry_block: entry_id,
             is_definition: true,
-is_static: false,
-is_weak: false,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         };
 
         let intervals = compute_live_intervals(&func);
@@ -2113,7 +2158,7 @@ is_weak: false,
                 spill_slot: None,
                 is_param: false,
                 crosses_call: false,
-                    is_alloca: false,
+                is_alloca: false,
             },
             LiveInterval {
                 value: Value(1),
@@ -2124,7 +2169,7 @@ is_weak: false,
                 spill_slot: None,
                 is_param: false,
                 crosses_call: false,
-                    is_alloca: false,
+                is_alloca: false,
             },
         ];
 
@@ -2168,8 +2213,11 @@ is_weak: false,
             blocks: vec![entry],
             entry_block: entry_id,
             is_definition: true,
-is_static: false,
-is_weak: false,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         };
 
         let intervals = compute_live_intervals(&func);
@@ -2177,6 +2225,10 @@ is_weak: false,
         // It still gets an interval with minimum length.
         assert_eq!(intervals.len(), 1);
         let iv = &intervals[0];
-        assert_eq!(iv.start + 1, iv.end, "Unused value should have minimum interval");
+        assert_eq!(
+            iv.start + 1,
+            iv.end,
+            "Unused value should have minimum interval"
+        );
     }
 }

@@ -885,9 +885,11 @@ impl CType {
                 // from the same typedef.
                 if as_.tag.is_none() && bs_.tag.is_none() {
                     if as_.fields.len() == bs_.fields.len() {
-                        return as_.fields.iter().zip(bs_.fields.iter()).all(
-                            |(am, bm)| am.ty.is_compatible(&bm.ty)
-                        );
+                        return as_
+                            .fields
+                            .iter()
+                            .zip(bs_.fields.iter())
+                            .all(|(am, bm)| am.ty.is_compatible(&bm.ty));
                     }
                 }
                 false

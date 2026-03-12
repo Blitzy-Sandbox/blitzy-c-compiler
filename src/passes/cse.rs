@@ -49,12 +49,9 @@ use std::collections::{HashMap, HashSet};
 
 use crate::ir::builder::Function;
 use crate::ir::cfg::{
-    BasicBlock, ControlFlowGraph, DominanceTree, PhiNode, Terminator,
-    compute_dominance_tree,
+    compute_dominance_tree, BasicBlock, ControlFlowGraph, DominanceTree, PhiNode, Terminator,
 };
-use crate::ir::instructions::{
-    BlockId, CastOp, CompareOp, FloatCompareOp, Instruction, Value,
-};
+use crate::ir::instructions::{BlockId, CastOp, CompareOp, FloatCompareOp, Instruction, Value};
 use crate::ir::types::IrType;
 
 use super::FunctionPass;
@@ -194,32 +191,65 @@ fn expression_key(inst: &Instruction) -> Option<ExpressionKey> {
         Instruction::Add { lhs, rhs, ty, .. } => {
             let (l, r) = canonicalize(*lhs, *rhs, BinaryOpcode::Add);
             Some(ExpressionKey::BinaryOp {
-                opcode: BinaryOpcode::Add, lhs: l, rhs: r, ty: ty.clone(),
+                opcode: BinaryOpcode::Add,
+                lhs: l,
+                rhs: r,
+                ty: ty.clone(),
             })
         }
         Instruction::Mul { lhs, rhs, ty, .. } => {
             let (l, r) = canonicalize(*lhs, *rhs, BinaryOpcode::Mul);
             Some(ExpressionKey::BinaryOp {
-                opcode: BinaryOpcode::Mul, lhs: l, rhs: r, ty: ty.clone(),
+                opcode: BinaryOpcode::Mul,
+                lhs: l,
+                rhs: r,
+                ty: ty.clone(),
             })
         }
 
         // --- Arithmetic (non-commutative: Sub, Div, Mod) ---
-        Instruction::Sub { lhs, rhs, ty, .. } => {
+        Instruction::Sub { lhs, rhs, ty, .. } => Some(ExpressionKey::BinaryOp {
+            opcode: BinaryOpcode::Sub,
+            lhs: *lhs,
+            rhs: *rhs,
+            ty: ty.clone(),
+        }),
+        Instruction::Div {
+            lhs,
+            rhs,
+            ty,
+            is_signed,
+            ..
+        } => {
+            let op = if *is_signed {
+                BinaryOpcode::SDiv
+            } else {
+                BinaryOpcode::UDiv
+            };
             Some(ExpressionKey::BinaryOp {
-                opcode: BinaryOpcode::Sub, lhs: *lhs, rhs: *rhs, ty: ty.clone(),
+                opcode: op,
+                lhs: *lhs,
+                rhs: *rhs,
+                ty: ty.clone(),
             })
         }
-        Instruction::Div { lhs, rhs, ty, is_signed, .. } => {
-            let op = if *is_signed { BinaryOpcode::SDiv } else { BinaryOpcode::UDiv };
+        Instruction::Mod {
+            lhs,
+            rhs,
+            ty,
+            is_signed,
+            ..
+        } => {
+            let op = if *is_signed {
+                BinaryOpcode::SMod
+            } else {
+                BinaryOpcode::UMod
+            };
             Some(ExpressionKey::BinaryOp {
-                opcode: op, lhs: *lhs, rhs: *rhs, ty: ty.clone(),
-            })
-        }
-        Instruction::Mod { lhs, rhs, ty, is_signed, .. } => {
-            let op = if *is_signed { BinaryOpcode::SMod } else { BinaryOpcode::UMod };
-            Some(ExpressionKey::BinaryOp {
-                opcode: op, lhs: *lhs, rhs: *rhs, ty: ty.clone(),
+                opcode: op,
+                lhs: *lhs,
+                rhs: *rhs,
+                ty: ty.clone(),
             })
         }
 
@@ -227,63 +257,111 @@ fn expression_key(inst: &Instruction) -> Option<ExpressionKey> {
         Instruction::And { lhs, rhs, ty, .. } => {
             let (l, r) = canonicalize(*lhs, *rhs, BinaryOpcode::And);
             Some(ExpressionKey::BinaryOp {
-                opcode: BinaryOpcode::And, lhs: l, rhs: r, ty: ty.clone(),
+                opcode: BinaryOpcode::And,
+                lhs: l,
+                rhs: r,
+                ty: ty.clone(),
             })
         }
         Instruction::Or { lhs, rhs, ty, .. } => {
             let (l, r) = canonicalize(*lhs, *rhs, BinaryOpcode::Or);
             Some(ExpressionKey::BinaryOp {
-                opcode: BinaryOpcode::Or, lhs: l, rhs: r, ty: ty.clone(),
+                opcode: BinaryOpcode::Or,
+                lhs: l,
+                rhs: r,
+                ty: ty.clone(),
             })
         }
         Instruction::Xor { lhs, rhs, ty, .. } => {
             let (l, r) = canonicalize(*lhs, *rhs, BinaryOpcode::Xor);
             Some(ExpressionKey::BinaryOp {
-                opcode: BinaryOpcode::Xor, lhs: l, rhs: r, ty: ty.clone(),
+                opcode: BinaryOpcode::Xor,
+                lhs: l,
+                rhs: r,
+                ty: ty.clone(),
             })
         }
 
         // --- Shifts (non-commutative) ---
-        Instruction::Shl { lhs, rhs, ty, .. } => {
+        Instruction::Shl { lhs, rhs, ty, .. } => Some(ExpressionKey::BinaryOp {
+            opcode: BinaryOpcode::Shl,
+            lhs: *lhs,
+            rhs: *rhs,
+            ty: ty.clone(),
+        }),
+        Instruction::Shr {
+            lhs,
+            rhs,
+            ty,
+            is_arithmetic,
+            ..
+        } => {
+            let op = if *is_arithmetic {
+                BinaryOpcode::AShr
+            } else {
+                BinaryOpcode::LShr
+            };
             Some(ExpressionKey::BinaryOp {
-                opcode: BinaryOpcode::Shl, lhs: *lhs, rhs: *rhs, ty: ty.clone(),
-            })
-        }
-        Instruction::Shr { lhs, rhs, ty, is_arithmetic, .. } => {
-            let op = if *is_arithmetic { BinaryOpcode::AShr } else { BinaryOpcode::LShr };
-            Some(ExpressionKey::BinaryOp {
-                opcode: op, lhs: *lhs, rhs: *rhs, ty: ty.clone(),
+                opcode: op,
+                lhs: *lhs,
+                rhs: *rhs,
+                ty: ty.clone(),
             })
         }
 
         // --- Comparisons ---
-        Instruction::ICmp { op, lhs, rhs, ty, .. } => {
-            Some(ExpressionKey::Comparison { op: *op, lhs: *lhs, rhs: *rhs, ty: ty.clone() })
-        }
-        Instruction::FCmp { op, lhs, rhs, ty, .. } => {
-            Some(ExpressionKey::FloatComparison { op: *op, lhs: *lhs, rhs: *rhs, ty: ty.clone() })
-        }
+        Instruction::ICmp {
+            op, lhs, rhs, ty, ..
+        } => Some(ExpressionKey::Comparison {
+            op: *op,
+            lhs: *lhs,
+            rhs: *rhs,
+            ty: ty.clone(),
+        }),
+        Instruction::FCmp {
+            op, lhs, rhs, ty, ..
+        } => Some(ExpressionKey::FloatComparison {
+            op: *op,
+            lhs: *lhs,
+            rhs: *rhs,
+            ty: ty.clone(),
+        }),
 
         // --- Type conversions ---
-        Instruction::Cast { op, value, from_ty, to_ty, .. } => {
-            Some(ExpressionKey::Cast {
-                op: *op, value: *value,
-                from_ty: from_ty.clone(), to_ty: to_ty.clone(),
-            })
-        }
-        Instruction::BitCast { value, from_ty, to_ty, .. } => {
-            Some(ExpressionKey::BitCast {
-                value: *value,
-                from_ty: from_ty.clone(), to_ty: to_ty.clone(),
-            })
-        }
+        Instruction::Cast {
+            op,
+            value,
+            from_ty,
+            to_ty,
+            ..
+        } => Some(ExpressionKey::Cast {
+            op: *op,
+            value: *value,
+            from_ty: from_ty.clone(),
+            to_ty: to_ty.clone(),
+        }),
+        Instruction::BitCast {
+            value,
+            from_ty,
+            to_ty,
+            ..
+        } => Some(ExpressionKey::BitCast {
+            value: *value,
+            from_ty: from_ty.clone(),
+            to_ty: to_ty.clone(),
+        }),
 
         // --- Aggregate addressing ---
-        Instruction::GetElementPtr { base_ty, ptr, indices, .. } => {
-            Some(ExpressionKey::GetElementPtr {
-                base_ty: base_ty.clone(), ptr: *ptr, indices: indices.clone(),
-            })
-        }
+        Instruction::GetElementPtr {
+            base_ty,
+            ptr,
+            indices,
+            ..
+        } => Some(ExpressionKey::GetElementPtr {
+            base_ty: base_ty.clone(),
+            ptr: *ptr,
+            indices: indices.clone(),
+        }),
 
         // --- NOT eligible for CSE ---
         // Side effects: Store, Call
@@ -697,8 +775,11 @@ mod tests {
             blocks: vec![block],
             entry_block: entry,
             is_definition: true,
-is_static: false,
-is_weak: false,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         }
     }
 
@@ -757,8 +838,11 @@ is_weak: false,
             blocks: vec![entry_block, left_block, right_block, merge_block],
             entry_block: bb0,
             is_definition: true,
-is_static: false,
-is_weak: false,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         }
     }
 
@@ -772,10 +856,16 @@ is_weak: false,
         let v2 = Value(2);
 
         let inst_a = Instruction::Add {
-            result: Value(10), lhs: v1, rhs: v2, ty: IrType::I32,
+            result: Value(10),
+            lhs: v1,
+            rhs: v2,
+            ty: IrType::I32,
         };
         let inst_b = Instruction::Add {
-            result: Value(11), lhs: v2, rhs: v1, ty: IrType::I32,
+            result: Value(11),
+            lhs: v2,
+            rhs: v1,
+            ty: IrType::I32,
         };
 
         let key_a = expression_key(&inst_a).unwrap();
@@ -789,10 +879,16 @@ is_weak: false,
         let v2 = Value(2);
 
         let inst_a = Instruction::Sub {
-            result: Value(10), lhs: v1, rhs: v2, ty: IrType::I32,
+            result: Value(10),
+            lhs: v1,
+            rhs: v2,
+            ty: IrType::I32,
         };
         let inst_b = Instruction::Sub {
-            result: Value(11), lhs: v2, rhs: v1, ty: IrType::I32,
+            result: Value(11),
+            lhs: v2,
+            rhs: v1,
+            ty: IrType::I32,
         };
 
         let key_a = expression_key(&inst_a).unwrap();
@@ -806,10 +902,16 @@ is_weak: false,
         let v2 = Value(5);
 
         let inst_a = Instruction::Mul {
-            result: Value(10), lhs: v1, rhs: v2, ty: IrType::I64,
+            result: Value(10),
+            lhs: v1,
+            rhs: v2,
+            ty: IrType::I64,
         };
         let inst_b = Instruction::Mul {
-            result: Value(11), lhs: v2, rhs: v1, ty: IrType::I64,
+            result: Value(11),
+            lhs: v2,
+            rhs: v1,
+            ty: IrType::I64,
         };
 
         assert_eq!(expression_key(&inst_a), expression_key(&inst_b));
@@ -821,10 +923,16 @@ is_weak: false,
         let v2 = Value(2);
 
         let add_inst = Instruction::Add {
-            result: Value(10), lhs: v1, rhs: v2, ty: IrType::I32,
+            result: Value(10),
+            lhs: v1,
+            rhs: v2,
+            ty: IrType::I32,
         };
         let mul_inst = Instruction::Mul {
-            result: Value(11), lhs: v1, rhs: v2, ty: IrType::I32,
+            result: Value(11),
+            lhs: v1,
+            rhs: v2,
+            ty: IrType::I32,
         };
 
         assert_ne!(
@@ -840,10 +948,16 @@ is_weak: false,
         let v2 = Value(2);
 
         let i32_add = Instruction::Add {
-            result: Value(10), lhs: v1, rhs: v2, ty: IrType::I32,
+            result: Value(10),
+            lhs: v1,
+            rhs: v2,
+            ty: IrType::I32,
         };
         let i64_add = Instruction::Add {
-            result: Value(11), lhs: v1, rhs: v2, ty: IrType::I64,
+            result: Value(11),
+            lhs: v1,
+            rhs: v2,
+            ty: IrType::I64,
         };
 
         assert_ne!(
@@ -859,8 +973,15 @@ is_weak: false,
 
     #[test]
     fn test_store_not_eligible() {
-        let inst = Instruction::Store { value: Value(1), ptr: Value(2), store_ty: None };
-        assert!(expression_key(&inst).is_none(), "Store must not be CSE-eligible");
+        let inst = Instruction::Store {
+            value: Value(1),
+            ptr: Value(2),
+            store_ty: None,
+        };
+        assert!(
+            expression_key(&inst).is_none(),
+            "Store must not be CSE-eligible"
+        );
     }
 
     #[test]
@@ -871,37 +992,58 @@ is_weak: false,
             args: vec![Value(1)],
             return_ty: IrType::I32,
         };
-        assert!(expression_key(&inst).is_none(), "Call must not be CSE-eligible");
+        assert!(
+            expression_key(&inst).is_none(),
+            "Call must not be CSE-eligible"
+        );
     }
 
     #[test]
     fn test_load_not_eligible() {
         let inst = Instruction::Load {
-            result: Value(10), ty: IrType::I32, ptr: Value(1),
+            result: Value(10),
+            ty: IrType::I32,
+            ptr: Value(1),
         };
-        assert!(expression_key(&inst).is_none(), "Load must not be CSE-eligible");
+        assert!(
+            expression_key(&inst).is_none(),
+            "Load must not be CSE-eligible"
+        );
     }
 
     #[test]
     fn test_alloca_not_eligible() {
         let inst = Instruction::Alloca {
-            result: Value(10), ty: IrType::I32, count: None,
+            result: Value(10),
+            ty: IrType::I32,
+            count: None,
         };
-        assert!(expression_key(&inst).is_none(), "Alloca must not be CSE-eligible");
+        assert!(
+            expression_key(&inst).is_none(),
+            "Alloca must not be CSE-eligible"
+        );
     }
 
     #[test]
     fn test_phi_not_eligible() {
         let inst = Instruction::Phi {
-            result: Value(10), ty: IrType::I32, incoming: Vec::new(),
+            result: Value(10),
+            ty: IrType::I32,
+            incoming: Vec::new(),
         };
-        assert!(expression_key(&inst).is_none(), "Phi must not be CSE-eligible");
+        assert!(
+            expression_key(&inst).is_none(),
+            "Phi must not be CSE-eligible"
+        );
     }
 
     #[test]
     fn test_nop_not_eligible() {
         let inst = Instruction::Nop;
-        assert!(expression_key(&inst).is_none(), "Nop must not be CSE-eligible");
+        assert!(
+            expression_key(&inst).is_none(),
+            "Nop must not be CSE-eligible"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -914,10 +1056,16 @@ is_weak: false,
         // %11 = add i32 %1, %2   <-- redundant, should be eliminated
         let instructions = vec![
             Instruction::Add {
-                result: Value(10), lhs: Value(1), rhs: Value(2), ty: IrType::I32,
+                result: Value(10),
+                lhs: Value(1),
+                rhs: Value(2),
+                ty: IrType::I32,
             },
             Instruction::Add {
-                result: Value(11), lhs: Value(1), rhs: Value(2), ty: IrType::I32,
+                result: Value(11),
+                lhs: Value(1),
+                rhs: Value(2),
+                ty: IrType::I32,
             },
         ];
         let mut func = make_single_block_function(instructions);
@@ -926,7 +1074,8 @@ is_weak: false,
 
         assert!(changed, "CSE should report a change");
         assert_eq!(
-            func.blocks[0].instructions.len(), 1,
+            func.blocks[0].instructions.len(),
+            1,
             "One of the two duplicate instructions should be removed"
         );
     }
@@ -937,10 +1086,16 @@ is_weak: false,
         // %11 = add i32 %2, %1   <-- same as above (commutative)
         let instructions = vec![
             Instruction::Add {
-                result: Value(10), lhs: Value(1), rhs: Value(2), ty: IrType::I32,
+                result: Value(10),
+                lhs: Value(1),
+                rhs: Value(2),
+                ty: IrType::I32,
             },
             Instruction::Add {
-                result: Value(11), lhs: Value(2), rhs: Value(1), ty: IrType::I32,
+                result: Value(11),
+                lhs: Value(2),
+                rhs: Value(1),
+                ty: IrType::I32,
             },
         ];
         let mut func = make_single_block_function(instructions);
@@ -957,17 +1112,26 @@ is_weak: false,
         // %11 = sub i32 %2, %1   <-- different (non-commutative)
         let instructions = vec![
             Instruction::Sub {
-                result: Value(10), lhs: Value(1), rhs: Value(2), ty: IrType::I32,
+                result: Value(10),
+                lhs: Value(1),
+                rhs: Value(2),
+                ty: IrType::I32,
             },
             Instruction::Sub {
-                result: Value(11), lhs: Value(2), rhs: Value(1), ty: IrType::I32,
+                result: Value(11),
+                lhs: Value(2),
+                rhs: Value(1),
+                ty: IrType::I32,
             },
         ];
         let mut func = make_single_block_function(instructions);
         let mut pass = CsePass::new();
         let changed = pass.run_on_function(&mut func);
 
-        assert!(!changed, "Non-commutative Sub with swapped operands must be preserved");
+        assert!(
+            !changed,
+            "Non-commutative Sub with swapped operands must be preserved"
+        );
         assert_eq!(func.blocks[0].instructions.len(), 2);
     }
 
@@ -975,14 +1139,25 @@ is_weak: false,
     fn test_local_cse_stores_preserved() {
         // Two store instructions to the same address must both be preserved.
         let instructions = vec![
-            Instruction::Store { value: Value(1), ptr: Value(5), store_ty: None },
-            Instruction::Store { value: Value(2), ptr: Value(5), store_ty: None },
+            Instruction::Store {
+                value: Value(1),
+                ptr: Value(5),
+                store_ty: None,
+            },
+            Instruction::Store {
+                value: Value(2),
+                ptr: Value(5),
+                store_ty: None,
+            },
         ];
         let mut func = make_single_block_function(instructions);
         let mut pass = CsePass::new();
         let changed = pass.run_on_function(&mut func);
 
-        assert!(!changed, "Store instructions must never be eliminated by CSE");
+        assert!(
+            !changed,
+            "Store instructions must never be eliminated by CSE"
+        );
         assert_eq!(func.blocks[0].instructions.len(), 2);
     }
 
@@ -991,14 +1166,25 @@ is_weak: false,
         // Two load instructions from the same address must both be preserved
         // (conservative: no alias analysis).
         let instructions = vec![
-            Instruction::Load { result: Value(10), ty: IrType::I32, ptr: Value(5) },
-            Instruction::Load { result: Value(11), ty: IrType::I32, ptr: Value(5) },
+            Instruction::Load {
+                result: Value(10),
+                ty: IrType::I32,
+                ptr: Value(5),
+            },
+            Instruction::Load {
+                result: Value(11),
+                ty: IrType::I32,
+                ptr: Value(5),
+            },
         ];
         let mut func = make_single_block_function(instructions);
         let mut pass = CsePass::new();
         let changed = pass.run_on_function(&mut func);
 
-        assert!(!changed, "Load instructions must be conservatively preserved");
+        assert!(
+            !changed,
+            "Load instructions must be conservatively preserved"
+        );
         assert_eq!(func.blocks[0].instructions.len(), 2);
     }
 
@@ -1007,13 +1193,22 @@ is_weak: false,
         // All unique expressions — no eliminations.
         let instructions = vec![
             Instruction::Add {
-                result: Value(10), lhs: Value(1), rhs: Value(2), ty: IrType::I32,
+                result: Value(10),
+                lhs: Value(1),
+                rhs: Value(2),
+                ty: IrType::I32,
             },
             Instruction::Sub {
-                result: Value(11), lhs: Value(1), rhs: Value(2), ty: IrType::I32,
+                result: Value(11),
+                lhs: Value(1),
+                rhs: Value(2),
+                ty: IrType::I32,
             },
             Instruction::Mul {
-                result: Value(12), lhs: Value(1), rhs: Value(2), ty: IrType::I32,
+                result: Value(12),
+                lhs: Value(1),
+                rhs: Value(2),
+                ty: IrType::I32,
             },
         ];
         let mut func = make_single_block_function(instructions);
@@ -1031,13 +1226,22 @@ is_weak: false,
         // %12 = sub i32 %11, %3  <-- %11 should be replaced with %10
         let instructions = vec![
             Instruction::Add {
-                result: Value(10), lhs: Value(1), rhs: Value(2), ty: IrType::I32,
+                result: Value(10),
+                lhs: Value(1),
+                rhs: Value(2),
+                ty: IrType::I32,
             },
             Instruction::Add {
-                result: Value(11), lhs: Value(1), rhs: Value(2), ty: IrType::I32,
+                result: Value(11),
+                lhs: Value(1),
+                rhs: Value(2),
+                ty: IrType::I32,
             },
             Instruction::Sub {
-                result: Value(12), lhs: Value(11), rhs: Value(3), ty: IrType::I32,
+                result: Value(12),
+                lhs: Value(11),
+                rhs: Value(3),
+                ty: IrType::I32,
             },
         ];
         let mut func = make_single_block_function(instructions);
@@ -1050,7 +1254,11 @@ is_weak: false,
         // The Sub should now reference %10 instead of %11.
         match &func.blocks[0].instructions[1] {
             Instruction::Sub { lhs, .. } => {
-                assert_eq!(*lhs, Value(10), "Use of eliminated %11 should be replaced with %10");
+                assert_eq!(
+                    *lhs,
+                    Value(10),
+                    "Use of eliminated %11 should be replaced with %10"
+                );
             }
             other => panic!("Expected Sub, got {:?}", other),
         }
@@ -1096,19 +1304,27 @@ is_weak: false,
         let cond = Value(0);
 
         let entry_insts = vec![Instruction::Add {
-            result: Value(10), lhs: Value(1), rhs: Value(2), ty: IrType::I32,
+            result: Value(10),
+            lhs: Value(1),
+            rhs: Value(2),
+            ty: IrType::I32,
         }];
         let left_insts = vec![Instruction::Add {
-            result: Value(11), lhs: Value(1), rhs: Value(2), ty: IrType::I32,
+            result: Value(11),
+            lhs: Value(1),
+            rhs: Value(2),
+            ty: IrType::I32,
         }];
         let right_insts = vec![Instruction::Add {
-            result: Value(12), lhs: Value(1), rhs: Value(2), ty: IrType::I32,
+            result: Value(12),
+            lhs: Value(1),
+            rhs: Value(2),
+            ty: IrType::I32,
         }];
         let merge_insts = vec![];
 
-        let mut func = make_diamond_function(
-            entry_insts, left_insts, right_insts, merge_insts, cond,
-        );
+        let mut func =
+            make_diamond_function(entry_insts, left_insts, right_insts, merge_insts, cond);
         let mut pass = CsePass::new();
         let changed = pass.run_on_function(&mut func);
 
@@ -1133,21 +1349,29 @@ is_weak: false,
 
         let entry_insts = vec![];
         let left_insts = vec![Instruction::Add {
-            result: Value(10), lhs: Value(1), rhs: Value(2), ty: IrType::I32,
+            result: Value(10),
+            lhs: Value(1),
+            rhs: Value(2),
+            ty: IrType::I32,
         }];
         let right_insts = vec![Instruction::Add {
-            result: Value(11), lhs: Value(1), rhs: Value(2), ty: IrType::I32,
+            result: Value(11),
+            lhs: Value(1),
+            rhs: Value(2),
+            ty: IrType::I32,
         }];
         let merge_insts = vec![];
 
-        let mut func = make_diamond_function(
-            entry_insts, left_insts, right_insts, merge_insts, cond,
-        );
+        let mut func =
+            make_diamond_function(entry_insts, left_insts, right_insts, merge_insts, cond);
         let mut pass = CsePass::new();
         let changed = pass.run_on_function(&mut func);
 
         // Neither branch dominates the other, so no global elimination.
-        assert!(!changed, "Non-dominating branch expression must not be reused");
+        assert!(
+            !changed,
+            "Non-dominating branch expression must not be reused"
+        );
         assert_eq!(func.blocks[1].instructions.len(), 1);
         assert_eq!(func.blocks[2].instructions.len(), 1);
     }
@@ -1166,10 +1390,16 @@ is_weak: false,
         let mut entry = BasicBlock::new(bb0, "entry".to_string());
         entry.instructions = vec![
             Instruction::Add {
-                result: Value(10), lhs: Value(1), rhs: Value(2), ty: IrType::I32,
+                result: Value(10),
+                lhs: Value(1),
+                rhs: Value(2),
+                ty: IrType::I32,
             },
             Instruction::Add {
-                result: Value(11), lhs: Value(1), rhs: Value(2), ty: IrType::I32,
+                result: Value(11),
+                lhs: Value(1),
+                rhs: Value(2),
+                ty: IrType::I32,
             },
         ];
         entry.terminator = Some(Terminator::Branch { target: bb1 });
@@ -1181,7 +1411,9 @@ is_weak: false,
             ty: IrType::I32,
             incoming: vec![(Value(11), bb0)], // references the eliminated %11
         }];
-        merge.terminator = Some(Terminator::Return { value: Some(Value(20)) });
+        merge.terminator = Some(Terminator::Return {
+            value: Some(Value(20)),
+        });
         merge.predecessors = vec![bb0];
 
         let mut func = Function {
@@ -1192,8 +1424,11 @@ is_weak: false,
             blocks: vec![entry, merge],
             entry_block: bb0,
             is_definition: true,
-is_static: false,
-is_weak: false,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         };
 
         let mut pass = CsePass::new();
@@ -1220,12 +1455,18 @@ is_weak: false,
         let mut entry = BasicBlock::new(bb0, "entry".to_string());
         entry.instructions = vec![
             Instruction::ICmp {
-                result: Value(10), op: CompareOp::Equal,
-                lhs: Value(1), rhs: Value(2), ty: IrType::I32,
+                result: Value(10),
+                op: CompareOp::Equal,
+                lhs: Value(1),
+                rhs: Value(2),
+                ty: IrType::I32,
             },
             Instruction::ICmp {
-                result: Value(11), op: CompareOp::Equal,
-                lhs: Value(1), rhs: Value(2), ty: IrType::I32,
+                result: Value(11),
+                op: CompareOp::Equal,
+                lhs: Value(1),
+                rhs: Value(2),
+                ty: IrType::I32,
             },
         ];
         entry.terminator = Some(Terminator::CondBranch {
@@ -1251,8 +1492,11 @@ is_weak: false,
             blocks: vec![entry, left, right],
             entry_block: bb0,
             is_definition: true,
-is_static: false,
-is_weak: false,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         };
 
         let mut pass = CsePass::new();
@@ -1276,10 +1520,16 @@ is_weak: false,
     fn test_changed_flag_true_on_elimination() {
         let instructions = vec![
             Instruction::Xor {
-                result: Value(10), lhs: Value(1), rhs: Value(2), ty: IrType::I32,
+                result: Value(10),
+                lhs: Value(1),
+                rhs: Value(2),
+                ty: IrType::I32,
             },
             Instruction::Xor {
-                result: Value(11), lhs: Value(2), rhs: Value(1), ty: IrType::I32,
+                result: Value(11),
+                lhs: Value(2),
+                rhs: Value(1),
+                ty: IrType::I32,
             },
         ];
         let mut func = make_single_block_function(instructions);
@@ -1289,11 +1539,12 @@ is_weak: false,
 
     #[test]
     fn test_changed_flag_false_on_no_change() {
-        let instructions = vec![
-            Instruction::Add {
-                result: Value(10), lhs: Value(1), rhs: Value(2), ty: IrType::I32,
-            },
-        ];
+        let instructions = vec![Instruction::Add {
+            result: Value(10),
+            lhs: Value(1),
+            rhs: Value(2),
+            ty: IrType::I32,
+        }];
         let mut func = make_single_block_function(instructions);
         let mut pass = CsePass::new();
         assert!(!pass.run_on_function(&mut func));
@@ -1309,8 +1560,11 @@ is_weak: false,
             blocks: Vec::new(),
             entry_block: BlockId(0),
             is_definition: true,
-is_static: false,
-is_weak: false,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         };
         let mut pass = CsePass::new();
         assert!(!pass.run_on_function(&mut func));
@@ -1326,8 +1580,11 @@ is_weak: false,
             blocks: Vec::new(),
             entry_block: BlockId(0),
             is_definition: false,
-is_static: false,
-is_weak: false,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         };
         let mut pass = CsePass::new();
         assert!(!pass.run_on_function(&mut func));
@@ -1341,12 +1598,18 @@ is_weak: false,
     fn test_identical_casts_eliminated() {
         let instructions = vec![
             Instruction::Cast {
-                result: Value(10), op: CastOp::ZExt,
-                value: Value(1), from_ty: IrType::I32, to_ty: IrType::I64,
+                result: Value(10),
+                op: CastOp::ZExt,
+                value: Value(1),
+                from_ty: IrType::I32,
+                to_ty: IrType::I64,
             },
             Instruction::Cast {
-                result: Value(11), op: CastOp::ZExt,
-                value: Value(1), from_ty: IrType::I32, to_ty: IrType::I64,
+                result: Value(11),
+                op: CastOp::ZExt,
+                value: Value(1),
+                from_ty: IrType::I32,
+                to_ty: IrType::I64,
             },
         ];
         let mut func = make_single_block_function(instructions);
@@ -1361,12 +1624,18 @@ is_weak: false,
     fn test_different_cast_ops_preserved() {
         let instructions = vec![
             Instruction::Cast {
-                result: Value(10), op: CastOp::ZExt,
-                value: Value(1), from_ty: IrType::I32, to_ty: IrType::I64,
+                result: Value(10),
+                op: CastOp::ZExt,
+                value: Value(1),
+                from_ty: IrType::I32,
+                to_ty: IrType::I64,
             },
             Instruction::Cast {
-                result: Value(11), op: CastOp::SExt,
-                value: Value(1), from_ty: IrType::I32, to_ty: IrType::I64,
+                result: Value(11),
+                op: CastOp::SExt,
+                value: Value(1),
+                from_ty: IrType::I32,
+                to_ty: IrType::I64,
             },
         ];
         let mut func = make_single_block_function(instructions);
@@ -1394,11 +1663,16 @@ is_weak: false,
     #[test]
     fn test_select_not_eligible() {
         let inst = Instruction::Select {
-            result: Value(10), condition: Value(1),
-            true_val: Value(2), false_val: Value(3),
+            result: Value(10),
+            condition: Value(1),
+            true_val: Value(2),
+            false_val: Value(3),
             ty: IrType::I32,
         };
-        assert!(expression_key(&inst).is_none(), "Select must not be CSE-eligible");
+        assert!(
+            expression_key(&inst).is_none(),
+            "Select must not be CSE-eligible"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1411,10 +1685,18 @@ is_weak: false,
         let v2 = Value(2);
 
         let signed_div = Instruction::Div {
-            result: Value(10), lhs: v1, rhs: v2, ty: IrType::I32, is_signed: true,
+            result: Value(10),
+            lhs: v1,
+            rhs: v2,
+            ty: IrType::I32,
+            is_signed: true,
         };
         let unsigned_div = Instruction::Div {
-            result: Value(11), lhs: v1, rhs: v2, ty: IrType::I32, is_signed: false,
+            result: Value(11),
+            lhs: v1,
+            rhs: v2,
+            ty: IrType::I32,
+            is_signed: false,
         };
 
         assert_ne!(

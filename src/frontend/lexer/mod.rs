@@ -264,9 +264,8 @@ impl<'a> Lexer<'a> {
             // ---------------------------------------------------------------
             // Operators and punctuation
             // ---------------------------------------------------------------
-            b'+' | b'-' | b'*' | b'/' | b'%' | b'=' | b'!' | b'<' | b'>'
-            | b'&' | b'|' | b'^' | b'~' | b'?' | b':' | b';' | b',' | b'('
-            | b')' | b'{' | b'}' | b'[' | b']' | b'#' => {
+            b'+' | b'-' | b'*' | b'/' | b'%' | b'=' | b'!' | b'<' | b'>' | b'&' | b'|' | b'^'
+            | b'~' | b'?' | b':' | b';' | b',' | b'(' | b')' | b'{' | b'}' | b'[' | b']' | b'#' => {
                 self.scan_operator_or_punctuation(start)
             }
 
@@ -310,8 +309,7 @@ impl<'a> Lexer<'a> {
         let span = self.tracker.span_from(start);
 
         // Extract the identifier text from the source bytes.
-        let name = std::str::from_utf8(&self.bytes[byte_start..byte_end])
-            .unwrap_or("<invalid>");
+        let name = std::str::from_utf8(&self.bytes[byte_start..byte_end]).unwrap_or("<invalid>");
 
         // Check keyword table first.
         if let Some(kind) = lookup_keyword(name) {
@@ -320,7 +318,11 @@ impl<'a> Lexer<'a> {
 
         // Plain identifier — intern it.
         let intern_id = self.interner.intern(name);
-        Token::new(TokenKind::Identifier, span, TokenValue::Identifier(intern_id))
+        Token::new(
+            TokenKind::Identifier,
+            span,
+            TokenValue::Identifier(intern_id),
+        )
     }
 
     // =======================================================================
@@ -679,7 +681,8 @@ impl<'a> Lexer<'a> {
             match self.peek() {
                 None => {
                     // Unterminated block comment.
-                    self.diagnostics.error(start_loc, "unterminated block comment");
+                    self.diagnostics
+                        .error(start_loc, "unterminated block comment");
                     return;
                 }
                 Some(b'*') => {
@@ -863,7 +866,12 @@ mod tests {
         let kinds = lex_kinds("int main void");
         assert_eq!(
             kinds,
-            vec![TokenKind::Int, TokenKind::Identifier, TokenKind::Void, TokenKind::Eof]
+            vec![
+                TokenKind::Int,
+                TokenKind::Identifier,
+                TokenKind::Void,
+                TokenKind::Eof
+            ]
         );
     }
 
@@ -1135,7 +1143,10 @@ mod tests {
     #[test]
     fn test_dot_not_ellipsis() {
         let kinds = lex_kinds(".x");
-        assert_eq!(kinds, vec![TokenKind::Dot, TokenKind::Identifier, TokenKind::Eof]);
+        assert_eq!(
+            kinds,
+            vec![TokenKind::Dot, TokenKind::Identifier, TokenKind::Eof]
+        );
     }
 
     // =======================================================================
@@ -1285,7 +1296,12 @@ mod tests {
         let kinds = lex_kinds("typeof __typeof__ __typeof");
         assert_eq!(
             kinds,
-            vec![TokenKind::Typeof, TokenKind::Typeof, TokenKind::Typeof, TokenKind::Eof]
+            vec![
+                TokenKind::Typeof,
+                TokenKind::Typeof,
+                TokenKind::Typeof,
+                TokenKind::Eof
+            ]
         );
     }
 
@@ -1300,7 +1316,12 @@ mod tests {
         let kinds = lex_kinds("asm __asm__ __asm");
         assert_eq!(
             kinds,
-            vec![TokenKind::Asm, TokenKind::Asm, TokenKind::Asm, TokenKind::Eof]
+            vec![
+                TokenKind::Asm,
+                TokenKind::Asm,
+                TokenKind::Asm,
+                TokenKind::Eof
+            ]
         );
     }
 
@@ -1445,7 +1466,12 @@ mod tests {
         let kinds = lex_kinds("a+b");
         assert_eq!(
             kinds,
-            vec![TokenKind::Identifier, TokenKind::Plus, TokenKind::Identifier, TokenKind::Eof]
+            vec![
+                TokenKind::Identifier,
+                TokenKind::Plus,
+                TokenKind::Identifier,
+                TokenKind::Eof
+            ]
         );
     }
 

@@ -7,17 +7,17 @@
 // All diagnostics are emitted in GCC-compatible format via DiagnosticEmitter.
 // No unsafe code is used in this module.
 
-use super::types::{CType, TypeQualifiers, IntegerKind, FloatKind, FunctionType, StructType};
-use super::type_conversion::{
-    integer_promotion, usual_arithmetic_conversions, default_argument_promotions, is_convertible,
-};
 #[allow(unused_imports)]
-use super::symbol_table::{SymbolTable, Symbol, SymbolKind};
-use crate::frontend::parser::ast::{Expression, BinaryOp, UnaryOp, AssignmentOp};
+use super::symbol_table::{Symbol, SymbolKind, SymbolTable};
+use super::type_conversion::{
+    default_argument_promotions, integer_promotion, is_convertible, usual_arithmetic_conversions,
+};
+use super::types::{CType, FloatKind, FunctionType, IntegerKind, StructType, TypeQualifiers};
 use crate::common::diagnostics::{DiagnosticEmitter, Severity};
-use crate::common::source_map::SourceSpan;
 use crate::common::intern::InternId;
+use crate::common::source_map::SourceSpan;
 use crate::driver::target::TargetConfig;
+use crate::frontend::parser::ast::{AssignmentOp, BinaryOp, Expression, UnaryOp};
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -99,8 +99,7 @@ fn is_assignment_compatible(target: &CType, value: &CType) -> bool {
     }
 
     // 3c. function pointer type ← function (same decay, target IS the fn type)
-    if matches!(t.canonical(), CType::Function(_)) && matches!(v.canonical(), CType::Function(_))
-    {
+    if matches!(t.canonical(), CType::Function(_)) && matches!(v.canonical(), CType::Function(_)) {
         return true;
     }
 
@@ -235,7 +234,10 @@ pub(crate) fn check_assignment(
             let vq = vp.qualifiers();
             if !tq.contains(&vq) {
                 // Target has fewer qualifiers than source → possible qualifier loss
-                diagnostics.warning(span.start, "assignment discards qualifiers from pointer target type");
+                diagnostics.warning(
+                    span.start,
+                    "assignment discards qualifiers from pointer target type",
+                );
             }
         }
     }
@@ -309,7 +311,9 @@ pub(crate) fn check_initialization(
     // To support real-world code like zlib/lua/redis that use aggregate init
     // extensively, we accept scalar-to-struct/union initialization and rely on
     // the IR builder to handle the actual field mapping.
-    if (t.is_struct() || t.is_union()) && (v.is_integer() || v.is_float() || v.is_pointer() || v.is_array() || v.is_function()) {
+    if (t.is_struct() || t.is_union())
+        && (v.is_integer() || v.is_float() || v.is_pointer() || v.is_array() || v.is_function())
+    {
         return true;
     }
     if t.is_array() {
@@ -623,7 +627,9 @@ pub(crate) fn check_binary_op(
                     span.start,
                     format!(
                         "invalid operands to binary '{}': '{}' and '{}'",
-                        binary_op_symbol(&op), left, right
+                        binary_op_symbol(&op),
+                        left,
+                        right
                     ),
                 );
                 CType::Error
@@ -636,31 +642,44 @@ pub(crate) fn check_binary_op(
             } else {
                 diagnostics.error(
                     span.start,
-                    format!("invalid operands to binary '%%': '{}' and '{}'", left, right),
+                    format!(
+                        "invalid operands to binary '%%': '{}' and '{}'",
+                        left, right
+                    ),
                 );
                 CType::Error
             }
         }
 
         // Comparison operators (==, !=, <, >, <=, >=)
-        BinaryOp::Equal | BinaryOp::NotEqual | BinaryOp::Less | BinaryOp::Greater
-        | BinaryOp::LessEqual | BinaryOp::GreaterEqual => {
-            check_comparison(op, l, r, target, diagnostics, span)
-        }
+        BinaryOp::Equal
+        | BinaryOp::NotEqual
+        | BinaryOp::Less
+        | BinaryOp::Greater
+        | BinaryOp::LessEqual
+        | BinaryOp::GreaterEqual => check_comparison(op, l, r, target, diagnostics, span),
 
         // Logical operators (&&, ||)
         BinaryOp::LogicalAnd | BinaryOp::LogicalOr => {
             if !l.is_scalar() {
                 diagnostics.error(
                     span.start,
-                    format!("operand of '{}' must be scalar, have '{}'", binary_op_symbol(&op), left),
+                    format!(
+                        "operand of '{}' must be scalar, have '{}'",
+                        binary_op_symbol(&op),
+                        left
+                    ),
                 );
                 return CType::Error;
             }
             if !r.is_scalar() {
                 diagnostics.error(
                     span.start,
-                    format!("operand of '{}' must be scalar, have '{}'", binary_op_symbol(&op), right),
+                    format!(
+                        "operand of '{}' must be scalar, have '{}'",
+                        binary_op_symbol(&op),
+                        right
+                    ),
                 );
                 return CType::Error;
             }
@@ -676,7 +695,9 @@ pub(crate) fn check_binary_op(
                     span.start,
                     format!(
                         "invalid operands to binary '{}': '{}' and '{}'",
-                        binary_op_symbol(&op), left, right
+                        binary_op_symbol(&op),
+                        left,
+                        right
                     ),
                 );
                 CType::Error
@@ -690,7 +711,9 @@ pub(crate) fn check_binary_op(
                     span.start,
                     format!(
                         "invalid operands to binary '{}': '{}' and '{}'",
-                        binary_op_symbol(&op), left, right
+                        binary_op_symbol(&op),
+                        left,
+                        right
                     ),
                 );
                 return CType::Error;
@@ -794,12 +817,13 @@ fn check_comparison(
     }
     // Pointer and integer for == / != (GCC extension, with warning).
     if matches!(op, BinaryOp::Equal | BinaryOp::NotEqual) {
-        if (left.is_pointer() && right.is_integer())
-            || (left.is_integer() && right.is_pointer())
-        {
+        if (left.is_pointer() && right.is_integer()) || (left.is_integer() && right.is_pointer()) {
             diagnostics.warning(
                 span.start,
-                format!("comparison between pointer and integer: '{}' and '{}'", left, right),
+                format!(
+                    "comparison between pointer and integer: '{}' and '{}'",
+                    left, right
+                ),
             );
             return int_type();
         }
@@ -808,7 +832,9 @@ fn check_comparison(
         span.start,
         format!(
             "invalid operands to binary '{}': '{}' and '{}'",
-            binary_op_symbol(&op), left, right
+            binary_op_symbol(&op),
+            left,
+            right
         ),
     );
     CType::Error
@@ -921,7 +947,11 @@ pub(crate) fn check_unary_op(
                     span.start,
                     format!(
                         "wrong type argument to {}: '{}'",
-                        if matches!(op, UnaryOp::PreIncrement) { "increment" } else { "decrement" },
+                        if matches!(op, UnaryOp::PreIncrement) {
+                            "increment"
+                        } else {
+                            "decrement"
+                        },
                         operand
                     ),
                 );
@@ -1021,6 +1051,36 @@ fn element_type(ty: &CType, diagnostics: &mut DiagnosticEmitter, span: SourceSpa
 ///   `StructType.fields`.
 ///
 /// Returns the member's type, or `CType::Error` on failure.
+
+/// Recursively searches for a named member in a list of struct/union fields,
+/// descending into anonymous struct/union members (C11 §6.7.2.1p13).
+/// Returns `Some(CType)` if the member is found, `None` otherwise.
+fn find_member_recursive(
+    fields: &[super::types::StructField],
+    name: &str,
+) -> Option<super::types::CType> {
+    for field in fields {
+        // Check direct named fields first.
+        if let Some(ref fname) = field.name {
+            if fname == name {
+                return Some(field.ty.clone());
+            }
+        } else {
+            // Anonymous member (name is None): if the field type is a
+            // struct or union, recursively search its fields.
+            match field.ty.unqualified().canonical() {
+                super::types::CType::Struct(inner_st) => {
+                    if let Some(found) = find_member_recursive(&inner_st.fields, name) {
+                        return Some(found);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    None
+}
+
 pub(crate) fn check_member_access(
     object_type: &CType,
     _member_name: InternId,
@@ -1038,21 +1098,19 @@ pub(crate) fn check_member_access(
     let struct_ty: &StructType = if is_arrow {
         // Arrow access: object must be pointer to struct/union.
         match object_type.unqualified().canonical() {
-            CType::Pointer { pointee, .. } => {
-                match pointee.as_ref().unqualified().canonical() {
-                    CType::Struct(st) => st,
-                    _ => {
-                        diagnostics.error(
-                            span.start,
-                            format!(
-                                "member reference base type '{}' is not a structure or union",
-                                object_type
-                            ),
-                        );
-                        return CType::Error;
-                    }
+            CType::Pointer { pointee, .. } => match pointee.as_ref().unqualified().canonical() {
+                CType::Struct(st) => st,
+                _ => {
+                    diagnostics.error(
+                        span.start,
+                        format!(
+                            "member reference base type '{}' is not a structure or union",
+                            object_type
+                        ),
+                    );
+                    return CType::Error;
                 }
-            }
+            },
             _ => {
                 diagnostics.error(
                     span.start,
@@ -1083,32 +1141,35 @@ pub(crate) fn check_member_access(
 
     // Check completeness.
     if !struct_ty.is_complete {
-        let kind = if struct_ty.is_union { "union" } else { "struct" };
+        let kind = if struct_ty.is_union {
+            "union"
+        } else {
+            "struct"
+        };
         diagnostics.error(
             span.start,
-            format!(
-                "incomplete definition of {} type",
-                kind
-            ),
+            format!("incomplete definition of {} type", kind),
         );
         return CType::Error;
     }
 
-    // Look up the member by name.
-    for field in &struct_ty.fields {
-        if let Some(ref fname) = field.name {
-            if fname == member_name_str {
-                return field.ty.clone();
-            }
-        }
+    // Look up the member by name, including recursive search through
+    // anonymous struct/union members (C11 §6.7.2.1p13: members of an
+    // anonymous struct/union are considered members of the enclosing
+    // struct/union). This enables patterns like:
+    //   struct pcpu_hot { union { struct { int current_task; }; u8 pad[64]; }; };
+    //   h.current_task  // valid — searches through anonymous union + struct
+    if let Some(found) = find_member_recursive(&struct_ty.fields, member_name_str) {
+        return found;
     }
 
     // Member not found.
-    let kind = if struct_ty.is_union { "union" } else { "struct" };
-    let tag = struct_ty
-        .tag
-        .as_deref()
-        .unwrap_or("<anonymous>");
+    let kind = if struct_ty.is_union {
+        "union"
+    } else {
+        "struct"
+    };
+    let tag = struct_ty.tag.as_deref().unwrap_or("<anonymous>");
     diagnostics.error(
         span.start,
         format!(
@@ -1139,14 +1200,20 @@ pub(crate) fn check_dereference(
                 return CType::Error;
             }
             if pointee.is_function() {
-                diagnostics.warning(span.start, "dereferencing function pointer (did you mean to call it?)");
+                diagnostics.warning(
+                    span.start,
+                    "dereferencing function pointer (did you mean to call it?)",
+                );
             }
             *pointee.clone()
         }
         _ => {
             diagnostics.error(
                 span.start,
-                format!("indirection requires pointer operand ('{}' invalid)", operand_type),
+                format!(
+                    "indirection requires pointer operand ('{}' invalid)",
+                    operand_type
+                ),
             );
             CType::Error
         }
@@ -1184,10 +1251,8 @@ pub(crate) fn check_cast(
 
     // Pointer → pointer: OK (warn on qualifier loss).
     if t.is_pointer() && s.is_pointer() {
-        if let (
-            CType::Pointer { pointee: tp, .. },
-            CType::Pointer { pointee: sp, .. },
-        ) = (t.canonical(), s.canonical())
+        if let (CType::Pointer { pointee: tp, .. }, CType::Pointer { pointee: sp, .. }) =
+            (t.canonical(), s.canonical())
         {
             let tq = tp.qualifiers();
             let sq = sp.qualifiers();
@@ -1205,7 +1270,10 @@ pub(crate) fn check_cast(
     if t.is_pointer() && s.is_integer() {
         diagnostics.warning(
             span.start,
-            format!("cast to pointer from integer of different size: '{}' to '{}'", source_type, target_type),
+            format!(
+                "cast to pointer from integer of different size: '{}' to '{}'",
+                source_type, target_type
+            ),
         );
         return true;
     }
@@ -1214,7 +1282,10 @@ pub(crate) fn check_cast(
     if t.is_integer() && s.is_pointer() {
         diagnostics.warning(
             span.start,
-            format!("cast from pointer to integer of different size: '{}' to '{}'", source_type, target_type),
+            format!(
+                "cast from pointer to integer of different size: '{}' to '{}'",
+                source_type, target_type
+            ),
         );
         return true;
     }
@@ -1247,7 +1318,10 @@ pub(crate) fn check_cast(
     if t.is_function() || s.is_function() {
         diagnostics.error(
             span.start,
-            format!("illegal cast involving function type: '{}' to '{}'", source_type, target_type),
+            format!(
+                "illegal cast involving function type: '{}' to '{}'",
+                source_type, target_type
+            ),
         );
         return false;
     }
@@ -1316,10 +1390,8 @@ pub(crate) fn check_conditional(
             return else_type.clone();
         }
         // Compatible pointee types → result is pointer to composite.
-        if let (
-            CType::Pointer { pointee: tp, .. },
-            CType::Pointer { pointee: ep, .. },
-        ) = (t.canonical(), e.canonical())
+        if let (CType::Pointer { pointee: tp, .. }, CType::Pointer { pointee: ep, .. }) =
+            (t.canonical(), e.canonical())
         {
             if tp.unqualified().is_compatible(ep.unqualified()) {
                 return then_type.clone();
@@ -1377,31 +1449,39 @@ pub(crate) fn check_conditional(
 const _: () = {
     // Verify AssignmentOp is accessible (used in compound assignment dispatch by caller).
     fn _use_assignment_op(op: &AssignmentOp) -> bool {
-        matches!(op, AssignmentOp::Assign | AssignmentOp::AddAssign | AssignmentOp::SubAssign)
+        matches!(
+            op,
+            AssignmentOp::Assign | AssignmentOp::AddAssign | AssignmentOp::SubAssign
+        )
     }
     // Verify Severity variants are accessible (used in test assertions).
-    fn _use_severity() -> Severity { Severity::Error }
+    fn _use_severity() -> Severity {
+        Severity::Error
+    }
     // Verify SymbolTable.lookup_tag is accessible.
     fn _use_lookup_tag(st: &SymbolTable, id: InternId) -> bool {
         st.lookup_tag(id).is_some()
     }
     // Verify TargetConfig accessors.
     fn _use_target(tc: &TargetConfig) -> u32 {
-        tc.pointer_size() + tc.int_size() + tc.long_size()
-            + tc.ptrdiff_t_size() + tc.size_t_size()
+        tc.pointer_size() + tc.int_size() + tc.long_size() + tc.ptrdiff_t_size() + tc.size_t_size()
     }
     // Verify FloatKind variants.
     fn _use_float_kinds() -> (FloatKind, FloatKind, FloatKind) {
         (FloatKind::Float, FloatKind::Double, FloatKind::LongDouble)
     }
     // Verify IntegerKind::Int rank.
-    fn _use_int_rank() -> u8 { IntegerKind::Int.rank() }
+    fn _use_int_rank() -> u8 {
+        IntegerKind::Int.rank()
+    }
     // Verify is_convertible from type_conversion.
     fn _use_is_convertible(from: &CType, to: &CType, tc: &TargetConfig) -> bool {
         is_convertible(from, to, tc)
     }
     // Verify SourceSpan.end accessible.
-    fn _use_span_end(sp: &SourceSpan) -> crate::common::source_map::SourceLocation { sp.end }
+    fn _use_span_end(sp: &SourceSpan) -> crate::common::source_map::SourceLocation {
+        sp.end
+    }
 };
 
 // ===========================================================================
@@ -1411,9 +1491,7 @@ const _: () = {
 mod tests {
     use super::*;
     use crate::common::source_map::SourceLocation;
-    use crate::sema::types::{
-        ArraySize, FunctionParam, StructField,
-    };
+    use crate::sema::types::{ArraySize, FunctionParam, StructField};
 
     // Helper: create a dummy SourceSpan for testing.
     fn dummy_span() -> SourceSpan {
@@ -1431,14 +1509,30 @@ mod tests {
     }
 
     // Helper: shorthand types.
-    fn ty_int() -> CType { CType::Integer(IntegerKind::Int) }
-    fn ty_uint() -> CType { CType::Integer(IntegerKind::UnsignedInt) }
-    fn ty_float() -> CType { CType::Float(FloatKind::Float) }
-    fn ty_double() -> CType { CType::Float(FloatKind::Double) }
-    fn ty_long() -> CType { CType::Integer(IntegerKind::Long) }
-    fn ty_char() -> CType { CType::Integer(IntegerKind::Char) }
-    fn ty_bool() -> CType { CType::Integer(IntegerKind::Bool) }
-    fn ty_void() -> CType { CType::Void }
+    fn ty_int() -> CType {
+        CType::Integer(IntegerKind::Int)
+    }
+    fn ty_uint() -> CType {
+        CType::Integer(IntegerKind::UnsignedInt)
+    }
+    fn ty_float() -> CType {
+        CType::Float(FloatKind::Float)
+    }
+    fn ty_double() -> CType {
+        CType::Float(FloatKind::Double)
+    }
+    fn ty_long() -> CType {
+        CType::Integer(IntegerKind::Long)
+    }
+    fn ty_char() -> CType {
+        CType::Integer(IntegerKind::Char)
+    }
+    fn ty_bool() -> CType {
+        CType::Integer(IntegerKind::Bool)
+    }
+    fn ty_void() -> CType {
+        CType::Void
+    }
 
     fn ty_ptr(inner: CType) -> CType {
         CType::Pointer {
@@ -1527,7 +1621,12 @@ mod tests {
     #[test]
     fn assignment_float_to_int() {
         let mut d = new_diagnostics();
-        assert!(check_assignment(&ty_int(), &ty_float(), &mut d, dummy_span()));
+        assert!(check_assignment(
+            &ty_int(),
+            &ty_float(),
+            &mut d,
+            dummy_span()
+        ));
         assert!(!d.has_errors());
     }
 
@@ -1632,7 +1731,13 @@ mod tests {
     fn function_call_correct_args() {
         let mut d = new_diagnostics();
         let ft = ty_func(ty_int(), vec![ty_int(), ty_float()], false);
-        let result = check_function_call(&ft, &[ty_int(), ty_float()], &x86_64_target(), &mut d, dummy_span());
+        let result = check_function_call(
+            &ft,
+            &[ty_int(), ty_float()],
+            &x86_64_target(),
+            &mut d,
+            dummy_span(),
+        );
         assert!(!d.has_errors());
         assert!(result.is_integer());
     }
@@ -1649,7 +1754,13 @@ mod tests {
     fn function_call_too_many_args() {
         let mut d = new_diagnostics();
         let ft = ty_func(ty_int(), vec![ty_int()], false);
-        let _r = check_function_call(&ft, &[ty_int(), ty_float()], &x86_64_target(), &mut d, dummy_span());
+        let _r = check_function_call(
+            &ft,
+            &[ty_int(), ty_float()],
+            &x86_64_target(),
+            &mut d,
+            dummy_span(),
+        );
         assert!(d.has_errors());
     }
 
@@ -1704,7 +1815,14 @@ mod tests {
     #[test]
     fn binary_int_plus_int() {
         let mut d = new_diagnostics();
-        let result = check_binary_op(BinaryOp::Add, &ty_int(), &ty_int(), &x86_64_target(), &mut d, dummy_span());
+        let result = check_binary_op(
+            BinaryOp::Add,
+            &ty_int(),
+            &ty_int(),
+            &x86_64_target(),
+            &mut d,
+            dummy_span(),
+        );
         assert!(!d.has_errors());
         assert!(result.is_integer());
     }
@@ -1712,7 +1830,14 @@ mod tests {
     #[test]
     fn binary_int_plus_float() {
         let mut d = new_diagnostics();
-        let result = check_binary_op(BinaryOp::Add, &ty_int(), &ty_float(), &x86_64_target(), &mut d, dummy_span());
+        let result = check_binary_op(
+            BinaryOp::Add,
+            &ty_int(),
+            &ty_float(),
+            &x86_64_target(),
+            &mut d,
+            dummy_span(),
+        );
         assert!(!d.has_errors());
         // Usual arithmetic conversions: int + float → float.
         assert!(result.is_float());
@@ -1722,7 +1847,14 @@ mod tests {
     fn binary_pointer_plus_int() {
         let mut d = new_diagnostics();
         let ip = ty_ptr(ty_int());
-        let result = check_binary_op(BinaryOp::Add, &ip, &ty_int(), &x86_64_target(), &mut d, dummy_span());
+        let result = check_binary_op(
+            BinaryOp::Add,
+            &ip,
+            &ty_int(),
+            &x86_64_target(),
+            &mut d,
+            dummy_span(),
+        );
         assert!(!d.has_errors());
         assert!(result.is_pointer());
     }
@@ -1731,7 +1863,14 @@ mod tests {
     fn binary_pointer_plus_pointer_fails() {
         let mut d = new_diagnostics();
         let ip = ty_ptr(ty_int());
-        let result = check_binary_op(BinaryOp::Add, &ip, &ip, &x86_64_target(), &mut d, dummy_span());
+        let result = check_binary_op(
+            BinaryOp::Add,
+            &ip,
+            &ip,
+            &x86_64_target(),
+            &mut d,
+            dummy_span(),
+        );
         assert!(d.has_errors());
         assert!(result.is_error());
     }
@@ -1740,7 +1879,14 @@ mod tests {
     fn binary_pointer_minus_pointer() {
         let mut d = new_diagnostics();
         let ip = ty_ptr(ty_int());
-        let result = check_binary_op(BinaryOp::Sub, &ip, &ip, &x86_64_target(), &mut d, dummy_span());
+        let result = check_binary_op(
+            BinaryOp::Sub,
+            &ip,
+            &ip,
+            &x86_64_target(),
+            &mut d,
+            dummy_span(),
+        );
         assert!(!d.has_errors());
         // ptrdiff_t on x86-64 is Long.
         assert!(result.is_integer());
@@ -1749,7 +1895,14 @@ mod tests {
     #[test]
     fn binary_mod_requires_integer() {
         let mut d = new_diagnostics();
-        let result = check_binary_op(BinaryOp::Mod, &ty_float(), &ty_int(), &x86_64_target(), &mut d, dummy_span());
+        let result = check_binary_op(
+            BinaryOp::Mod,
+            &ty_float(),
+            &ty_int(),
+            &x86_64_target(),
+            &mut d,
+            dummy_span(),
+        );
         assert!(d.has_errors());
         assert!(result.is_error());
     }
@@ -1757,7 +1910,14 @@ mod tests {
     #[test]
     fn binary_comparison_result_is_int() {
         let mut d = new_diagnostics();
-        let result = check_binary_op(BinaryOp::Less, &ty_int(), &ty_float(), &x86_64_target(), &mut d, dummy_span());
+        let result = check_binary_op(
+            BinaryOp::Less,
+            &ty_int(),
+            &ty_float(),
+            &x86_64_target(),
+            &mut d,
+            dummy_span(),
+        );
         assert!(!d.has_errors());
         assert!(result.is_integer());
     }
@@ -1766,7 +1926,14 @@ mod tests {
     fn binary_pointer_comparison() {
         let mut d = new_diagnostics();
         let ip = ty_ptr(ty_int());
-        let result = check_binary_op(BinaryOp::Equal, &ip, &ip, &x86_64_target(), &mut d, dummy_span());
+        let result = check_binary_op(
+            BinaryOp::Equal,
+            &ip,
+            &ip,
+            &x86_64_target(),
+            &mut d,
+            dummy_span(),
+        );
         assert!(!d.has_errors());
         assert!(result.is_integer());
     }
@@ -1775,7 +1942,14 @@ mod tests {
     fn binary_logical_and_requires_scalar() {
         let mut d = new_diagnostics();
         let s = ty_struct("S", vec![("x", ty_int())]);
-        let result = check_binary_op(BinaryOp::LogicalAnd, &s, &ty_int(), &x86_64_target(), &mut d, dummy_span());
+        let result = check_binary_op(
+            BinaryOp::LogicalAnd,
+            &s,
+            &ty_int(),
+            &x86_64_target(),
+            &mut d,
+            dummy_span(),
+        );
         assert!(d.has_errors());
         assert!(result.is_error());
     }
@@ -1783,7 +1957,14 @@ mod tests {
     #[test]
     fn binary_shift_left() {
         let mut d = new_diagnostics();
-        let result = check_binary_op(BinaryOp::ShiftLeft, &ty_char(), &ty_int(), &x86_64_target(), &mut d, dummy_span());
+        let result = check_binary_op(
+            BinaryOp::ShiftLeft,
+            &ty_char(),
+            &ty_int(),
+            &x86_64_target(),
+            &mut d,
+            dummy_span(),
+        );
         assert!(!d.has_errors());
         // Char is promoted to int for shift result.
         assert!(result.is_integer());
@@ -1794,7 +1975,13 @@ mod tests {
     #[test]
     fn unary_negate_int() {
         let mut d = new_diagnostics();
-        let result = check_unary_op(UnaryOp::Negate, &ty_int(), &x86_64_target(), &mut d, dummy_span());
+        let result = check_unary_op(
+            UnaryOp::Negate,
+            &ty_int(),
+            &x86_64_target(),
+            &mut d,
+            dummy_span(),
+        );
         assert!(!d.has_errors());
         assert!(result.is_integer());
     }
@@ -1803,7 +1990,13 @@ mod tests {
     fn unary_logical_not_pointer() {
         let mut d = new_diagnostics();
         let ip = ty_ptr(ty_int());
-        let result = check_unary_op(UnaryOp::LogicalNot, &ip, &x86_64_target(), &mut d, dummy_span());
+        let result = check_unary_op(
+            UnaryOp::LogicalNot,
+            &ip,
+            &x86_64_target(),
+            &mut d,
+            dummy_span(),
+        );
         assert!(!d.has_errors());
         assert!(result.is_integer());
     }
@@ -1812,7 +2005,13 @@ mod tests {
     fn unary_deref_pointer() {
         let mut d = new_diagnostics();
         let ip = ty_ptr(ty_int());
-        let result = check_unary_op(UnaryOp::Dereference, &ip, &x86_64_target(), &mut d, dummy_span());
+        let result = check_unary_op(
+            UnaryOp::Dereference,
+            &ip,
+            &x86_64_target(),
+            &mut d,
+            dummy_span(),
+        );
         assert!(!d.has_errors());
         assert!(result.is_integer());
     }
@@ -1820,7 +2019,13 @@ mod tests {
     #[test]
     fn unary_address_of() {
         let mut d = new_diagnostics();
-        let result = check_unary_op(UnaryOp::AddressOf, &ty_int(), &x86_64_target(), &mut d, dummy_span());
+        let result = check_unary_op(
+            UnaryOp::AddressOf,
+            &ty_int(),
+            &x86_64_target(),
+            &mut d,
+            dummy_span(),
+        );
         assert!(!d.has_errors());
         assert!(result.is_pointer());
     }
@@ -1889,7 +2094,8 @@ mod tests {
     fn member_access_struct_dot() {
         let mut d = new_diagnostics();
         let s = ty_struct("Point", vec![("x", ty_int()), ("y", ty_float())]);
-        let result = check_member_access(&s, InternId::from_raw(0), "y", false, &mut d, dummy_span());
+        let result =
+            check_member_access(&s, InternId::from_raw(0), "y", false, &mut d, dummy_span());
         assert!(!d.has_errors());
         assert!(result.is_float());
     }
@@ -1899,7 +2105,8 @@ mod tests {
         let mut d = new_diagnostics();
         let s = ty_struct("Point", vec![("x", ty_int()), ("y", ty_float())]);
         let ps = ty_ptr(s);
-        let result = check_member_access(&ps, InternId::from_raw(0), "x", true, &mut d, dummy_span());
+        let result =
+            check_member_access(&ps, InternId::from_raw(0), "x", true, &mut d, dummy_span());
         assert!(!d.has_errors());
         assert!(result.is_integer());
     }
@@ -1908,7 +2115,8 @@ mod tests {
     fn member_access_not_found() {
         let mut d = new_diagnostics();
         let s = ty_struct("Point", vec![("x", ty_int())]);
-        let result = check_member_access(&s, InternId::from_raw(0), "z", false, &mut d, dummy_span());
+        let result =
+            check_member_access(&s, InternId::from_raw(0), "z", false, &mut d, dummy_span());
         assert!(d.has_errors());
         assert!(result.is_error());
     }
@@ -1917,7 +2125,8 @@ mod tests {
     fn member_access_union() {
         let mut d = new_diagnostics();
         let u = ty_union("Data", vec![("i", ty_int()), ("f", ty_float())]);
-        let result = check_member_access(&u, InternId::from_raw(0), "f", false, &mut d, dummy_span());
+        let result =
+            check_member_access(&u, InternId::from_raw(0), "f", false, &mut d, dummy_span());
         assert!(!d.has_errors());
         assert!(result.is_float());
     }
@@ -1994,7 +2203,12 @@ mod tests {
     fn conditional_both_int() {
         let mut d = new_diagnostics();
         let result = check_conditional(
-            &ty_int(), &ty_int(), &ty_int(), &x86_64_target(), &mut d, dummy_span(),
+            &ty_int(),
+            &ty_int(),
+            &ty_int(),
+            &x86_64_target(),
+            &mut d,
+            dummy_span(),
         );
         assert!(!d.has_errors());
         assert!(result.is_integer());
@@ -2004,7 +2218,12 @@ mod tests {
     fn conditional_int_and_float() {
         let mut d = new_diagnostics();
         let result = check_conditional(
-            &ty_int(), &ty_int(), &ty_float(), &x86_64_target(), &mut d, dummy_span(),
+            &ty_int(),
+            &ty_int(),
+            &ty_float(),
+            &x86_64_target(),
+            &mut d,
+            dummy_span(),
         );
         assert!(!d.has_errors());
         assert!(result.is_float());
@@ -2014,7 +2233,12 @@ mod tests {
     fn conditional_both_void() {
         let mut d = new_diagnostics();
         let result = check_conditional(
-            &ty_int(), &ty_void(), &ty_void(), &x86_64_target(), &mut d, dummy_span(),
+            &ty_int(),
+            &ty_void(),
+            &ty_void(),
+            &x86_64_target(),
+            &mut d,
+            dummy_span(),
         );
         assert!(!d.has_errors());
         assert!(result.is_void());
@@ -2025,7 +2249,12 @@ mod tests {
         let mut d = new_diagnostics();
         let s = ty_struct("S", vec![("x", ty_int())]);
         let result = check_conditional(
-            &s, &ty_int(), &ty_int(), &x86_64_target(), &mut d, dummy_span(),
+            &s,
+            &ty_int(),
+            &ty_int(),
+            &x86_64_target(),
+            &mut d,
+            dummy_span(),
         );
         assert!(d.has_errors());
         assert!(result.is_error());
@@ -2035,9 +2264,7 @@ mod tests {
     fn conditional_pointers() {
         let mut d = new_diagnostics();
         let ip = ty_ptr(ty_int());
-        let result = check_conditional(
-            &ty_int(), &ip, &ip, &x86_64_target(), &mut d, dummy_span(),
-        );
+        let result = check_conditional(&ty_int(), &ip, &ip, &x86_64_target(), &mut d, dummy_span());
         assert!(!d.has_errors());
         assert!(result.is_pointer());
     }
@@ -2047,7 +2274,14 @@ mod tests {
     #[test]
     fn error_type_propagates() {
         let mut d = new_diagnostics();
-        let result = check_binary_op(BinaryOp::Add, &CType::Error, &ty_int(), &x86_64_target(), &mut d, dummy_span());
+        let result = check_binary_op(
+            BinaryOp::Add,
+            &CType::Error,
+            &ty_int(),
+            &x86_64_target(),
+            &mut d,
+            dummy_span(),
+        );
         assert!(result.is_error());
         assert!(!d.has_errors()); // No additional error emitted.
     }

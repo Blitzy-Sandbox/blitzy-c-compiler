@@ -485,10 +485,7 @@ impl ControlFlowGraph {
 
             // Consistency: if B is a predecessor of A, then A must be a successor of B
             for &pred in &block.predecessors {
-                if !self.blocks[pred.0 as usize]
-                    .successors
-                    .contains(&block.id)
-                {
+                if !self.blocks[pred.0 as usize].successors.contains(&block.id) {
                     return false;
                 }
             }
@@ -706,8 +703,7 @@ pub fn compute_dominance_tree(cfg: &ControlFlowGraph) -> DominanceTree {
                             new_idom = Some(p);
                         }
                         Some(current) => {
-                            new_idom =
-                                Some(intersect(current, p, &idom, &rpo_number));
+                            new_idom = Some(intersect(current, p, &idom, &rpo_number));
                         }
                     }
                 }
@@ -895,10 +891,7 @@ pub struct Loop {
 ///
 /// A list of detected loops. Outermost loops are at the top level; inner loops
 /// are nested in the `inner_loops` field.
-pub fn detect_loops(
-    cfg: &ControlFlowGraph,
-    dom_tree: &DominanceTree,
-) -> Vec<Loop> {
+pub fn detect_loops(cfg: &ControlFlowGraph, dom_tree: &DominanceTree) -> Vec<Loop> {
     // Step 1: Find all back edges
     let mut back_edges: Vec<(BlockId, BlockId)> = Vec::new();
     for block in cfg.blocks() {
@@ -966,9 +959,7 @@ pub fn detect_loops(
     for i in 0..loop_count {
         for j in (i + 1)..loop_count {
             // loops[j] is larger; check if loops[i] is nested in loops[j]
-            if loops[i].header != loops[j].header
-                && loops[j].blocks.contains(&loops[i].header)
-            {
+            if loops[i].header != loops[j].header && loops[j].blocks.contains(&loops[i].header) {
                 // loops[i] is an inner loop of the smallest containing loop
                 match parent_of[i] {
                     None => {
@@ -976,8 +967,7 @@ pub fn detect_loops(
                     }
                     Some(current_parent) => {
                         // Pick the smaller (tighter) parent
-                        if loops[j].blocks.len() < loops[current_parent].blocks.len()
-                        {
+                        if loops[j].blocks.len() < loops[current_parent].blocks.len() {
                             parent_of[i] = Some(j);
                         }
                     }
@@ -1014,10 +1004,7 @@ pub fn detect_loops(
         match parent_of[i] {
             None => top_level_indices.push(i),
             Some(p) => {
-                children_map
-                    .entry(p)
-                    .or_insert_with(Vec::new)
-                    .push(i);
+                children_map.entry(p).or_insert_with(Vec::new).push(i);
             }
         }
     }
@@ -1069,21 +1056,15 @@ mod tests {
         let mut cfg = ControlFlowGraph::new(BlockId(0));
 
         let mut a = make_block(0, "A");
-        a.terminator = Some(Terminator::Branch {
-            target: BlockId(1),
-        });
+        a.terminator = Some(Terminator::Branch { target: BlockId(1) });
         cfg.add_block(a);
 
         let mut b = make_block(1, "B");
-        b.terminator = Some(Terminator::Branch {
-            target: BlockId(2),
-        });
+        b.terminator = Some(Terminator::Branch { target: BlockId(2) });
         cfg.add_block(b);
 
         let mut c = make_block(2, "C");
-        c.terminator = Some(Terminator::Branch {
-            target: BlockId(3),
-        });
+        c.terminator = Some(Terminator::Branch { target: BlockId(3) });
         cfg.add_block(c);
 
         let mut d = make_block(3, "D");
@@ -1115,15 +1096,11 @@ mod tests {
         cfg.add_block(entry);
 
         let mut left = make_block(1, "left");
-        left.terminator = Some(Terminator::Branch {
-            target: BlockId(3),
-        });
+        left.terminator = Some(Terminator::Branch { target: BlockId(3) });
         cfg.add_block(left);
 
         let mut right = make_block(2, "right");
-        right.terminator = Some(Terminator::Branch {
-            target: BlockId(3),
-        });
+        right.terminator = Some(Terminator::Branch { target: BlockId(3) });
         cfg.add_block(right);
 
         let mut merge = make_block(3, "merge");
@@ -1145,9 +1122,7 @@ mod tests {
         let mut cfg = ControlFlowGraph::new(BlockId(0));
 
         let mut entry = make_block(0, "entry");
-        entry.terminator = Some(Terminator::Branch {
-            target: BlockId(1),
-        });
+        entry.terminator = Some(Terminator::Branch { target: BlockId(1) });
         cfg.add_block(entry);
 
         let mut header = make_block(1, "header");
@@ -1159,9 +1134,7 @@ mod tests {
         cfg.add_block(header);
 
         let mut body = make_block(2, "body");
-        body.terminator = Some(Terminator::Branch {
-            target: BlockId(1),
-        });
+        body.terminator = Some(Terminator::Branch { target: BlockId(1) });
         cfg.add_block(body);
 
         let mut exit = make_block(3, "exit");
@@ -1285,9 +1258,7 @@ mod tests {
 
     #[test]
     fn test_branch_successors() {
-        let term = Terminator::Branch {
-            target: BlockId(5),
-        };
+        let term = Terminator::Branch { target: BlockId(5) };
         assert_eq!(term.successors(), vec![BlockId(5)]);
     }
 
@@ -1355,14 +1326,8 @@ mod tests {
         phi.add_incoming(Value(2), BlockId(1));
 
         assert_eq!(phi.incoming.len(), 2);
-        assert_eq!(
-            phi.get_value_for_block(BlockId(0)),
-            Some(Value(1))
-        );
-        assert_eq!(
-            phi.get_value_for_block(BlockId(1)),
-            Some(Value(2))
-        );
+        assert_eq!(phi.get_value_for_block(BlockId(0)), Some(Value(1)));
+        assert_eq!(phi.get_value_for_block(BlockId(1)), Some(Value(2)));
         assert_eq!(phi.get_value_for_block(BlockId(99)), None);
     }
 
@@ -1374,10 +1339,7 @@ mod tests {
     fn test_rpo_linear_chain() {
         let cfg = build_linear_cfg();
         let rpo = reverse_postorder(&cfg);
-        assert_eq!(
-            rpo,
-            vec![BlockId(0), BlockId(1), BlockId(2), BlockId(3)]
-        );
+        assert_eq!(rpo, vec![BlockId(0), BlockId(1), BlockId(2), BlockId(3)]);
     }
 
     #[test]
@@ -1485,10 +1447,7 @@ mod tests {
         let cfg = build_linear_cfg();
         let dom = compute_dominance_tree(&cfg);
         let pre = dom.preorder(BlockId(0));
-        assert_eq!(
-            pre,
-            vec![BlockId(0), BlockId(1), BlockId(2), BlockId(3)]
-        );
+        assert_eq!(pre, vec![BlockId(0), BlockId(1), BlockId(2), BlockId(3)]);
     }
 
     // =======================================================================
@@ -1578,9 +1537,7 @@ mod tests {
         let mut cfg = ControlFlowGraph::new(BlockId(0));
 
         let mut entry = make_block(0, "entry");
-        entry.terminator = Some(Terminator::Branch {
-            target: BlockId(1),
-        });
+        entry.terminator = Some(Terminator::Branch { target: BlockId(1) });
         cfg.add_block(entry);
 
         let mut oh = make_block(1, "outer_header");
@@ -1600,15 +1557,11 @@ mod tests {
         cfg.add_block(ih);
 
         let mut ib = make_block(3, "inner_body");
-        ib.terminator = Some(Terminator::Branch {
-            target: BlockId(2),
-        });
+        ib.terminator = Some(Terminator::Branch { target: BlockId(2) });
         cfg.add_block(ib);
 
         let mut ob = make_block(4, "outer_body");
-        ob.terminator = Some(Terminator::Branch {
-            target: BlockId(1),
-        });
+        ob.terminator = Some(Terminator::Branch { target: BlockId(1) });
         cfg.add_block(ob);
 
         let mut exit = make_block(5, "exit");
@@ -1624,7 +1577,10 @@ mod tests {
         // Inner loop may appear as nested or as separate depending on
         // the nesting logic. Let's verify basics.
         let all_loops = collect_all_loops(&loops);
-        assert!(all_loops.len() >= 2, "Expected at least 2 loops (inner + outer)");
+        assert!(
+            all_loops.len() >= 2,
+            "Expected at least 2 loops (inner + outer)"
+        );
 
         // Find the inner and outer loops
         let inner = all_loops
@@ -1669,9 +1625,7 @@ mod tests {
         let mut cfg = ControlFlowGraph::new(BlockId(3));
 
         let mut entry = make_block(3, "entry");
-        entry.terminator = Some(Terminator::Branch {
-            target: BlockId(0),
-        });
+        entry.terminator = Some(Terminator::Branch { target: BlockId(0) });
         cfg.add_block(entry);
 
         let mut header = make_block(0, "header");
@@ -1683,15 +1637,11 @@ mod tests {
         cfg.add_block(header);
 
         let mut body_a = make_block(1, "body_a");
-        body_a.terminator = Some(Terminator::Branch {
-            target: BlockId(0),
-        });
+        body_a.terminator = Some(Terminator::Branch { target: BlockId(0) });
         cfg.add_block(body_a);
 
         let mut body_b = make_block(2, "body_b");
-        body_b.terminator = Some(Terminator::Branch {
-            target: BlockId(0),
-        });
+        body_b.terminator = Some(Terminator::Branch { target: BlockId(0) });
         cfg.add_block(body_b);
 
         let mut exit = make_block(4, "exit");

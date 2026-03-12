@@ -12,6 +12,11 @@ build = "build.rs"
 # encoding, archive reading) is implemented using only std.
 [dependencies]
 
+[features]
+# Gate long-running Linux kernel validation tests behind a feature flag.
+# Enable with: cargo test --features linux_validation
+linux_validation = []
+
 [profile.release]
 opt-level = 3
 lto = true

@@ -30,16 +30,14 @@
 
 use std::collections::HashMap;
 
-use crate::codegen::{
-    CodeGenError, MachineInstr, MachineOperand, Relocation, RelocationType,
-};
-use crate::codegen::regalloc::{AllocationResult, PhysReg, RegClass, build_value_to_reg_map};
+use crate::codegen::regalloc::{build_value_to_reg_map, AllocationResult, PhysReg, RegClass};
+use crate::codegen::{CodeGenError, MachineInstr, MachineOperand, Relocation, RelocationType};
 use crate::driver::target::TargetConfig;
-use crate::ir::{
-    BasicBlock, BlockId, Callee, CastOp, CompareOp, Constant, ControlFlowGraph,
-    FloatCompareOp, Function, Instruction, IrType, PhiNode, Terminator, Value,
-};
 use crate::ir::cfg::reverse_postorder;
+use crate::ir::{
+    BasicBlock, BlockId, Callee, CastOp, CompareOp, Constant, ControlFlowGraph, FloatCompareOp,
+    Function, Instruction, IrType, PhiNode, Terminator, Value,
+};
 
 // ---------------------------------------------------------------------------
 // Riscv64Opcode — RISC-V 64 machine instruction opcodes
@@ -52,7 +50,6 @@ use crate::ir::cfg::reverse_postorder;
 #[repr(u32)]
 pub enum Riscv64Opcode {
     // ===== RV64I Base Integer Instructions =====
-
     /// Load Upper Immediate (U-type): rd = imm << 12
     LUI = 0,
     /// Add Upper Immediate to PC (U-type): rd = PC + (imm << 12)
@@ -159,7 +156,6 @@ pub enum Riscv64Opcode {
     EBREAK,
 
     // ===== M Extension (Multiply/Divide) =====
-
     /// Multiply (64-bit result lower bits)
     MUL,
     /// Multiply High (signed × signed → upper 64 bits)
@@ -188,7 +184,6 @@ pub enum Riscv64Opcode {
     REMUW,
 
     // ===== A Extension (Atomics) =====
-
     /// Load-Reserved Double-word
     LR_D,
     /// Store-Conditional Double-word
@@ -213,7 +208,6 @@ pub enum Riscv64Opcode {
     AMOMINU_D,
 
     // ===== F Extension (Single-Precision Float) =====
-
     /// Load Float Word
     FLW,
     /// Store Float Word
@@ -260,7 +254,6 @@ pub enum Riscv64Opcode {
     FLE_S,
 
     // ===== D Extension (Double-Precision Float) =====
-
     /// Load Float Double-word
     FLD,
     /// Store Float Double-word
@@ -311,7 +304,6 @@ pub enum Riscv64Opcode {
     FCVT_S_D,
 
     // ===== Pseudo-instructions (expanded during encoding) =====
-
     /// No-operation (ADDI x0, x0, 0)
     NOP,
     /// Load Immediate (LUI+ADDI or multi-instruction sequence)
@@ -369,15 +361,27 @@ pub const A0: PhysReg = PhysReg(10);
 pub const A1: PhysReg = PhysReg(11);
 /// x10-x17 (a0-a7) — integer argument registers for LP64D ABI.
 pub const ARG_REGS: [PhysReg; 8] = [
-    PhysReg(10), PhysReg(11), PhysReg(12), PhysReg(13),
-    PhysReg(14), PhysReg(15), PhysReg(16), PhysReg(17),
+    PhysReg(10),
+    PhysReg(11),
+    PhysReg(12),
+    PhysReg(13),
+    PhysReg(14),
+    PhysReg(15),
+    PhysReg(16),
+    PhysReg(17),
 ];
 /// f10 (fa0) — float argument register 0 / float return value.
 pub const FA0: PhysReg = PhysReg(42);
 /// f10-f17 (fa0-fa7) — float argument registers for LP64D ABI.
 pub const FLOAT_ARG_REGS: [PhysReg; 8] = [
-    PhysReg(42), PhysReg(43), PhysReg(44), PhysReg(45),
-    PhysReg(46), PhysReg(47), PhysReg(48), PhysReg(49),
+    PhysReg(42),
+    PhysReg(43),
+    PhysReg(44),
+    PhysReg(45),
+    PhysReg(46),
+    PhysReg(47),
+    PhysReg(48),
+    PhysReg(49),
 ];
 
 /// Returns true if the physical register is a floating-point register (f0-f31).
@@ -548,21 +552,21 @@ impl<'a> Riscv64InstructionSelector<'a> {
     }
 
     /// Emits a machine instruction with the given opcode and operands.
-    fn emit(
-        instrs: &mut Vec<MachineInstr>,
-        opcode: Riscv64Opcode,
-        operands: Vec<MachineOperand>,
-    ) {
+    fn emit(instrs: &mut Vec<MachineInstr>, opcode: Riscv64Opcode, operands: Vec<MachineOperand>) {
         instrs.push(MachineInstr::with_operands(opcode.as_u32(), operands));
     }
 
     /// Emits a register-to-register move instruction (MV pseudo: ADDI rd, rs, 0).
     fn emit_mv(instrs: &mut Vec<MachineInstr>, dest: PhysReg, src: PhysReg) {
         if dest != src {
-            Self::emit(instrs, Riscv64Opcode::MV, vec![
-                MachineOperand::Register(dest),
-                MachineOperand::Register(src),
-            ]);
+            Self::emit(
+                instrs,
+                Riscv64Opcode::MV,
+                vec![
+                    MachineOperand::Register(dest),
+                    MachineOperand::Register(src),
+                ],
+            );
         }
     }
 
@@ -575,11 +579,7 @@ impl<'a> Riscv64InstructionSelector<'a> {
     /// In a real compiler, phi nodes require careful parallel-copy insertion
     /// at predecessor block edges. Here we emit sequential moves which is
     /// correct after SSA destruction has already inserted copy instructions.
-    fn select_phi_nodes(
-        &self,
-        phi_nodes: &[PhiNode],
-        instrs: &mut Vec<MachineInstr>,
-    ) {
+    fn select_phi_nodes(&self, phi_nodes: &[PhiNode], instrs: &mut Vec<MachineInstr>) {
         for phi in phi_nodes {
             let dest = self.get_reg(phi.result);
             // Phi nodes are resolved by the SSA destruction pass which inserts
@@ -597,54 +597,119 @@ impl<'a> Riscv64InstructionSelector<'a> {
     // -----------------------------------------------------------------------
 
     /// Selects RISC-V instructions for a single IR instruction.
-    fn select_instruction(
-        &mut self,
-        instr: &Instruction,
-        instrs: &mut Vec<MachineInstr>,
-    ) {
+    fn select_instruction(&mut self, instr: &Instruction, instrs: &mut Vec<MachineInstr>) {
         match instr {
             // --- Arithmetic ---
-            Instruction::Add { result, lhs, rhs, ty } => {
+            Instruction::Add {
+                result,
+                lhs,
+                rhs,
+                ty,
+            } => {
                 self.select_binop(*result, *lhs, *rhs, ty, BinOp::Add, instrs);
             }
-            Instruction::Sub { result, lhs, rhs, ty } => {
+            Instruction::Sub {
+                result,
+                lhs,
+                rhs,
+                ty,
+            } => {
                 self.select_binop(*result, *lhs, *rhs, ty, BinOp::Sub, instrs);
             }
-            Instruction::Mul { result, lhs, rhs, ty } => {
+            Instruction::Mul {
+                result,
+                lhs,
+                rhs,
+                ty,
+            } => {
                 self.select_binop(*result, *lhs, *rhs, ty, BinOp::Mul, instrs);
             }
-            Instruction::Div { result, lhs, rhs, ty, is_signed } => {
+            Instruction::Div {
+                result,
+                lhs,
+                rhs,
+                ty,
+                is_signed,
+            } => {
                 let op = if *is_signed { BinOp::DivS } else { BinOp::DivU };
                 self.select_binop(*result, *lhs, *rhs, ty, op, instrs);
             }
-            Instruction::Mod { result, lhs, rhs, ty, is_signed } => {
+            Instruction::Mod {
+                result,
+                lhs,
+                rhs,
+                ty,
+                is_signed,
+            } => {
                 let op = if *is_signed { BinOp::RemS } else { BinOp::RemU };
                 self.select_binop(*result, *lhs, *rhs, ty, op, instrs);
             }
 
             // --- Bitwise ---
-            Instruction::And { result, lhs, rhs, ty } => {
+            Instruction::And {
+                result,
+                lhs,
+                rhs,
+                ty,
+            } => {
                 self.select_binop(*result, *lhs, *rhs, ty, BinOp::And, instrs);
             }
-            Instruction::Or { result, lhs, rhs, ty } => {
+            Instruction::Or {
+                result,
+                lhs,
+                rhs,
+                ty,
+            } => {
                 self.select_binop(*result, *lhs, *rhs, ty, BinOp::Or, instrs);
             }
-            Instruction::Xor { result, lhs, rhs, ty } => {
+            Instruction::Xor {
+                result,
+                lhs,
+                rhs,
+                ty,
+            } => {
                 self.select_binop(*result, *lhs, *rhs, ty, BinOp::Xor, instrs);
             }
-            Instruction::Shl { result, lhs, rhs, ty } => {
+            Instruction::Shl {
+                result,
+                lhs,
+                rhs,
+                ty,
+            } => {
                 self.select_binop(*result, *lhs, *rhs, ty, BinOp::Shl, instrs);
             }
-            Instruction::Shr { result, lhs, rhs, ty, is_arithmetic } => {
-                let op = if *is_arithmetic { BinOp::Sra } else { BinOp::Srl };
+            Instruction::Shr {
+                result,
+                lhs,
+                rhs,
+                ty,
+                is_arithmetic,
+            } => {
+                let op = if *is_arithmetic {
+                    BinOp::Sra
+                } else {
+                    BinOp::Srl
+                };
                 self.select_binop(*result, *lhs, *rhs, ty, op, instrs);
             }
 
             // --- Comparisons ---
-            Instruction::ICmp { result, op, lhs, rhs, ty } => {
+            Instruction::ICmp {
+                result,
+                op,
+                lhs,
+                rhs,
+                ty,
+            } => {
                 self.select_icmp(*result, *op, *lhs, *rhs, ty, instrs);
             }
-            Instruction::FCmp { result, op, lhs, rhs, ty } => {
+            Instruction::FCmp {
+                result,
+                op,
+                lhs,
+                rhs,
+                ty,
+            } => {
                 self.select_fcmp(*result, *op, *lhs, *rhs, ty, instrs);
             }
 
@@ -658,17 +723,30 @@ impl<'a> Riscv64InstructionSelector<'a> {
             Instruction::Store { value, ptr, .. } => {
                 self.select_store(*value, *ptr, instrs);
             }
-            Instruction::GetElementPtr { result, base_ty, ptr, indices, .. } => {
+            Instruction::GetElementPtr {
+                result,
+                base_ty,
+                ptr,
+                indices,
+                ..
+            } => {
                 self.select_gep(*result, base_ty, *ptr, indices, instrs);
             }
 
             // --- Function calls ---
-            Instruction::Call { result, callee, args, return_ty } => {
+            Instruction::Call {
+                result,
+                callee,
+                args,
+                return_ty,
+            } => {
                 self.select_call(result.as_ref(), callee, args, return_ty, instrs);
             }
 
             // --- SSA / Copy ---
-            Instruction::Phi { result, incoming, .. } => {
+            Instruction::Phi {
+                result, incoming, ..
+            } => {
                 // Phi nodes should have been lowered by SSA destruction.
                 // As a fallback, emit a move from the first incoming value.
                 let dest = self.get_reg(*result);
@@ -684,20 +762,40 @@ impl<'a> Riscv64InstructionSelector<'a> {
             }
 
             // --- Type conversions ---
-            Instruction::Cast { result, op, value, from_ty, to_ty } => {
+            Instruction::Cast {
+                result,
+                op,
+                value,
+                from_ty,
+                to_ty,
+            } => {
                 self.select_cast(*result, *op, *value, from_ty, to_ty, instrs);
             }
-            Instruction::BitCast { result, value, from_ty, to_ty } => {
+            Instruction::BitCast {
+                result,
+                value,
+                from_ty,
+                to_ty,
+            } => {
                 self.select_bitcast(*result, *value, from_ty, to_ty, instrs);
             }
 
             // --- Constants ---
-            Instruction::Const { result, value: constant } => {
+            Instruction::Const {
+                result,
+                value: constant,
+            } => {
                 self.select_const(*result, constant, instrs);
             }
 
             // --- Select (ternary) ---
-            Instruction::Select { result, condition, true_val, false_val, .. } => {
+            Instruction::Select {
+                result,
+                condition,
+                true_val,
+                false_val,
+                ..
+            } => {
                 self.select_select(*result, *condition, *true_val, *false_val, instrs);
             }
 
@@ -731,62 +829,72 @@ impl<'a> Riscv64InstructionSelector<'a> {
             // Floating-point binary operations
             let is_double = matches!(ty, IrType::F64);
             let opcode = match (op, is_double) {
-                (BinOp::Add, true)  => Riscv64Opcode::FADD_D,
+                (BinOp::Add, true) => Riscv64Opcode::FADD_D,
                 (BinOp::Add, false) => Riscv64Opcode::FADD_S,
-                (BinOp::Sub, true)  => Riscv64Opcode::FSUB_D,
+                (BinOp::Sub, true) => Riscv64Opcode::FSUB_D,
                 (BinOp::Sub, false) => Riscv64Opcode::FSUB_S,
-                (BinOp::Mul, true)  => Riscv64Opcode::FMUL_D,
+                (BinOp::Mul, true) => Riscv64Opcode::FMUL_D,
                 (BinOp::Mul, false) => Riscv64Opcode::FMUL_S,
-                (BinOp::DivS | BinOp::DivU, true)  => Riscv64Opcode::FDIV_D,
+                (BinOp::DivS | BinOp::DivU, true) => Riscv64Opcode::FDIV_D,
                 (BinOp::DivS | BinOp::DivU, false) => Riscv64Opcode::FDIV_S,
                 // Float remainder not directly supported; fall through to
                 // integer path (which will emit a software sequence if needed).
                 _ => {
-                    Self::emit(instrs, Riscv64Opcode::NOP, vec![
-                        MachineOperand::Register(dest),
-                    ]);
+                    Self::emit(
+                        instrs,
+                        Riscv64Opcode::NOP,
+                        vec![MachineOperand::Register(dest)],
+                    );
                     return;
                 }
             };
-            Self::emit(instrs, opcode, vec![
-                MachineOperand::Register(dest),
-                MachineOperand::Register(rs1),
-                MachineOperand::Register(rs2),
-            ]);
+            Self::emit(
+                instrs,
+                opcode,
+                vec![
+                    MachineOperand::Register(dest),
+                    MachineOperand::Register(rs1),
+                    MachineOperand::Register(rs2),
+                ],
+            );
             return;
         }
 
         // Integer binary operations — select appropriate opcode.
         let opcode = match (op, is_32bit) {
-            (BinOp::Add, true)  => Riscv64Opcode::ADDW,
+            (BinOp::Add, true) => Riscv64Opcode::ADDW,
             (BinOp::Add, false) => Riscv64Opcode::ADD,
-            (BinOp::Sub, true)  => Riscv64Opcode::SUBW,
+            (BinOp::Sub, true) => Riscv64Opcode::SUBW,
             (BinOp::Sub, false) => Riscv64Opcode::SUB,
-            (BinOp::Mul, true)  => Riscv64Opcode::MULW,
+            (BinOp::Mul, true) => Riscv64Opcode::MULW,
             (BinOp::Mul, false) => Riscv64Opcode::MUL,
-            (BinOp::DivS, true)  => Riscv64Opcode::DIVW,
+            (BinOp::DivS, true) => Riscv64Opcode::DIVW,
             (BinOp::DivS, false) => Riscv64Opcode::DIV,
-            (BinOp::DivU, true)  => Riscv64Opcode::DIVUW,
+            (BinOp::DivU, true) => Riscv64Opcode::DIVUW,
             (BinOp::DivU, false) => Riscv64Opcode::DIVU,
-            (BinOp::RemS, true)  => Riscv64Opcode::REMW,
+            (BinOp::RemS, true) => Riscv64Opcode::REMW,
             (BinOp::RemS, false) => Riscv64Opcode::REM,
-            (BinOp::RemU, true)  => Riscv64Opcode::REMUW,
+            (BinOp::RemU, true) => Riscv64Opcode::REMUW,
             (BinOp::RemU, false) => Riscv64Opcode::REMU,
-            (BinOp::And, _)     => Riscv64Opcode::AND,
-            (BinOp::Or, _)      => Riscv64Opcode::OR,
-            (BinOp::Xor, _)     => Riscv64Opcode::XOR,
-            (BinOp::Shl, true)  => Riscv64Opcode::SLLW,
+            (BinOp::And, _) => Riscv64Opcode::AND,
+            (BinOp::Or, _) => Riscv64Opcode::OR,
+            (BinOp::Xor, _) => Riscv64Opcode::XOR,
+            (BinOp::Shl, true) => Riscv64Opcode::SLLW,
             (BinOp::Shl, false) => Riscv64Opcode::SLL,
-            (BinOp::Srl, true)  => Riscv64Opcode::SRLW,
+            (BinOp::Srl, true) => Riscv64Opcode::SRLW,
             (BinOp::Srl, false) => Riscv64Opcode::SRL,
-            (BinOp::Sra, true)  => Riscv64Opcode::SRAW,
+            (BinOp::Sra, true) => Riscv64Opcode::SRAW,
             (BinOp::Sra, false) => Riscv64Opcode::SRA,
         };
-        Self::emit(instrs, opcode, vec![
-            MachineOperand::Register(dest),
-            MachineOperand::Register(rs1),
-            MachineOperand::Register(rs2),
-        ]);
+        Self::emit(
+            instrs,
+            opcode,
+            vec![
+                MachineOperand::Register(dest),
+                MachineOperand::Register(rs1),
+                MachineOperand::Register(rs2),
+            ],
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -814,113 +922,177 @@ impl<'a> Riscv64InstructionSelector<'a> {
         match op {
             CompareOp::Equal => {
                 // SUB tmp, rs1, rs2; SLTIU dest, tmp, 1  (SEQZ pattern)
-                Self::emit(instrs, Riscv64Opcode::SUB, vec![
-                    MachineOperand::Register(dest),
-                    MachineOperand::Register(rs1),
-                    MachineOperand::Register(rs2),
-                ]);
-                Self::emit(instrs, Riscv64Opcode::SLTIU, vec![
-                    MachineOperand::Register(dest),
-                    MachineOperand::Register(dest),
-                    MachineOperand::Immediate(1),
-                ]);
+                Self::emit(
+                    instrs,
+                    Riscv64Opcode::SUB,
+                    vec![
+                        MachineOperand::Register(dest),
+                        MachineOperand::Register(rs1),
+                        MachineOperand::Register(rs2),
+                    ],
+                );
+                Self::emit(
+                    instrs,
+                    Riscv64Opcode::SLTIU,
+                    vec![
+                        MachineOperand::Register(dest),
+                        MachineOperand::Register(dest),
+                        MachineOperand::Immediate(1),
+                    ],
+                );
             }
             CompareOp::NotEqual => {
                 // SUB tmp, rs1, rs2; SLTU dest, x0, tmp  (SNEZ pattern)
-                Self::emit(instrs, Riscv64Opcode::SUB, vec![
-                    MachineOperand::Register(dest),
-                    MachineOperand::Register(rs1),
-                    MachineOperand::Register(rs2),
-                ]);
-                Self::emit(instrs, Riscv64Opcode::SLTU, vec![
-                    MachineOperand::Register(dest),
-                    MachineOperand::Register(X0),
-                    MachineOperand::Register(dest),
-                ]);
+                Self::emit(
+                    instrs,
+                    Riscv64Opcode::SUB,
+                    vec![
+                        MachineOperand::Register(dest),
+                        MachineOperand::Register(rs1),
+                        MachineOperand::Register(rs2),
+                    ],
+                );
+                Self::emit(
+                    instrs,
+                    Riscv64Opcode::SLTU,
+                    vec![
+                        MachineOperand::Register(dest),
+                        MachineOperand::Register(X0),
+                        MachineOperand::Register(dest),
+                    ],
+                );
             }
             CompareOp::SignedLess => {
                 // SLT dest, rs1, rs2
-                Self::emit(instrs, Riscv64Opcode::SLT, vec![
-                    MachineOperand::Register(dest),
-                    MachineOperand::Register(rs1),
-                    MachineOperand::Register(rs2),
-                ]);
+                Self::emit(
+                    instrs,
+                    Riscv64Opcode::SLT,
+                    vec![
+                        MachineOperand::Register(dest),
+                        MachineOperand::Register(rs1),
+                        MachineOperand::Register(rs2),
+                    ],
+                );
             }
             CompareOp::UnsignedLess => {
                 // SLTU dest, rs1, rs2
-                Self::emit(instrs, Riscv64Opcode::SLTU, vec![
-                    MachineOperand::Register(dest),
-                    MachineOperand::Register(rs1),
-                    MachineOperand::Register(rs2),
-                ]);
+                Self::emit(
+                    instrs,
+                    Riscv64Opcode::SLTU,
+                    vec![
+                        MachineOperand::Register(dest),
+                        MachineOperand::Register(rs1),
+                        MachineOperand::Register(rs2),
+                    ],
+                );
             }
             CompareOp::SignedGreater => {
                 // SLT dest, rs2, rs1  (swap operands)
-                Self::emit(instrs, Riscv64Opcode::SLT, vec![
-                    MachineOperand::Register(dest),
-                    MachineOperand::Register(rs2),
-                    MachineOperand::Register(rs1),
-                ]);
+                Self::emit(
+                    instrs,
+                    Riscv64Opcode::SLT,
+                    vec![
+                        MachineOperand::Register(dest),
+                        MachineOperand::Register(rs2),
+                        MachineOperand::Register(rs1),
+                    ],
+                );
             }
             CompareOp::UnsignedGreater => {
                 // SLTU dest, rs2, rs1  (swap operands)
-                Self::emit(instrs, Riscv64Opcode::SLTU, vec![
-                    MachineOperand::Register(dest),
-                    MachineOperand::Register(rs2),
-                    MachineOperand::Register(rs1),
-                ]);
+                Self::emit(
+                    instrs,
+                    Riscv64Opcode::SLTU,
+                    vec![
+                        MachineOperand::Register(dest),
+                        MachineOperand::Register(rs2),
+                        MachineOperand::Register(rs1),
+                    ],
+                );
             }
             CompareOp::SignedLessEqual => {
                 // SLT tmp, rs2, rs1; XORI dest, tmp, 1  (NOT of greater)
-                Self::emit(instrs, Riscv64Opcode::SLT, vec![
-                    MachineOperand::Register(dest),
-                    MachineOperand::Register(rs2),
-                    MachineOperand::Register(rs1),
-                ]);
-                Self::emit(instrs, Riscv64Opcode::XORI, vec![
-                    MachineOperand::Register(dest),
-                    MachineOperand::Register(dest),
-                    MachineOperand::Immediate(1),
-                ]);
+                Self::emit(
+                    instrs,
+                    Riscv64Opcode::SLT,
+                    vec![
+                        MachineOperand::Register(dest),
+                        MachineOperand::Register(rs2),
+                        MachineOperand::Register(rs1),
+                    ],
+                );
+                Self::emit(
+                    instrs,
+                    Riscv64Opcode::XORI,
+                    vec![
+                        MachineOperand::Register(dest),
+                        MachineOperand::Register(dest),
+                        MachineOperand::Immediate(1),
+                    ],
+                );
             }
             CompareOp::UnsignedLessEqual => {
                 // SLTU tmp, rs2, rs1; XORI dest, tmp, 1
-                Self::emit(instrs, Riscv64Opcode::SLTU, vec![
-                    MachineOperand::Register(dest),
-                    MachineOperand::Register(rs2),
-                    MachineOperand::Register(rs1),
-                ]);
-                Self::emit(instrs, Riscv64Opcode::XORI, vec![
-                    MachineOperand::Register(dest),
-                    MachineOperand::Register(dest),
-                    MachineOperand::Immediate(1),
-                ]);
+                Self::emit(
+                    instrs,
+                    Riscv64Opcode::SLTU,
+                    vec![
+                        MachineOperand::Register(dest),
+                        MachineOperand::Register(rs2),
+                        MachineOperand::Register(rs1),
+                    ],
+                );
+                Self::emit(
+                    instrs,
+                    Riscv64Opcode::XORI,
+                    vec![
+                        MachineOperand::Register(dest),
+                        MachineOperand::Register(dest),
+                        MachineOperand::Immediate(1),
+                    ],
+                );
             }
             CompareOp::SignedGreaterEqual => {
                 // SLT tmp, rs1, rs2; XORI dest, tmp, 1
-                Self::emit(instrs, Riscv64Opcode::SLT, vec![
-                    MachineOperand::Register(dest),
-                    MachineOperand::Register(rs1),
-                    MachineOperand::Register(rs2),
-                ]);
-                Self::emit(instrs, Riscv64Opcode::XORI, vec![
-                    MachineOperand::Register(dest),
-                    MachineOperand::Register(dest),
-                    MachineOperand::Immediate(1),
-                ]);
+                Self::emit(
+                    instrs,
+                    Riscv64Opcode::SLT,
+                    vec![
+                        MachineOperand::Register(dest),
+                        MachineOperand::Register(rs1),
+                        MachineOperand::Register(rs2),
+                    ],
+                );
+                Self::emit(
+                    instrs,
+                    Riscv64Opcode::XORI,
+                    vec![
+                        MachineOperand::Register(dest),
+                        MachineOperand::Register(dest),
+                        MachineOperand::Immediate(1),
+                    ],
+                );
             }
             CompareOp::UnsignedGreaterEqual => {
                 // SLTU tmp, rs1, rs2; XORI dest, tmp, 1
-                Self::emit(instrs, Riscv64Opcode::SLTU, vec![
-                    MachineOperand::Register(dest),
-                    MachineOperand::Register(rs1),
-                    MachineOperand::Register(rs2),
-                ]);
-                Self::emit(instrs, Riscv64Opcode::XORI, vec![
-                    MachineOperand::Register(dest),
-                    MachineOperand::Register(dest),
-                    MachineOperand::Immediate(1),
-                ]);
+                Self::emit(
+                    instrs,
+                    Riscv64Opcode::SLTU,
+                    vec![
+                        MachineOperand::Register(dest),
+                        MachineOperand::Register(rs1),
+                        MachineOperand::Register(rs2),
+                    ],
+                );
+                Self::emit(
+                    instrs,
+                    Riscv64Opcode::XORI,
+                    vec![
+                        MachineOperand::Register(dest),
+                        MachineOperand::Register(dest),
+                        MachineOperand::Immediate(1),
+                    ],
+                );
             }
         }
     }
@@ -946,77 +1118,141 @@ impl<'a> Riscv64InstructionSelector<'a> {
 
         match op {
             FloatCompareOp::OrderedEqual => {
-                let opcode = if is_double { Riscv64Opcode::FEQ_D } else { Riscv64Opcode::FEQ_S };
-                Self::emit(instrs, opcode, vec![
-                    MachineOperand::Register(dest),
-                    MachineOperand::Register(rs1),
-                    MachineOperand::Register(rs2),
-                ]);
+                let opcode = if is_double {
+                    Riscv64Opcode::FEQ_D
+                } else {
+                    Riscv64Opcode::FEQ_S
+                };
+                Self::emit(
+                    instrs,
+                    opcode,
+                    vec![
+                        MachineOperand::Register(dest),
+                        MachineOperand::Register(rs1),
+                        MachineOperand::Register(rs2),
+                    ],
+                );
             }
             FloatCompareOp::OrderedLess => {
-                let opcode = if is_double { Riscv64Opcode::FLT_D } else { Riscv64Opcode::FLT_S };
-                Self::emit(instrs, opcode, vec![
-                    MachineOperand::Register(dest),
-                    MachineOperand::Register(rs1),
-                    MachineOperand::Register(rs2),
-                ]);
+                let opcode = if is_double {
+                    Riscv64Opcode::FLT_D
+                } else {
+                    Riscv64Opcode::FLT_S
+                };
+                Self::emit(
+                    instrs,
+                    opcode,
+                    vec![
+                        MachineOperand::Register(dest),
+                        MachineOperand::Register(rs1),
+                        MachineOperand::Register(rs2),
+                    ],
+                );
             }
             FloatCompareOp::OrderedLessEqual => {
-                let opcode = if is_double { Riscv64Opcode::FLE_D } else { Riscv64Opcode::FLE_S };
-                Self::emit(instrs, opcode, vec![
-                    MachineOperand::Register(dest),
-                    MachineOperand::Register(rs1),
-                    MachineOperand::Register(rs2),
-                ]);
+                let opcode = if is_double {
+                    Riscv64Opcode::FLE_D
+                } else {
+                    Riscv64Opcode::FLE_S
+                };
+                Self::emit(
+                    instrs,
+                    opcode,
+                    vec![
+                        MachineOperand::Register(dest),
+                        MachineOperand::Register(rs1),
+                        MachineOperand::Register(rs2),
+                    ],
+                );
             }
             FloatCompareOp::OrderedGreater => {
                 // FLT with swapped operands: a > b ↔ b < a
-                let opcode = if is_double { Riscv64Opcode::FLT_D } else { Riscv64Opcode::FLT_S };
-                Self::emit(instrs, opcode, vec![
-                    MachineOperand::Register(dest),
-                    MachineOperand::Register(rs2),
-                    MachineOperand::Register(rs1),
-                ]);
+                let opcode = if is_double {
+                    Riscv64Opcode::FLT_D
+                } else {
+                    Riscv64Opcode::FLT_S
+                };
+                Self::emit(
+                    instrs,
+                    opcode,
+                    vec![
+                        MachineOperand::Register(dest),
+                        MachineOperand::Register(rs2),
+                        MachineOperand::Register(rs1),
+                    ],
+                );
             }
             FloatCompareOp::OrderedGreaterEqual => {
                 // FLE with swapped operands: a >= b ↔ b <= a
-                let opcode = if is_double { Riscv64Opcode::FLE_D } else { Riscv64Opcode::FLE_S };
-                Self::emit(instrs, opcode, vec![
-                    MachineOperand::Register(dest),
-                    MachineOperand::Register(rs2),
-                    MachineOperand::Register(rs1),
-                ]);
+                let opcode = if is_double {
+                    Riscv64Opcode::FLE_D
+                } else {
+                    Riscv64Opcode::FLE_S
+                };
+                Self::emit(
+                    instrs,
+                    opcode,
+                    vec![
+                        MachineOperand::Register(dest),
+                        MachineOperand::Register(rs2),
+                        MachineOperand::Register(rs1),
+                    ],
+                );
             }
             FloatCompareOp::OrderedNotEqual => {
                 // FEQ, then XOR with 1 to invert
-                let opcode = if is_double { Riscv64Opcode::FEQ_D } else { Riscv64Opcode::FEQ_S };
-                Self::emit(instrs, opcode, vec![
-                    MachineOperand::Register(dest),
-                    MachineOperand::Register(rs1),
-                    MachineOperand::Register(rs2),
-                ]);
-                Self::emit(instrs, Riscv64Opcode::XORI, vec![
-                    MachineOperand::Register(dest),
-                    MachineOperand::Register(dest),
-                    MachineOperand::Immediate(1),
-                ]);
+                let opcode = if is_double {
+                    Riscv64Opcode::FEQ_D
+                } else {
+                    Riscv64Opcode::FEQ_S
+                };
+                Self::emit(
+                    instrs,
+                    opcode,
+                    vec![
+                        MachineOperand::Register(dest),
+                        MachineOperand::Register(rs1),
+                        MachineOperand::Register(rs2),
+                    ],
+                );
+                Self::emit(
+                    instrs,
+                    Riscv64Opcode::XORI,
+                    vec![
+                        MachineOperand::Register(dest),
+                        MachineOperand::Register(dest),
+                        MachineOperand::Immediate(1),
+                    ],
+                );
             }
             FloatCompareOp::Unordered | FloatCompareOp::UnorderedEqual => {
                 // For unordered comparisons: check if either is NaN via
                 // FEQ.D a,a (returns 0 if NaN). Simplified: use FEQ and invert.
-                let opcode = if is_double { Riscv64Opcode::FEQ_D } else { Riscv64Opcode::FEQ_S };
-                Self::emit(instrs, opcode, vec![
-                    MachineOperand::Register(dest),
-                    MachineOperand::Register(rs1),
-                    MachineOperand::Register(rs2),
-                ]);
+                let opcode = if is_double {
+                    Riscv64Opcode::FEQ_D
+                } else {
+                    Riscv64Opcode::FEQ_S
+                };
+                Self::emit(
+                    instrs,
+                    opcode,
+                    vec![
+                        MachineOperand::Register(dest),
+                        MachineOperand::Register(rs1),
+                        MachineOperand::Register(rs2),
+                    ],
+                );
                 if matches!(op, FloatCompareOp::Unordered) {
                     // Invert: unordered is true when ordered comparison fails
-                    Self::emit(instrs, Riscv64Opcode::XORI, vec![
-                        MachineOperand::Register(dest),
-                        MachineOperand::Register(dest),
-                        MachineOperand::Immediate(1),
-                    ]);
+                    Self::emit(
+                        instrs,
+                        Riscv64Opcode::XORI,
+                        vec![
+                            MachineOperand::Register(dest),
+                            MachineOperand::Register(dest),
+                            MachineOperand::Immediate(1),
+                        ],
+                    );
                 }
             }
         }
@@ -1027,13 +1263,7 @@ impl<'a> Riscv64InstructionSelector<'a> {
     // -----------------------------------------------------------------------
 
     /// Selects a RISC-V load instruction based on the loaded type.
-    fn select_load(
-        &self,
-        result: Value,
-        ty: &IrType,
-        ptr: Value,
-        instrs: &mut Vec<MachineInstr>,
-    ) {
+    fn select_load(&self, result: Value, ty: &IrType, ptr: Value, instrs: &mut Vec<MachineInstr>) {
         let dest = self.get_reg(result);
         let base = self.get_reg(ptr);
 
@@ -1046,19 +1276,18 @@ impl<'a> Riscv64InstructionSelector<'a> {
             IrType::F64 => Riscv64Opcode::FLD,
             _ => Riscv64Opcode::LD,
         };
-        Self::emit(instrs, opcode, vec![
-            MachineOperand::Register(dest),
-            MachineOperand::Memory { base, offset: 0 },
-        ]);
+        Self::emit(
+            instrs,
+            opcode,
+            vec![
+                MachineOperand::Register(dest),
+                MachineOperand::Memory { base, offset: 0 },
+            ],
+        );
     }
 
     /// Selects a RISC-V store instruction.
-    fn select_store(
-        &self,
-        value: Value,
-        ptr: Value,
-        instrs: &mut Vec<MachineInstr>,
-    ) {
+    fn select_store(&self, value: Value, ptr: Value, instrs: &mut Vec<MachineInstr>) {
         let src = self.get_reg(value);
         let base = self.get_reg(ptr);
 
@@ -1072,10 +1301,14 @@ impl<'a> Riscv64InstructionSelector<'a> {
         } else {
             Riscv64Opcode::SD
         };
-        Self::emit(instrs, opcode, vec![
-            MachineOperand::Register(src),
-            MachineOperand::Memory { base, offset: 0 },
-        ]);
+        Self::emit(
+            instrs,
+            opcode,
+            vec![
+                MachineOperand::Register(src),
+                MachineOperand::Memory { base, offset: 0 },
+            ],
+        );
     }
 
     /// Selects instructions for a stack allocation (alloca).
@@ -1090,11 +1323,15 @@ impl<'a> Riscv64InstructionSelector<'a> {
         // Alloca is handled by the frame layout in the ABI module.
         // Here we compute the stack slot address using SP + offset.
         // The offset will be patched by the frame finalizer.
-        Self::emit(instrs, Riscv64Opcode::ADDI, vec![
-            MachineOperand::Register(dest),
-            MachineOperand::Register(SP),
-            MachineOperand::Immediate(0), // Placeholder; patched during frame layout
-        ]);
+        Self::emit(
+            instrs,
+            Riscv64Opcode::ADDI,
+            vec![
+                MachineOperand::Register(dest),
+                MachineOperand::Register(SP),
+                MachineOperand::Immediate(0), // Placeholder; patched during frame layout
+            ],
+        );
     }
 
     /// Selects instructions for GetElementPtr (address computation).
@@ -1126,47 +1363,71 @@ impl<'a> Riscv64InstructionSelector<'a> {
                 // For the primary index: offset = index * element_size
                 // If element_size is a power of 2, use shift; otherwise multiply.
                 if elem_size == 1 {
-                    Self::emit(instrs, Riscv64Opcode::ADD, vec![
-                        MachineOperand::Register(dest),
-                        MachineOperand::Register(dest),
-                        MachineOperand::Register(idx_reg),
-                    ]);
+                    Self::emit(
+                        instrs,
+                        Riscv64Opcode::ADD,
+                        vec![
+                            MachineOperand::Register(dest),
+                            MachineOperand::Register(dest),
+                            MachineOperand::Register(idx_reg),
+                        ],
+                    );
                 } else if elem_size > 0 && (elem_size as u64).is_power_of_two() {
                     let shift = (elem_size as u64).trailing_zeros() as i64;
                     // SLLI tmp, idx, shift; ADD dest, dest, tmp
-                    Self::emit(instrs, Riscv64Opcode::SLLI, vec![
-                        MachineOperand::Register(idx_reg),
-                        MachineOperand::Register(idx_reg),
-                        MachineOperand::Immediate(shift),
-                    ]);
-                    Self::emit(instrs, Riscv64Opcode::ADD, vec![
-                        MachineOperand::Register(dest),
-                        MachineOperand::Register(dest),
-                        MachineOperand::Register(idx_reg),
-                    ]);
+                    Self::emit(
+                        instrs,
+                        Riscv64Opcode::SLLI,
+                        vec![
+                            MachineOperand::Register(idx_reg),
+                            MachineOperand::Register(idx_reg),
+                            MachineOperand::Immediate(shift),
+                        ],
+                    );
+                    Self::emit(
+                        instrs,
+                        Riscv64Opcode::ADD,
+                        vec![
+                            MachineOperand::Register(dest),
+                            MachineOperand::Register(dest),
+                            MachineOperand::Register(idx_reg),
+                        ],
+                    );
                 } else {
                     // General case: multiply index by element size using MUL.
                     // Materialize the element size constant first.
                     // Use dest as temporary for the multiply result.
-                    Self::emit(instrs, Riscv64Opcode::MUL, vec![
-                        MachineOperand::Register(idx_reg),
-                        MachineOperand::Register(idx_reg),
-                        MachineOperand::Immediate(elem_size),
-                    ]);
-                    Self::emit(instrs, Riscv64Opcode::ADD, vec![
-                        MachineOperand::Register(dest),
-                        MachineOperand::Register(dest),
-                        MachineOperand::Register(idx_reg),
-                    ]);
+                    Self::emit(
+                        instrs,
+                        Riscv64Opcode::MUL,
+                        vec![
+                            MachineOperand::Register(idx_reg),
+                            MachineOperand::Register(idx_reg),
+                            MachineOperand::Immediate(elem_size),
+                        ],
+                    );
+                    Self::emit(
+                        instrs,
+                        Riscv64Opcode::ADD,
+                        vec![
+                            MachineOperand::Register(dest),
+                            MachineOperand::Register(dest),
+                            MachineOperand::Register(idx_reg),
+                        ],
+                    );
                 }
             } else {
                 // Subsequent indices (struct field offsets, etc.) — treated as
                 // direct byte offsets added to the accumulated address.
-                Self::emit(instrs, Riscv64Opcode::ADD, vec![
-                    MachineOperand::Register(dest),
-                    MachineOperand::Register(dest),
-                    MachineOperand::Register(idx_reg),
-                ]);
+                Self::emit(
+                    instrs,
+                    Riscv64Opcode::ADD,
+                    vec![
+                        MachineOperand::Register(dest),
+                        MachineOperand::Register(dest),
+                        MachineOperand::Register(idx_reg),
+                    ],
+                );
             }
         }
     }
@@ -1201,17 +1462,35 @@ impl<'a> Riscv64InstructionSelector<'a> {
                 // The exact offset depends on the number of stack arguments.
                 let stack_offset = ((int_arg_idx + float_arg_idx) as i32 - 8) * 8;
                 if is_fp_reg(src) {
-                    Self::emit(instrs, Riscv64Opcode::FSD, vec![
-                        MachineOperand::Register(src),
-                        MachineOperand::Memory { base: SP, offset: stack_offset },
-                    ]);
+                    Self::emit(
+                        instrs,
+                        Riscv64Opcode::FSD,
+                        vec![
+                            MachineOperand::Register(src),
+                            MachineOperand::Memory {
+                                base: SP,
+                                offset: stack_offset,
+                            },
+                        ],
+                    );
                 } else {
-                    Self::emit(instrs, Riscv64Opcode::SD, vec![
-                        MachineOperand::Register(src),
-                        MachineOperand::Memory { base: SP, offset: stack_offset },
-                    ]);
+                    Self::emit(
+                        instrs,
+                        Riscv64Opcode::SD,
+                        vec![
+                            MachineOperand::Register(src),
+                            MachineOperand::Memory {
+                                base: SP,
+                                offset: stack_offset,
+                            },
+                        ],
+                    );
                 }
-                if is_fp_reg(src) { float_arg_idx += 1; } else { int_arg_idx += 1; }
+                if is_fp_reg(src) {
+                    float_arg_idx += 1;
+                } else {
+                    int_arg_idx += 1;
+                }
             }
         }
 
@@ -1220,9 +1499,11 @@ impl<'a> Riscv64InstructionSelector<'a> {
             Callee::Direct(name) => {
                 // CALL pseudo: AUIPC ra, %pcrel_hi(symbol) + JALR ra, ra, %pcrel_lo(symbol)
                 // Encoded as a single CALL pseudo with R_RISCV_CALL relocation.
-                Self::emit(instrs, Riscv64Opcode::CALL, vec![
-                    MachineOperand::Symbol(name.clone()),
-                ]);
+                Self::emit(
+                    instrs,
+                    Riscv64Opcode::CALL,
+                    vec![MachineOperand::Symbol(name.clone())],
+                );
                 self.relocations.push(Relocation {
                     offset: 0, // Patched during encoding
                     symbol: name.clone(),
@@ -1234,11 +1515,15 @@ impl<'a> Riscv64InstructionSelector<'a> {
             Callee::Indirect(val) => {
                 let target_reg = self.get_reg(*val);
                 // JALR ra, target_reg, 0
-                Self::emit(instrs, Riscv64Opcode::JALR, vec![
-                    MachineOperand::Register(RA),
-                    MachineOperand::Register(target_reg),
-                    MachineOperand::Immediate(0),
-                ]);
+                Self::emit(
+                    instrs,
+                    Riscv64Opcode::JALR,
+                    vec![
+                        MachineOperand::Register(RA),
+                        MachineOperand::Register(target_reg),
+                        MachineOperand::Immediate(0),
+                    ],
+                );
             }
         }
 
@@ -1258,38 +1543,47 @@ impl<'a> Riscv64InstructionSelector<'a> {
     // -----------------------------------------------------------------------
 
     /// Selects RISC-V instructions for a block terminator.
-    fn select_terminator(
-        &self,
-        term: &Terminator,
-        instrs: &mut Vec<MachineInstr>,
-    ) {
+    fn select_terminator(&self, term: &Terminator, instrs: &mut Vec<MachineInstr>) {
         match term {
             Terminator::Branch { target } => {
                 // Unconditional jump: JAL x0, label
                 if let Some(&label) = self.block_labels.get(target) {
-                    Self::emit(instrs, Riscv64Opcode::JAL, vec![
-                        MachineOperand::Register(X0),
-                        MachineOperand::Label(label),
-                    ]);
+                    Self::emit(
+                        instrs,
+                        Riscv64Opcode::JAL,
+                        vec![MachineOperand::Register(X0), MachineOperand::Label(label)],
+                    );
                 }
             }
-            Terminator::CondBranch { condition, true_block, false_block } => {
+            Terminator::CondBranch {
+                condition,
+                true_block,
+                false_block,
+            } => {
                 let cond_reg = self.get_reg(*condition);
 
                 // BNE cond, x0, true_label  (branch if condition is nonzero)
                 if let Some(&true_label) = self.block_labels.get(true_block) {
-                    Self::emit(instrs, Riscv64Opcode::BNE, vec![
-                        MachineOperand::Register(cond_reg),
-                        MachineOperand::Register(X0),
-                        MachineOperand::Label(true_label),
-                    ]);
+                    Self::emit(
+                        instrs,
+                        Riscv64Opcode::BNE,
+                        vec![
+                            MachineOperand::Register(cond_reg),
+                            MachineOperand::Register(X0),
+                            MachineOperand::Label(true_label),
+                        ],
+                    );
                 }
                 // Fall through or jump to false block.
                 if let Some(&false_label) = self.block_labels.get(false_block) {
-                    Self::emit(instrs, Riscv64Opcode::JAL, vec![
-                        MachineOperand::Register(X0),
-                        MachineOperand::Label(false_label),
-                    ]);
+                    Self::emit(
+                        instrs,
+                        Riscv64Opcode::JAL,
+                        vec![
+                            MachineOperand::Register(X0),
+                            MachineOperand::Label(false_label),
+                        ],
+                    );
                 }
             }
             Terminator::Return { value } => {
@@ -1305,7 +1599,11 @@ impl<'a> Riscv64InstructionSelector<'a> {
                 // RET pseudo: JALR x0, ra, 0
                 Self::emit(instrs, Riscv64Opcode::RET, vec![]);
             }
-            Terminator::Switch { value, default, cases } => {
+            Terminator::Switch {
+                value,
+                default,
+                cases,
+            } => {
                 let val_reg = self.get_reg(*value);
                 // Emit a compare-and-branch sequence for each case.
                 for &(case_val, target_block) in cases {
@@ -1317,30 +1615,46 @@ impl<'a> Riscv64InstructionSelector<'a> {
                             // We reuse the dest pattern with a temp approach.
                             // Use SLTI trick: val == case_val ↔ !(val < case_val) && !(case_val < val)
                             // Simpler: ADDI x5(t0), x0, case_val; BEQ val_reg, x5, label
-                            Self::emit(instrs, Riscv64Opcode::ADDI, vec![
-                                MachineOperand::Register(T0),
-                                MachineOperand::Register(X0),
-                                MachineOperand::Immediate(case_val),
-                            ]);
+                            Self::emit(
+                                instrs,
+                                Riscv64Opcode::ADDI,
+                                vec![
+                                    MachineOperand::Register(T0),
+                                    MachineOperand::Register(X0),
+                                    MachineOperand::Immediate(case_val),
+                                ],
+                            );
                         } else {
-                            Self::emit(instrs, Riscv64Opcode::LI, vec![
-                                MachineOperand::Register(T0),
-                                MachineOperand::Immediate(case_val),
-                            ]);
+                            Self::emit(
+                                instrs,
+                                Riscv64Opcode::LI,
+                                vec![
+                                    MachineOperand::Register(T0),
+                                    MachineOperand::Immediate(case_val),
+                                ],
+                            );
                         }
-                        Self::emit(instrs, Riscv64Opcode::BEQ, vec![
-                            MachineOperand::Register(val_reg),
-                            MachineOperand::Register(T0),
-                            MachineOperand::Label(target_label),
-                        ]);
+                        Self::emit(
+                            instrs,
+                            Riscv64Opcode::BEQ,
+                            vec![
+                                MachineOperand::Register(val_reg),
+                                MachineOperand::Register(T0),
+                                MachineOperand::Label(target_label),
+                            ],
+                        );
                     }
                 }
                 // Jump to default block.
                 if let Some(&default_label) = self.block_labels.get(default) {
-                    Self::emit(instrs, Riscv64Opcode::JAL, vec![
-                        MachineOperand::Register(X0),
-                        MachineOperand::Label(default_label),
-                    ]);
+                    Self::emit(
+                        instrs,
+                        Riscv64Opcode::JAL,
+                        vec![
+                            MachineOperand::Register(X0),
+                            MachineOperand::Label(default_label),
+                        ],
+                    );
                 }
             }
             Terminator::Unreachable => {
@@ -1372,30 +1686,46 @@ impl<'a> Riscv64InstructionSelector<'a> {
                 // Integer truncation: on RV64, truncating to 32 bits uses ADDIW
                 // which sign-extends the lower 32 bits.
                 if matches!(to_ty, IrType::I32) {
-                    Self::emit(instrs, Riscv64Opcode::ADDIW, vec![
-                        MachineOperand::Register(dest),
-                        MachineOperand::Register(src),
-                        MachineOperand::Immediate(0),
-                    ]);
+                    Self::emit(
+                        instrs,
+                        Riscv64Opcode::ADDIW,
+                        vec![
+                            MachineOperand::Register(dest),
+                            MachineOperand::Register(src),
+                            MachineOperand::Immediate(0),
+                        ],
+                    );
                 } else if matches!(to_ty, IrType::I16) {
                     // SLLI by 48, then SRAI by 48 to sign-extend 16 bits
-                    Self::emit(instrs, Riscv64Opcode::SLLI, vec![
-                        MachineOperand::Register(dest),
-                        MachineOperand::Register(src),
-                        MachineOperand::Immediate(48),
-                    ]);
-                    Self::emit(instrs, Riscv64Opcode::SRAI, vec![
-                        MachineOperand::Register(dest),
-                        MachineOperand::Register(dest),
-                        MachineOperand::Immediate(48),
-                    ]);
+                    Self::emit(
+                        instrs,
+                        Riscv64Opcode::SLLI,
+                        vec![
+                            MachineOperand::Register(dest),
+                            MachineOperand::Register(src),
+                            MachineOperand::Immediate(48),
+                        ],
+                    );
+                    Self::emit(
+                        instrs,
+                        Riscv64Opcode::SRAI,
+                        vec![
+                            MachineOperand::Register(dest),
+                            MachineOperand::Register(dest),
+                            MachineOperand::Immediate(48),
+                        ],
+                    );
                 } else if matches!(to_ty, IrType::I8 | IrType::I1) {
                     // AND with 0xFF to extract lower byte
-                    Self::emit(instrs, Riscv64Opcode::ANDI, vec![
-                        MachineOperand::Register(dest),
-                        MachineOperand::Register(src),
-                        MachineOperand::Immediate(0xFF),
-                    ]);
+                    Self::emit(
+                        instrs,
+                        Riscv64Opcode::ANDI,
+                        vec![
+                            MachineOperand::Register(dest),
+                            MachineOperand::Register(src),
+                            MachineOperand::Immediate(0xFF),
+                        ],
+                    );
                 } else {
                     Self::emit_mv(instrs, dest, src);
                 }
@@ -1404,40 +1734,64 @@ impl<'a> Riscv64InstructionSelector<'a> {
                 // Sign-extension
                 if matches!(from_ty, IrType::I32) {
                     // ADDIW sign-extends 32→64
-                    Self::emit(instrs, Riscv64Opcode::ADDIW, vec![
-                        MachineOperand::Register(dest),
-                        MachineOperand::Register(src),
-                        MachineOperand::Immediate(0),
-                    ]);
+                    Self::emit(
+                        instrs,
+                        Riscv64Opcode::ADDIW,
+                        vec![
+                            MachineOperand::Register(dest),
+                            MachineOperand::Register(src),
+                            MachineOperand::Immediate(0),
+                        ],
+                    );
                 } else if matches!(from_ty, IrType::I16) {
-                    Self::emit(instrs, Riscv64Opcode::SLLI, vec![
-                        MachineOperand::Register(dest),
-                        MachineOperand::Register(src),
-                        MachineOperand::Immediate(48),
-                    ]);
-                    Self::emit(instrs, Riscv64Opcode::SRAI, vec![
-                        MachineOperand::Register(dest),
-                        MachineOperand::Register(dest),
-                        MachineOperand::Immediate(48),
-                    ]);
+                    Self::emit(
+                        instrs,
+                        Riscv64Opcode::SLLI,
+                        vec![
+                            MachineOperand::Register(dest),
+                            MachineOperand::Register(src),
+                            MachineOperand::Immediate(48),
+                        ],
+                    );
+                    Self::emit(
+                        instrs,
+                        Riscv64Opcode::SRAI,
+                        vec![
+                            MachineOperand::Register(dest),
+                            MachineOperand::Register(dest),
+                            MachineOperand::Immediate(48),
+                        ],
+                    );
                 } else if matches!(from_ty, IrType::I8) {
-                    Self::emit(instrs, Riscv64Opcode::SLLI, vec![
-                        MachineOperand::Register(dest),
-                        MachineOperand::Register(src),
-                        MachineOperand::Immediate(56),
-                    ]);
-                    Self::emit(instrs, Riscv64Opcode::SRAI, vec![
-                        MachineOperand::Register(dest),
-                        MachineOperand::Register(dest),
-                        MachineOperand::Immediate(56),
-                    ]);
+                    Self::emit(
+                        instrs,
+                        Riscv64Opcode::SLLI,
+                        vec![
+                            MachineOperand::Register(dest),
+                            MachineOperand::Register(src),
+                            MachineOperand::Immediate(56),
+                        ],
+                    );
+                    Self::emit(
+                        instrs,
+                        Riscv64Opcode::SRAI,
+                        vec![
+                            MachineOperand::Register(dest),
+                            MachineOperand::Register(dest),
+                            MachineOperand::Immediate(56),
+                        ],
+                    );
                 } else if matches!(from_ty, IrType::I1) {
                     // Negate the bit: SUB dest, x0, src (0 or 1 → 0 or -1)
-                    Self::emit(instrs, Riscv64Opcode::SUB, vec![
-                        MachineOperand::Register(dest),
-                        MachineOperand::Register(X0),
-                        MachineOperand::Register(src),
-                    ]);
+                    Self::emit(
+                        instrs,
+                        Riscv64Opcode::SUB,
+                        vec![
+                            MachineOperand::Register(dest),
+                            MachineOperand::Register(X0),
+                            MachineOperand::Register(src),
+                        ],
+                    );
                 } else {
                     Self::emit_mv(instrs, dest, src);
                 }
@@ -1446,33 +1800,53 @@ impl<'a> Riscv64InstructionSelector<'a> {
                 // Zero-extension
                 if matches!(from_ty, IrType::I32) {
                     // SLLI by 32, SRLI by 32 to zero-extend 32→64
-                    Self::emit(instrs, Riscv64Opcode::SLLI, vec![
-                        MachineOperand::Register(dest),
-                        MachineOperand::Register(src),
-                        MachineOperand::Immediate(32),
-                    ]);
-                    Self::emit(instrs, Riscv64Opcode::SRLI, vec![
-                        MachineOperand::Register(dest),
-                        MachineOperand::Register(dest),
-                        MachineOperand::Immediate(32),
-                    ]);
+                    Self::emit(
+                        instrs,
+                        Riscv64Opcode::SLLI,
+                        vec![
+                            MachineOperand::Register(dest),
+                            MachineOperand::Register(src),
+                            MachineOperand::Immediate(32),
+                        ],
+                    );
+                    Self::emit(
+                        instrs,
+                        Riscv64Opcode::SRLI,
+                        vec![
+                            MachineOperand::Register(dest),
+                            MachineOperand::Register(dest),
+                            MachineOperand::Immediate(32),
+                        ],
+                    );
                 } else if matches!(from_ty, IrType::I16) {
-                    Self::emit(instrs, Riscv64Opcode::SLLI, vec![
-                        MachineOperand::Register(dest),
-                        MachineOperand::Register(src),
-                        MachineOperand::Immediate(48),
-                    ]);
-                    Self::emit(instrs, Riscv64Opcode::SRLI, vec![
-                        MachineOperand::Register(dest),
-                        MachineOperand::Register(dest),
-                        MachineOperand::Immediate(48),
-                    ]);
+                    Self::emit(
+                        instrs,
+                        Riscv64Opcode::SLLI,
+                        vec![
+                            MachineOperand::Register(dest),
+                            MachineOperand::Register(src),
+                            MachineOperand::Immediate(48),
+                        ],
+                    );
+                    Self::emit(
+                        instrs,
+                        Riscv64Opcode::SRLI,
+                        vec![
+                            MachineOperand::Register(dest),
+                            MachineOperand::Register(dest),
+                            MachineOperand::Immediate(48),
+                        ],
+                    );
                 } else if matches!(from_ty, IrType::I8 | IrType::I1) {
-                    Self::emit(instrs, Riscv64Opcode::ANDI, vec![
-                        MachineOperand::Register(dest),
-                        MachineOperand::Register(src),
-                        MachineOperand::Immediate(0xFF),
-                    ]);
+                    Self::emit(
+                        instrs,
+                        Riscv64Opcode::ANDI,
+                        vec![
+                            MachineOperand::Register(dest),
+                            MachineOperand::Register(src),
+                            MachineOperand::Immediate(0xFF),
+                        ],
+                    );
                 } else {
                     Self::emit_mv(instrs, dest, src);
                 }
@@ -1480,72 +1854,120 @@ impl<'a> Riscv64InstructionSelector<'a> {
             CastOp::FPToSI => {
                 // Float/double to signed integer
                 let opcode = if matches!(from_ty, IrType::F64) {
-                    if matches!(to_ty, IrType::I32) { Riscv64Opcode::FCVT_W_D }
-                    else { Riscv64Opcode::FCVT_L_D }
+                    if matches!(to_ty, IrType::I32) {
+                        Riscv64Opcode::FCVT_W_D
+                    } else {
+                        Riscv64Opcode::FCVT_L_D
+                    }
                 } else {
-                    if matches!(to_ty, IrType::I32) { Riscv64Opcode::FCVT_W_S }
-                    else { Riscv64Opcode::FCVT_L_S }
+                    if matches!(to_ty, IrType::I32) {
+                        Riscv64Opcode::FCVT_W_S
+                    } else {
+                        Riscv64Opcode::FCVT_L_S
+                    }
                 };
-                Self::emit(instrs, opcode, vec![
-                    MachineOperand::Register(dest),
-                    MachineOperand::Register(src),
-                ]);
+                Self::emit(
+                    instrs,
+                    opcode,
+                    vec![
+                        MachineOperand::Register(dest),
+                        MachineOperand::Register(src),
+                    ],
+                );
             }
             CastOp::FPToUI => {
                 // Float/double to unsigned integer
                 let opcode = if matches!(from_ty, IrType::F64) {
-                    if matches!(to_ty, IrType::I32) { Riscv64Opcode::FCVT_WU_D }
-                    else { Riscv64Opcode::FCVT_LU_D }
+                    if matches!(to_ty, IrType::I32) {
+                        Riscv64Opcode::FCVT_WU_D
+                    } else {
+                        Riscv64Opcode::FCVT_LU_D
+                    }
                 } else {
-                    if matches!(to_ty, IrType::I32) { Riscv64Opcode::FCVT_WU_S }
-                    else { Riscv64Opcode::FCVT_LU_S }
+                    if matches!(to_ty, IrType::I32) {
+                        Riscv64Opcode::FCVT_WU_S
+                    } else {
+                        Riscv64Opcode::FCVT_LU_S
+                    }
                 };
-                Self::emit(instrs, opcode, vec![
-                    MachineOperand::Register(dest),
-                    MachineOperand::Register(src),
-                ]);
+                Self::emit(
+                    instrs,
+                    opcode,
+                    vec![
+                        MachineOperand::Register(dest),
+                        MachineOperand::Register(src),
+                    ],
+                );
             }
             CastOp::SIToFP => {
                 // Signed integer to float/double
                 let opcode = if matches!(to_ty, IrType::F64) {
-                    if matches!(from_ty, IrType::I32) { Riscv64Opcode::FCVT_D_W }
-                    else { Riscv64Opcode::FCVT_D_L }
+                    if matches!(from_ty, IrType::I32) {
+                        Riscv64Opcode::FCVT_D_W
+                    } else {
+                        Riscv64Opcode::FCVT_D_L
+                    }
                 } else {
-                    if matches!(from_ty, IrType::I32) { Riscv64Opcode::FCVT_S_W }
-                    else { Riscv64Opcode::FCVT_S_L }
+                    if matches!(from_ty, IrType::I32) {
+                        Riscv64Opcode::FCVT_S_W
+                    } else {
+                        Riscv64Opcode::FCVT_S_L
+                    }
                 };
-                Self::emit(instrs, opcode, vec![
-                    MachineOperand::Register(dest),
-                    MachineOperand::Register(src),
-                ]);
+                Self::emit(
+                    instrs,
+                    opcode,
+                    vec![
+                        MachineOperand::Register(dest),
+                        MachineOperand::Register(src),
+                    ],
+                );
             }
             CastOp::UIToFP => {
                 // Unsigned integer to float/double
                 let opcode = if matches!(to_ty, IrType::F64) {
-                    if matches!(from_ty, IrType::I32) { Riscv64Opcode::FCVT_D_WU }
-                    else { Riscv64Opcode::FCVT_D_LU }
+                    if matches!(from_ty, IrType::I32) {
+                        Riscv64Opcode::FCVT_D_WU
+                    } else {
+                        Riscv64Opcode::FCVT_D_LU
+                    }
                 } else {
-                    if matches!(from_ty, IrType::I32) { Riscv64Opcode::FCVT_S_WU }
-                    else { Riscv64Opcode::FCVT_S_LU }
+                    if matches!(from_ty, IrType::I32) {
+                        Riscv64Opcode::FCVT_S_WU
+                    } else {
+                        Riscv64Opcode::FCVT_S_LU
+                    }
                 };
-                Self::emit(instrs, opcode, vec![
-                    MachineOperand::Register(dest),
-                    MachineOperand::Register(src),
-                ]);
+                Self::emit(
+                    instrs,
+                    opcode,
+                    vec![
+                        MachineOperand::Register(dest),
+                        MachineOperand::Register(src),
+                    ],
+                );
             }
             CastOp::FPTrunc => {
                 // Double to single: FCVT.S.D
-                Self::emit(instrs, Riscv64Opcode::FCVT_S_D, vec![
-                    MachineOperand::Register(dest),
-                    MachineOperand::Register(src),
-                ]);
+                Self::emit(
+                    instrs,
+                    Riscv64Opcode::FCVT_S_D,
+                    vec![
+                        MachineOperand::Register(dest),
+                        MachineOperand::Register(src),
+                    ],
+                );
             }
             CastOp::FPExt => {
                 // Single to double: FCVT.D.S
-                Self::emit(instrs, Riscv64Opcode::FCVT_D_S, vec![
-                    MachineOperand::Register(dest),
-                    MachineOperand::Register(src),
-                ]);
+                Self::emit(
+                    instrs,
+                    Riscv64Opcode::FCVT_D_S,
+                    vec![
+                        MachineOperand::Register(dest),
+                        MachineOperand::Register(src),
+                    ],
+                );
             }
             CastOp::PtrToInt | CastOp::IntToPtr => {
                 // On RV64, pointers and integers are both 64-bit. No conversion needed.
@@ -1573,20 +1995,28 @@ impl<'a> Riscv64InstructionSelector<'a> {
             } else {
                 Riscv64Opcode::FMV_X_W
             };
-            Self::emit(instrs, opcode, vec![
-                MachineOperand::Register(dest),
-                MachineOperand::Register(src),
-            ]);
+            Self::emit(
+                instrs,
+                opcode,
+                vec![
+                    MachineOperand::Register(dest),
+                    MachineOperand::Register(src),
+                ],
+            );
         } else if from_ty.is_integer() && to_ty.is_float() {
             let opcode = if matches!(to_ty, IrType::F64) {
                 Riscv64Opcode::FMV_D_X
             } else {
                 Riscv64Opcode::FMV_W_X
             };
-            Self::emit(instrs, opcode, vec![
-                MachineOperand::Register(dest),
-                MachineOperand::Register(src),
-            ]);
+            Self::emit(
+                instrs,
+                opcode,
+                vec![
+                    MachineOperand::Register(dest),
+                    MachineOperand::Register(src),
+                ],
+            );
         } else {
             // Same register class — just a move.
             Self::emit_mv(instrs, dest, src);
@@ -1598,12 +2028,7 @@ impl<'a> Riscv64InstructionSelector<'a> {
     // -----------------------------------------------------------------------
 
     /// Selects instructions for materializing a constant value.
-    fn select_const(
-        &mut self,
-        result: Value,
-        constant: &Constant,
-        instrs: &mut Vec<MachineInstr>,
-    ) {
+    fn select_const(&mut self, result: Value, constant: &Constant, instrs: &mut Vec<MachineInstr>) {
         // Skip placeholder Const instructions for function parameters —
         // their ABI registers are already assigned by the allocator.
         if self.param_value_set.contains(&result) {
@@ -1627,30 +2052,36 @@ impl<'a> Riscv64InstructionSelector<'a> {
                     if is_fp_reg(dest) {
                         // Need a temp integer register; use T0 as scratch.
                         self.materialize_integer(bits, T0, instrs);
-                        Self::emit(instrs, Riscv64Opcode::FMV_D_X, vec![
-                            MachineOperand::Register(dest),
-                            MachineOperand::Register(T0),
-                        ]);
+                        Self::emit(
+                            instrs,
+                            Riscv64Opcode::FMV_D_X,
+                            vec![MachineOperand::Register(dest), MachineOperand::Register(T0)],
+                        );
                     }
                 } else {
                     let bits = (*value as f32).to_bits() as i64;
                     self.materialize_integer(bits, dest, instrs);
                     if is_fp_reg(dest) {
                         self.materialize_integer(bits, T0, instrs);
-                        Self::emit(instrs, Riscv64Opcode::FMV_W_X, vec![
-                            MachineOperand::Register(dest),
-                            MachineOperand::Register(T0),
-                        ]);
+                        Self::emit(
+                            instrs,
+                            Riscv64Opcode::FMV_W_X,
+                            vec![MachineOperand::Register(dest), MachineOperand::Register(T0)],
+                        );
                     }
                 }
             }
             Constant::Bool(val) => {
                 let imm = if *val { 1i64 } else { 0i64 };
-                Self::emit(instrs, Riscv64Opcode::ADDI, vec![
-                    MachineOperand::Register(dest),
-                    MachineOperand::Register(X0),
-                    MachineOperand::Immediate(imm),
-                ]);
+                Self::emit(
+                    instrs,
+                    Riscv64Opcode::ADDI,
+                    vec![
+                        MachineOperand::Register(dest),
+                        MachineOperand::Register(X0),
+                        MachineOperand::Immediate(imm),
+                    ],
+                );
             }
             Constant::Null(_) | Constant::ZeroInit(_) => {
                 // Load zero.
@@ -1661,10 +2092,14 @@ impl<'a> Riscv64InstructionSelector<'a> {
             }
             Constant::GlobalRef(name) => {
                 // Load address of global: AUIPC + ADDI with PC-relative relocations.
-                Self::emit(instrs, Riscv64Opcode::LA, vec![
-                    MachineOperand::Register(dest),
-                    MachineOperand::Symbol(name.clone()),
-                ]);
+                Self::emit(
+                    instrs,
+                    Riscv64Opcode::LA,
+                    vec![
+                        MachineOperand::Register(dest),
+                        MachineOperand::Symbol(name.clone()),
+                    ],
+                );
                 self.relocations.push(Relocation {
                     offset: 0,
                     symbol: name.clone(),
@@ -1684,10 +2119,14 @@ impl<'a> Riscv64InstructionSelector<'a> {
                 // String constants are placed in .rodata; load the address.
                 let label = format!(".L.str.{}", self.label_counter);
                 self.label_counter += 1;
-                Self::emit(instrs, Riscv64Opcode::LA, vec![
-                    MachineOperand::Register(dest),
-                    MachineOperand::Symbol(label.clone()),
-                ]);
+                Self::emit(
+                    instrs,
+                    Riscv64Opcode::LA,
+                    vec![
+                        MachineOperand::Register(dest),
+                        MachineOperand::Symbol(label.clone()),
+                    ],
+                );
                 // Track the string data for emission in .rodata by the encoder.
                 let _ = bytes; // String data handled by the rodata section generator.
             }
@@ -1704,12 +2143,7 @@ impl<'a> Riscv64InstructionSelector<'a> {
     ///   (with sign-extension correction when bit 11 is set)
     /// - **64-bit value**: multi-instruction sequence using
     ///   `LUI+ADDI+SLLI+ADDI` pattern, building the value in stages
-    fn materialize_integer(
-        &self,
-        value: i64,
-        dest: PhysReg,
-        instrs: &mut Vec<MachineInstr>,
-    ) {
+    fn materialize_integer(&self, value: i64, dest: PhysReg, instrs: &mut Vec<MachineInstr>) {
         if value == 0 {
             // Use x0 directly.
             Self::emit_mv(instrs, dest, X0);
@@ -1718,11 +2152,15 @@ impl<'a> Riscv64InstructionSelector<'a> {
 
         if Self::fits_in_imm12(value) {
             // Single ADDI from x0.
-            Self::emit(instrs, Riscv64Opcode::ADDI, vec![
-                MachineOperand::Register(dest),
-                MachineOperand::Register(X0),
-                MachineOperand::Immediate(value),
-            ]);
+            Self::emit(
+                instrs,
+                Riscv64Opcode::ADDI,
+                vec![
+                    MachineOperand::Register(dest),
+                    MachineOperand::Register(X0),
+                    MachineOperand::Immediate(value),
+                ],
+            );
             return;
         }
 
@@ -1742,16 +2180,24 @@ impl<'a> Riscv64InstructionSelector<'a> {
             // Sign-extend lo12 to get the actual immediate for ADDI
             let lo12_signed = if lo12 >= 0x800 { lo12 - 0x1000 } else { lo12 };
 
-            Self::emit(instrs, Riscv64Opcode::LUI, vec![
-                MachineOperand::Register(dest),
-                MachineOperand::Immediate(hi20 as i64),
-            ]);
+            Self::emit(
+                instrs,
+                Riscv64Opcode::LUI,
+                vec![
+                    MachineOperand::Register(dest),
+                    MachineOperand::Immediate(hi20 as i64),
+                ],
+            );
             if lo12_signed != 0 {
-                Self::emit(instrs, Riscv64Opcode::ADDI, vec![
-                    MachineOperand::Register(dest),
-                    MachineOperand::Register(dest),
-                    MachineOperand::Immediate(lo12_signed as i64),
-                ]);
+                Self::emit(
+                    instrs,
+                    Riscv64Opcode::ADDI,
+                    vec![
+                        MachineOperand::Register(dest),
+                        MachineOperand::Register(dest),
+                        MachineOperand::Immediate(lo12_signed as i64),
+                    ],
+                );
             }
             return;
         }
@@ -1766,11 +2212,15 @@ impl<'a> Riscv64InstructionSelector<'a> {
         self.materialize_integer(upper as i64, dest, instrs);
 
         // Shift left by 32.
-        Self::emit(instrs, Riscv64Opcode::SLLI, vec![
-            MachineOperand::Register(dest),
-            MachineOperand::Register(dest),
-            MachineOperand::Immediate(32),
-        ]);
+        Self::emit(
+            instrs,
+            Riscv64Opcode::SLLI,
+            vec![
+                MachineOperand::Register(dest),
+                MachineOperand::Register(dest),
+                MachineOperand::Immediate(32),
+            ],
+        );
 
         // Add lower 32 bits. We need to be careful with the lower half.
         if lower != 0 {
@@ -1786,43 +2236,67 @@ impl<'a> Riscv64InstructionSelector<'a> {
             if hi20 != 0 {
                 // We need to add the upper 20 bits of the lower half.
                 // Use T0 as a scratch register to build the lower value.
-                Self::emit(instrs, Riscv64Opcode::LUI, vec![
-                    MachineOperand::Register(T0),
-                    MachineOperand::Immediate(hi20 as i64),
-                ]);
+                Self::emit(
+                    instrs,
+                    Riscv64Opcode::LUI,
+                    vec![
+                        MachineOperand::Register(T0),
+                        MachineOperand::Immediate(hi20 as i64),
+                    ],
+                );
                 if lo12_signed != 0 {
-                    Self::emit(instrs, Riscv64Opcode::ADDI, vec![
-                        MachineOperand::Register(T0),
-                        MachineOperand::Register(T0),
-                        MachineOperand::Immediate(lo12_signed as i64),
-                    ]);
+                    Self::emit(
+                        instrs,
+                        Riscv64Opcode::ADDI,
+                        vec![
+                            MachineOperand::Register(T0),
+                            MachineOperand::Register(T0),
+                            MachineOperand::Immediate(lo12_signed as i64),
+                        ],
+                    );
                 }
                 // Zero-extend the 32-bit value in T0 (clear upper bits).
-                Self::emit(instrs, Riscv64Opcode::SLLI, vec![
-                    MachineOperand::Register(T0),
-                    MachineOperand::Register(T0),
-                    MachineOperand::Immediate(32),
-                ]);
-                Self::emit(instrs, Riscv64Opcode::SRLI, vec![
-                    MachineOperand::Register(T0),
-                    MachineOperand::Register(T0),
-                    MachineOperand::Immediate(32),
-                ]);
-                Self::emit(instrs, Riscv64Opcode::OR, vec![
-                    MachineOperand::Register(dest),
-                    MachineOperand::Register(dest),
-                    MachineOperand::Register(T0),
-                ]);
+                Self::emit(
+                    instrs,
+                    Riscv64Opcode::SLLI,
+                    vec![
+                        MachineOperand::Register(T0),
+                        MachineOperand::Register(T0),
+                        MachineOperand::Immediate(32),
+                    ],
+                );
+                Self::emit(
+                    instrs,
+                    Riscv64Opcode::SRLI,
+                    vec![
+                        MachineOperand::Register(T0),
+                        MachineOperand::Register(T0),
+                        MachineOperand::Immediate(32),
+                    ],
+                );
+                Self::emit(
+                    instrs,
+                    Riscv64Opcode::OR,
+                    vec![
+                        MachineOperand::Register(dest),
+                        MachineOperand::Register(dest),
+                        MachineOperand::Register(T0),
+                    ],
+                );
             } else if lo12_signed != 0 {
                 // Only lower 12 bits are nonzero — can use ORI directly.
                 // But ORI sign-extends, so we use ADDI+ANDI pattern or ORI.
                 // Actually, for the lower half ORing is safe since upper bits
                 // of the lower 32-bit portion are zero.
-                Self::emit(instrs, Riscv64Opcode::ORI, vec![
-                    MachineOperand::Register(dest),
-                    MachineOperand::Register(dest),
-                    MachineOperand::Immediate(lo12 as i64),
-                ]);
+                Self::emit(
+                    instrs,
+                    Riscv64Opcode::ORI,
+                    vec![
+                        MachineOperand::Register(dest),
+                        MachineOperand::Register(dest),
+                        MachineOperand::Immediate(lo12 as i64),
+                    ],
+                );
             }
         }
     }
@@ -1847,11 +2321,15 @@ impl<'a> Riscv64InstructionSelector<'a> {
 
         // Implement as: MV dest, false_val; BEQ cond, x0, skip; MV dest, true_val; skip:
         Self::emit_mv(instrs, dest, fv);
-        Self::emit(instrs, Riscv64Opcode::BEQ, vec![
-            MachineOperand::Register(cond),
-            MachineOperand::Register(X0),
-            MachineOperand::Immediate(8), // Skip next instruction (4 bytes for MV)
-        ]);
+        Self::emit(
+            instrs,
+            Riscv64Opcode::BEQ,
+            vec![
+                MachineOperand::Register(cond),
+                MachineOperand::Register(X0),
+                MachineOperand::Immediate(8), // Skip next instruction (4 bytes for MV)
+            ],
+        );
         Self::emit_mv(instrs, dest, tv);
     }
 } // end impl Riscv64InstructionSelector
@@ -1887,10 +2365,10 @@ enum BinOp {
 mod tests {
     use super::*;
     use crate::codegen::regalloc::{AllocationResult, LiveInterval, PhysReg, RegClass};
+    use crate::ir::builder::Function;
     use crate::ir::cfg::{BasicBlock, Terminator};
     use crate::ir::instructions::{BlockId, Constant, Instruction, Value};
     use crate::ir::types::IrType;
-    use crate::ir::builder::Function;
 
     // -----------------------------------------------------------------------
     // Test helpers
@@ -1907,7 +2385,11 @@ mod tests {
             .iter()
             .map(|(val, reg)| LiveInterval {
                 value: *val,
-                reg_class: if reg.0 >= 32 { RegClass::Float } else { RegClass::Integer },
+                reg_class: if reg.0 >= 32 {
+                    RegClass::Float
+                } else {
+                    RegClass::Integer
+                },
                 start: 0,
                 end: 10,
                 assigned_reg: Some(*reg),
@@ -1937,8 +2419,11 @@ mod tests {
             blocks: vec![block],
             entry_block: BlockId(0),
             is_definition: true,
-is_static: false,
-is_weak: false,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         }
     }
 
@@ -1967,7 +2452,9 @@ is_weak: false,
         let instrs = selector.select_function(&func);
 
         // Find the ADD instruction (skip NOP label markers).
-        let add_instr = instrs.iter().find(|i| i.opcode == Riscv64Opcode::ADD.as_u32());
+        let add_instr = instrs
+            .iter()
+            .find(|i| i.opcode == Riscv64Opcode::ADD.as_u32());
         assert!(add_instr.is_some(), "Should emit ADD for i64 addition");
     }
 
@@ -1991,7 +2478,9 @@ is_weak: false,
         let mut selector = Riscv64InstructionSelector::new(&alloc, &target);
         let instrs = selector.select_function(&func);
 
-        let addw_instr = instrs.iter().find(|i| i.opcode == Riscv64Opcode::ADDW.as_u32());
+        let addw_instr = instrs
+            .iter()
+            .find(|i| i.opcode == Riscv64Opcode::ADDW.as_u32());
         assert!(addw_instr.is_some(), "Should emit ADDW for i32 addition");
     }
 
@@ -2015,8 +2504,13 @@ is_weak: false,
         let mut selector = Riscv64InstructionSelector::new(&alloc, &target);
         let instrs = selector.select_function(&func);
 
-        let mul_instr = instrs.iter().find(|i| i.opcode == Riscv64Opcode::MUL.as_u32());
-        assert!(mul_instr.is_some(), "Should emit MUL for i64 multiplication");
+        let mul_instr = instrs
+            .iter()
+            .find(|i| i.opcode == Riscv64Opcode::MUL.as_u32());
+        assert!(
+            mul_instr.is_some(),
+            "Should emit MUL for i64 multiplication"
+        );
     }
 
     #[test]
@@ -2040,8 +2534,13 @@ is_weak: false,
         let mut selector = Riscv64InstructionSelector::new(&alloc, &target);
         let instrs = selector.select_function(&func);
 
-        let div_instr = instrs.iter().find(|i| i.opcode == Riscv64Opcode::DIV.as_u32());
-        assert!(div_instr.is_some(), "Should emit DIV for signed i64 division");
+        let div_instr = instrs
+            .iter()
+            .find(|i| i.opcode == Riscv64Opcode::DIV.as_u32());
+        assert!(
+            div_instr.is_some(),
+            "Should emit DIV for signed i64 division"
+        );
     }
 
     #[test]
@@ -2065,8 +2564,13 @@ is_weak: false,
         let mut selector = Riscv64InstructionSelector::new(&alloc, &target);
         let instrs = selector.select_function(&func);
 
-        let divu_instr = instrs.iter().find(|i| i.opcode == Riscv64Opcode::DIVU.as_u32());
-        assert!(divu_instr.is_some(), "Should emit DIVU for unsigned i64 division");
+        let divu_instr = instrs
+            .iter()
+            .find(|i| i.opcode == Riscv64Opcode::DIVU.as_u32());
+        assert!(
+            divu_instr.is_some(),
+            "Should emit DIVU for unsigned i64 division"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -2094,9 +2598,16 @@ is_weak: false,
         let mut selector = Riscv64InstructionSelector::new(&alloc, &target);
         let instrs = selector.select_function(&func);
 
-        let sub = instrs.iter().any(|i| i.opcode == Riscv64Opcode::SUB.as_u32());
-        let sltiu = instrs.iter().any(|i| i.opcode == Riscv64Opcode::SLTIU.as_u32());
-        assert!(sub && sltiu, "ICmp Equal should emit SUB + SLTIU (SEQZ pattern)");
+        let sub = instrs
+            .iter()
+            .any(|i| i.opcode == Riscv64Opcode::SUB.as_u32());
+        let sltiu = instrs
+            .iter()
+            .any(|i| i.opcode == Riscv64Opcode::SLTIU.as_u32());
+        assert!(
+            sub && sltiu,
+            "ICmp Equal should emit SUB + SLTIU (SEQZ pattern)"
+        );
     }
 
     #[test]
@@ -2120,7 +2631,9 @@ is_weak: false,
         let mut selector = Riscv64InstructionSelector::new(&alloc, &target);
         let instrs = selector.select_function(&func);
 
-        let slt = instrs.iter().any(|i| i.opcode == Riscv64Opcode::SLT.as_u32());
+        let slt = instrs
+            .iter()
+            .any(|i| i.opcode == Riscv64Opcode::SLT.as_u32());
         assert!(slt, "ICmp SignedLess should emit SLT");
     }
 
@@ -2145,7 +2658,9 @@ is_weak: false,
         let mut selector = Riscv64InstructionSelector::new(&alloc, &target);
         let instrs = selector.select_function(&func);
 
-        let sltu = instrs.iter().any(|i| i.opcode == Riscv64Opcode::SLTU.as_u32());
+        let sltu = instrs
+            .iter()
+            .any(|i| i.opcode == Riscv64Opcode::SLTU.as_u32());
         assert!(sltu, "ICmp UnsignedLess should emit SLTU");
     }
 
@@ -2156,10 +2671,7 @@ is_weak: false,
     #[test]
     fn test_load_i32_selects_lw() {
         let target = make_riscv64_target();
-        let alloc = make_alloc_result(&[
-            (Value(0), PhysReg(10)),
-            (Value(1), PhysReg(11)),
-        ]);
+        let alloc = make_alloc_result(&[(Value(0), PhysReg(10)), (Value(1), PhysReg(11))]);
         let func = make_function(
             vec![Instruction::Load {
                 result: Value(1),
@@ -2171,17 +2683,16 @@ is_weak: false,
         let mut selector = Riscv64InstructionSelector::new(&alloc, &target);
         let instrs = selector.select_function(&func);
 
-        let lw = instrs.iter().any(|i| i.opcode == Riscv64Opcode::LW.as_u32());
+        let lw = instrs
+            .iter()
+            .any(|i| i.opcode == Riscv64Opcode::LW.as_u32());
         assert!(lw, "Load i32 should emit LW");
     }
 
     #[test]
     fn test_load_i64_selects_ld() {
         let target = make_riscv64_target();
-        let alloc = make_alloc_result(&[
-            (Value(0), PhysReg(10)),
-            (Value(1), PhysReg(11)),
-        ]);
+        let alloc = make_alloc_result(&[(Value(0), PhysReg(10)), (Value(1), PhysReg(11))]);
         let func = make_function(
             vec![Instruction::Load {
                 result: Value(1),
@@ -2193,7 +2704,9 @@ is_weak: false,
         let mut selector = Riscv64InstructionSelector::new(&alloc, &target);
         let instrs = selector.select_function(&func);
 
-        let ld = instrs.iter().any(|i| i.opcode == Riscv64Opcode::LD.as_u32());
+        let ld = instrs
+            .iter()
+            .any(|i| i.opcode == Riscv64Opcode::LD.as_u32());
         assert!(ld, "Load i64 should emit LD");
     }
 
@@ -2205,13 +2718,19 @@ is_weak: false,
             (Value(1), PhysReg(10)), // a0
         ]);
         let func = make_function(
-            vec![Instruction::Store { value: Value(0), ptr: Value(1), store_ty: None }],
+            vec![Instruction::Store {
+                value: Value(0),
+                ptr: Value(1),
+                store_ty: None,
+            }],
             Terminator::Return { value: None },
         );
         let mut selector = Riscv64InstructionSelector::new(&alloc, &target);
         let instrs = selector.select_function(&func);
 
-        let fsd = instrs.iter().any(|i| i.opcode == Riscv64Opcode::FSD.as_u32());
+        let fsd = instrs
+            .iter()
+            .any(|i| i.opcode == Riscv64Opcode::FSD.as_u32());
         assert!(fsd, "Store of FP value should emit FSD");
     }
 
@@ -2226,17 +2745,24 @@ is_weak: false,
         let func = make_function(
             vec![Instruction::Const {
                 result: Value(0),
-                value: Constant::Integer { value: 42, ty: IrType::I64 },
+                value: Constant::Integer {
+                    value: 42,
+                    ty: IrType::I64,
+                },
             }],
             Terminator::Return { value: None },
         );
         let mut selector = Riscv64InstructionSelector::new(&alloc, &target);
         let instrs = selector.select_function(&func);
 
-        let addi = instrs.iter().any(|i| i.opcode == Riscv64Opcode::ADDI.as_u32());
+        let addi = instrs
+            .iter()
+            .any(|i| i.opcode == Riscv64Opcode::ADDI.as_u32());
         assert!(addi, "Small immediate should use single ADDI");
         // Should NOT have LUI
-        let lui = instrs.iter().any(|i| i.opcode == Riscv64Opcode::LUI.as_u32());
+        let lui = instrs
+            .iter()
+            .any(|i| i.opcode == Riscv64Opcode::LUI.as_u32());
         assert!(!lui, "Small immediate should NOT use LUI");
     }
 
@@ -2247,14 +2773,19 @@ is_weak: false,
         let func = make_function(
             vec![Instruction::Const {
                 result: Value(0),
-                value: Constant::Integer { value: 0x12345, ty: IrType::I64 },
+                value: Constant::Integer {
+                    value: 0x12345,
+                    ty: IrType::I64,
+                },
             }],
             Terminator::Return { value: None },
         );
         let mut selector = Riscv64InstructionSelector::new(&alloc, &target);
         let instrs = selector.select_function(&func);
 
-        let lui = instrs.iter().any(|i| i.opcode == Riscv64Opcode::LUI.as_u32());
+        let lui = instrs
+            .iter()
+            .any(|i| i.opcode == Riscv64Opcode::LUI.as_u32());
         assert!(lui, "32-bit value should use LUI");
     }
 
@@ -2266,7 +2797,10 @@ is_weak: false,
         let func = make_function(
             vec![Instruction::Const {
                 result: Value(0),
-                value: Constant::Integer { value: 0x800, ty: IrType::I64 },
+                value: Constant::Integer {
+                    value: 0x800,
+                    ty: IrType::I64,
+                },
             }],
             Terminator::Return { value: None },
         );
@@ -2274,7 +2808,9 @@ is_weak: false,
         let instrs = selector.select_function(&func);
 
         // Should have LUI with adjusted hi20 (1) and ADDI with -2048
-        let lui = instrs.iter().find(|i| i.opcode == Riscv64Opcode::LUI.as_u32());
+        let lui = instrs
+            .iter()
+            .find(|i| i.opcode == Riscv64Opcode::LUI.as_u32());
         assert!(lui.is_some(), "0x800 should use LUI+ADDI pattern");
     }
 
@@ -2285,15 +2821,23 @@ is_weak: false,
         let func = make_function(
             vec![Instruction::Const {
                 result: Value(0),
-                value: Constant::Integer { value: 0x1_0000_0000_i64, ty: IrType::I64 },
+                value: Constant::Integer {
+                    value: 0x1_0000_0000_i64,
+                    ty: IrType::I64,
+                },
             }],
             Terminator::Return { value: None },
         );
         let mut selector = Riscv64InstructionSelector::new(&alloc, &target);
         let instrs = selector.select_function(&func);
 
-        let slli = instrs.iter().any(|i| i.opcode == Riscv64Opcode::SLLI.as_u32());
-        assert!(slli, "64-bit value should use SLLI in multi-instruction sequence");
+        let slli = instrs
+            .iter()
+            .any(|i| i.opcode == Riscv64Opcode::SLLI.as_u32());
+        assert!(
+            slli,
+            "64-bit value should use SLLI in multi-instruction sequence"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -2321,14 +2865,19 @@ is_weak: false,
             blocks: vec![block0, block1],
             entry_block: BlockId(0),
             is_definition: true,
-is_static: false,
-is_weak: false,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         };
 
         let mut selector = Riscv64InstructionSelector::new(&alloc, &target);
         let instrs = selector.select_function(&func);
 
-        let jal = instrs.iter().any(|i| i.opcode == Riscv64Opcode::JAL.as_u32());
+        let jal = instrs
+            .iter()
+            .any(|i| i.opcode == Riscv64Opcode::JAL.as_u32());
         assert!(jal, "Unconditional branch should emit JAL");
     }
 
@@ -2361,14 +2910,19 @@ is_weak: false,
             blocks: vec![block0, block1, block2],
             entry_block: BlockId(0),
             is_definition: true,
-is_static: false,
-is_weak: false,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         };
 
         let mut selector = Riscv64InstructionSelector::new(&alloc, &target);
         let instrs = selector.select_function(&func);
 
-        let bne = instrs.iter().any(|i| i.opcode == Riscv64Opcode::BNE.as_u32());
+        let bne = instrs
+            .iter()
+            .any(|i| i.opcode == Riscv64Opcode::BNE.as_u32());
         assert!(bne, "Conditional branch should emit BNE");
     }
 
@@ -2388,11 +2942,16 @@ is_weak: false,
         let mut selector = Riscv64InstructionSelector::new(&alloc, &target);
         let instrs = selector.select_function(&func);
 
-        let call = instrs.iter().any(|i| i.opcode == Riscv64Opcode::CALL.as_u32());
+        let call = instrs
+            .iter()
+            .any(|i| i.opcode == Riscv64Opcode::CALL.as_u32());
         assert!(call, "Direct function call should emit CALL pseudo");
 
         // Should also produce a relocation.
-        assert!(!selector.relocations().is_empty(), "CALL should produce relocation");
+        assert!(
+            !selector.relocations().is_empty(),
+            "CALL should produce relocation"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -2402,10 +2961,7 @@ is_weak: false,
     #[test]
     fn test_sext_i32_to_i64_selects_addiw() {
         let target = make_riscv64_target();
-        let alloc = make_alloc_result(&[
-            (Value(0), PhysReg(10)),
-            (Value(1), PhysReg(11)),
-        ]);
+        let alloc = make_alloc_result(&[(Value(0), PhysReg(10)), (Value(1), PhysReg(11))]);
         let func = make_function(
             vec![Instruction::Cast {
                 result: Value(1),
@@ -2419,7 +2975,9 @@ is_weak: false,
         let mut selector = Riscv64InstructionSelector::new(&alloc, &target);
         let instrs = selector.select_function(&func);
 
-        let addiw = instrs.iter().any(|i| i.opcode == Riscv64Opcode::ADDIW.as_u32());
+        let addiw = instrs
+            .iter()
+            .any(|i| i.opcode == Riscv64Opcode::ADDIW.as_u32());
         assert!(addiw, "SExt i32→i64 should emit ADDIW");
     }
 
@@ -2443,7 +3001,9 @@ is_weak: false,
         let mut selector = Riscv64InstructionSelector::new(&alloc, &target);
         let instrs = selector.select_function(&func);
 
-        let fcvt = instrs.iter().any(|i| i.opcode == Riscv64Opcode::FCVT_D_S.as_u32());
+        let fcvt = instrs
+            .iter()
+            .any(|i| i.opcode == Riscv64Opcode::FCVT_D_S.as_u32());
         assert!(fcvt, "FPExt float→double should emit FCVT.D.S");
     }
 
@@ -2467,7 +3027,9 @@ is_weak: false,
         let mut selector = Riscv64InstructionSelector::new(&alloc, &target);
         let instrs = selector.select_function(&func);
 
-        let fcvt = instrs.iter().any(|i| i.opcode == Riscv64Opcode::FCVT_D_L.as_u32());
+        let fcvt = instrs
+            .iter()
+            .any(|i| i.opcode == Riscv64Opcode::FCVT_D_L.as_u32());
         assert!(fcvt, "SIToFP i64→f64 should emit FCVT.D.L");
     }
 
@@ -2479,20 +3041,44 @@ is_weak: false,
     fn test_opcode_as_u32_uniqueness() {
         // Verify all opcodes have unique u32 values.
         let opcodes = vec![
-            Riscv64Opcode::LUI, Riscv64Opcode::AUIPC, Riscv64Opcode::JAL,
-            Riscv64Opcode::JALR, Riscv64Opcode::BEQ, Riscv64Opcode::BNE,
-            Riscv64Opcode::ADD, Riscv64Opcode::SUB, Riscv64Opcode::MUL,
-            Riscv64Opcode::DIV, Riscv64Opcode::REM, Riscv64Opcode::AND,
-            Riscv64Opcode::OR, Riscv64Opcode::XOR, Riscv64Opcode::SLL,
-            Riscv64Opcode::SRL, Riscv64Opcode::SRA, Riscv64Opcode::ADDW,
-            Riscv64Opcode::SUBW, Riscv64Opcode::MULW, Riscv64Opcode::NOP,
-            Riscv64Opcode::RET, Riscv64Opcode::CALL, Riscv64Opcode::LI,
-            Riscv64Opcode::LD, Riscv64Opcode::SD, Riscv64Opcode::FLD,
-            Riscv64Opcode::FSD, Riscv64Opcode::FADD_D, Riscv64Opcode::FCVT_D_S,
+            Riscv64Opcode::LUI,
+            Riscv64Opcode::AUIPC,
+            Riscv64Opcode::JAL,
+            Riscv64Opcode::JALR,
+            Riscv64Opcode::BEQ,
+            Riscv64Opcode::BNE,
+            Riscv64Opcode::ADD,
+            Riscv64Opcode::SUB,
+            Riscv64Opcode::MUL,
+            Riscv64Opcode::DIV,
+            Riscv64Opcode::REM,
+            Riscv64Opcode::AND,
+            Riscv64Opcode::OR,
+            Riscv64Opcode::XOR,
+            Riscv64Opcode::SLL,
+            Riscv64Opcode::SRL,
+            Riscv64Opcode::SRA,
+            Riscv64Opcode::ADDW,
+            Riscv64Opcode::SUBW,
+            Riscv64Opcode::MULW,
+            Riscv64Opcode::NOP,
+            Riscv64Opcode::RET,
+            Riscv64Opcode::CALL,
+            Riscv64Opcode::LI,
+            Riscv64Opcode::LD,
+            Riscv64Opcode::SD,
+            Riscv64Opcode::FLD,
+            Riscv64Opcode::FSD,
+            Riscv64Opcode::FADD_D,
+            Riscv64Opcode::FCVT_D_S,
         ];
         let mut seen = std::collections::HashSet::new();
         for op in &opcodes {
-            assert!(seen.insert(op.as_u32()), "Duplicate opcode value for {:?}", op);
+            assert!(
+                seen.insert(op.as_u32()),
+                "Duplicate opcode value for {:?}",
+                op
+            );
         }
     }
 
@@ -2502,12 +3088,16 @@ is_weak: false,
         let alloc = make_alloc_result(&[(Value(0), PhysReg(10))]);
         let func = make_function(
             vec![],
-            Terminator::Return { value: Some(Value(0)) },
+            Terminator::Return {
+                value: Some(Value(0)),
+            },
         );
         let mut selector = Riscv64InstructionSelector::new(&alloc, &target);
         let instrs = selector.select_function(&func);
 
-        let ret = instrs.iter().any(|i| i.opcode == Riscv64Opcode::RET.as_u32());
+        let ret = instrs
+            .iter()
+            .any(|i| i.opcode == Riscv64Opcode::RET.as_u32());
         assert!(ret, "Return should emit RET pseudo");
     }
 
@@ -2523,11 +3113,17 @@ is_weak: false,
             blocks: vec![],
             entry_block: BlockId(0),
             is_definition: true,
-is_static: false,
-is_weak: false,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         };
         let mut selector = Riscv64InstructionSelector::new(&alloc, &target);
         let instrs = selector.select_function(&func);
-        assert!(instrs.is_empty(), "Empty function should produce no instructions");
+        assert!(
+            instrs.is_empty(),
+            "Empty function should produce no instructions"
+        );
     }
 }

@@ -33,30 +33,27 @@
 
 use std::collections::HashMap;
 
-use crate::codegen::{CodeGenError, MachineInstr, MachineOperand};
 use crate::codegen::regalloc::PhysReg;
+use crate::codegen::x86_64::abi::{
+    classify_return_type, compute_argument_locations, compute_call_stack_adjustment, is_xmm_reg,
+    ReturnClass, RAX, RBP, RCX, RDX, RSP, XMM0,
+};
+use crate::codegen::{CodeGenError, MachineInstr, MachineOperand};
 #[allow(unused_imports)]
 use crate::common::SourceLocation;
-use crate::ir::{
-    Callee, CastOp, CompareOp, Constant, FloatCompareOp,
-    Function, Instruction, IrType, Terminator, Value,
-};
 use crate::ir::instructions::BlockId;
-use crate::codegen::x86_64::abi::{
-    ReturnClass,
-    classify_return_type, compute_argument_locations,
-    compute_call_stack_adjustment, is_xmm_reg,
-    RAX, RCX, RDX, RSP, RBP, XMM0,
+use crate::ir::{
+    Callee, CastOp, CompareOp, Constant, FloatCompareOp, Function, Instruction, IrType, Terminator,
+    Value,
 };
 
 // Re-import register constants and ABI utilities that are used transitively
 // or needed for future instruction-combining and PIC enhancements.
 #[allow(unused_imports)]
 use crate::codegen::x86_64::abi::{
-    self as abi_mod, ArgumentClass, ArgumentLayout,
-    classify_type, RSI, RDI, R8, R9, R10, R11, RBX, R12, R13, R14, R15,
-    XMM1, XMM2, XMM3, XMM4, XMM5, XMM6, XMM7,
-    INT_ARG_REGS, FLOAT_ARG_REGS, CALLEE_SAVED_GPRS,
+    self as abi_mod, classify_type, ArgumentClass, ArgumentLayout, CALLEE_SAVED_GPRS,
+    FLOAT_ARG_REGS, INT_ARG_REGS, R10, R11, R12, R13, R14, R15, R8, R9, RBX, RDI, RSI, XMM1, XMM2,
+    XMM3, XMM4, XMM5, XMM6, XMM7,
 };
 
 // ---------------------------------------------------------------------------
@@ -543,17 +540,13 @@ impl X86_64InstructionSelector {
             self.param_value_set.insert(pv);
         }
 
-
         // Map function parameters to their ABI register locations.
         self.lower_params(function);
 
         // Walk blocks in declaration order (builder outputs RPO-friendly order).
         for block in &function.blocks {
             // Emit a label for this block so branches can target it.
-            self.emit_instr(
-                opcodes::NOP,
-                vec![MachineOperand::Label(block.id.0)],
-            );
+            self.emit_instr(opcodes::NOP, vec![MachineOperand::Label(block.id.0)]);
 
             // Lower phi nodes — allocate vregs for results and collect
             // incoming edges for the phi resolution pass, which inserts
@@ -627,9 +620,7 @@ impl X86_64InstructionSelector {
             let mut block_start = None;
             let mut block_end = self.instructions.len();
             for (i, instr) in self.instructions.iter().enumerate() {
-                if instr.opcode == opcodes::NOP
-                    && instr.operands.len() == 1
-                {
+                if instr.opcode == opcodes::NOP && instr.operands.len() == 1 {
                     if let MachineOperand::Label(lbl) = &instr.operands[0] {
                         if *lbl == *pred_label {
                             block_start = Some(i);
@@ -645,21 +636,18 @@ impl X86_64InstructionSelector {
                 // Find the last branch/jump/ret instruction in this block range
                 let mut insert_pos = block_end;
                 for i in (0..block_end).rev() {
-                    if i < block_start.unwrap_or(0) { break; }
+                    if i < block_start.unwrap_or(0) {
+                        break;
+                    }
                     let op = self.instructions[i].opcode;
-                    if op == opcodes::JMP
-                        || op == opcodes::JCC
-                        || op == opcodes::RET
-                    {
+                    if op == opcodes::JMP || op == opcodes::JCC || op == opcodes::RET {
                         insert_pos = i;
                         break;
                     }
                 }
 
-                let mov_instr = MachineInstr::with_operands(
-                    opcodes::MOV_RR,
-                    vec![dst.clone(), src.clone()],
-                );
+                let mov_instr =
+                    MachineInstr::with_operands(opcodes::MOV_RR, vec![dst.clone(), src.clone()]);
                 insertions.push((insert_pos, vec![mov_instr]));
             }
         }
@@ -685,11 +673,7 @@ impl X86_64InstructionSelector {
     /// each to the correct ABI register (rdi, rsi, rdx, rcx, r8, r9 for
     /// integer args under System V AMD64).
     fn lower_params(&mut self, function: &Function) {
-        let param_types: Vec<IrType> = function
-            .params
-            .iter()
-            .map(|(_, ty)| ty.clone())
-            .collect();
+        let param_types: Vec<IrType> = function.params.iter().map(|(_, ty)| ty.clone()).collect();
         let layout = compute_argument_locations(&param_types);
 
         for (i, (_name, ty)) in function.params.iter().enumerate() {
@@ -743,10 +727,7 @@ impl X86_64InstructionSelector {
     // ===================================================================
 
     /// Select x86-64 instruction(s) for a single IR instruction.
-    fn select_instruction(
-        &mut self,
-        inst: &Instruction,
-    ) -> Result<(), CodeGenError> {
+    fn select_instruction(&mut self, inst: &Instruction) -> Result<(), CodeGenError> {
         // Record the result type for every instruction that produces a typed
         // result. This enables correct argument classification in select_call
         // (float/double → XMM registers per System V AMD64 ABI).
@@ -758,17 +739,36 @@ impl X86_64InstructionSelector {
 
         match inst {
             // ---- Arithmetic ----
-            Instruction::Add { result, lhs, rhs, ty } => {
+            Instruction::Add {
+                result,
+                lhs,
+                rhs,
+                ty,
+            } => {
                 self.select_binop_or_fp(*result, *lhs, *rhs, ty, BinOpKind::Add)?;
             }
-            Instruction::Sub { result, lhs, rhs, ty } => {
+            Instruction::Sub {
+                result,
+                lhs,
+                rhs,
+                ty,
+            } => {
                 self.select_binop_or_fp(*result, *lhs, *rhs, ty, BinOpKind::Sub)?;
             }
-            Instruction::Mul { result, lhs, rhs, ty } => {
+            Instruction::Mul {
+                result,
+                lhs,
+                rhs,
+                ty,
+            } => {
                 self.select_binop_or_fp(*result, *lhs, *rhs, ty, BinOpKind::Mul)?;
             }
             Instruction::Div {
-                result, lhs, rhs, ty, is_signed,
+                result,
+                lhs,
+                rhs,
+                ty,
+                is_signed,
             } => {
                 if ty.is_float() {
                     self.select_fp_binop(*result, *lhs, *rhs, ty, BinOpKind::Div)?;
@@ -777,35 +777,75 @@ impl X86_64InstructionSelector {
                 }
             }
             Instruction::Mod {
-                result, lhs, rhs, ty, is_signed,
+                result,
+                lhs,
+                rhs,
+                ty,
+                is_signed,
             } => {
                 self.select_div_mod(*result, *lhs, *rhs, ty, *is_signed, false)?;
             }
 
             // ---- Bitwise ----
-            Instruction::And { result, lhs, rhs, ty } => {
+            Instruction::And {
+                result,
+                lhs,
+                rhs,
+                ty,
+            } => {
                 self.select_int_binop(*result, *lhs, *rhs, ty, BinOpKind::And)?;
             }
-            Instruction::Or { result, lhs, rhs, ty } => {
+            Instruction::Or {
+                result,
+                lhs,
+                rhs,
+                ty,
+            } => {
                 self.select_int_binop(*result, *lhs, *rhs, ty, BinOpKind::Or)?;
             }
-            Instruction::Xor { result, lhs, rhs, ty } => {
+            Instruction::Xor {
+                result,
+                lhs,
+                rhs,
+                ty,
+            } => {
                 self.select_int_binop(*result, *lhs, *rhs, ty, BinOpKind::Xor)?;
             }
-            Instruction::Shl { result, lhs, rhs, ty } => {
+            Instruction::Shl {
+                result,
+                lhs,
+                rhs,
+                ty,
+            } => {
                 self.select_shift(*result, *lhs, *rhs, ty, false, false)?;
             }
             Instruction::Shr {
-                result, lhs, rhs, ty, is_arithmetic,
+                result,
+                lhs,
+                rhs,
+                ty,
+                is_arithmetic,
             } => {
                 self.select_shift(*result, *lhs, *rhs, ty, true, *is_arithmetic)?;
             }
 
             // ---- Comparisons ----
-            Instruction::ICmp { result, op, lhs, rhs, ty } => {
+            Instruction::ICmp {
+                result,
+                op,
+                lhs,
+                rhs,
+                ty,
+            } => {
                 self.select_icmp(*result, op, *lhs, *rhs, ty)?;
             }
-            Instruction::FCmp { result, op, lhs, rhs, ty } => {
+            Instruction::FCmp {
+                result,
+                op,
+                lhs,
+                rhs,
+                ty,
+            } => {
                 self.select_fcmp(*result, op, *lhs, *rhs, ty)?;
             }
 
@@ -813,27 +853,43 @@ impl X86_64InstructionSelector {
             Instruction::Load { result, ty, ptr } => {
                 self.select_load(*result, *ptr, ty)?;
             }
-            Instruction::Store { value, ptr, store_ty, .. } => {
+            Instruction::Store {
+                value,
+                ptr,
+                store_ty,
+                ..
+            } => {
                 self.select_store(*value, *ptr, store_ty.as_ref())?;
             }
             Instruction::Alloca { result, ty, count } => {
                 self.select_alloca(*result, ty, count)?;
             }
             Instruction::GetElementPtr {
-                result, base_ty, ptr, indices, ..
+                result,
+                base_ty,
+                ptr,
+                indices,
+                ..
             } => {
                 self.select_gep(*result, base_ty, *ptr, indices)?;
             }
 
             // ---- Function calls ----
             Instruction::Call {
-                result, callee, args, return_ty,
+                result,
+                callee,
+                args,
+                return_ty,
             } => {
                 self.select_call(result, callee, args, return_ty)?;
             }
 
             // ---- Phi nodes ----
-            Instruction::Phi { result, ty, incoming } => {
+            Instruction::Phi {
+                result,
+                ty,
+                incoming,
+            } => {
                 // Allocate operand for the phi result so it gets a vreg.
                 let _op = self.get_operand(*result);
                 // Ensure incoming values also have operands allocated.
@@ -851,12 +907,19 @@ impl X86_64InstructionSelector {
 
             // ---- Type conversions ----
             Instruction::Cast {
-                result, op, value, from_ty, to_ty,
+                result,
+                op,
+                value,
+                from_ty,
+                to_ty,
             } => {
                 self.select_cast(*result, *op, *value, from_ty, to_ty)?;
             }
             Instruction::BitCast {
-                result, value, from_ty, to_ty,
+                result,
+                value,
+                from_ty,
+                to_ty,
             } => {
                 // Bitcast: reinterpret bits without conversion. For
                 // same-class types this is a simple MOV.
@@ -918,10 +981,7 @@ impl X86_64InstructionSelector {
     // ===================================================================
 
     /// Select x86-64 instruction(s) for a block terminator.
-    fn select_terminator(
-        &mut self,
-        term: &Terminator,
-    ) -> Result<(), CodeGenError> {
+    fn select_terminator(&mut self, term: &Terminator) -> Result<(), CodeGenError> {
         match term {
             Terminator::Branch { target } => {
                 self.emit_instr(opcodes::JMP, vec![MachineOperand::Label(target.0)]);
@@ -933,10 +993,7 @@ impl X86_64InstructionSelector {
             } => {
                 // Emit a TEST/CMP for the boolean condition, then JCC.
                 let cond_op = self.get_operand(*condition);
-                self.emit_instr(
-                    opcodes::TEST_RR,
-                    vec![cond_op.clone(), cond_op],
-                );
+                self.emit_instr(opcodes::TEST_RR, vec![cond_op.clone(), cond_op]);
                 // Jump to true_block if non-zero (NE).
                 self.emit_instr(
                     opcodes::JCC,
@@ -946,10 +1003,7 @@ impl X86_64InstructionSelector {
                     ],
                 );
                 // Fall-through or jump to false_block.
-                self.emit_instr(
-                    opcodes::JMP,
-                    vec![MachineOperand::Label(false_block.0)],
-                );
+                self.emit_instr(opcodes::JMP, vec![MachineOperand::Label(false_block.0)]);
             }
             Terminator::Return { value } => {
                 if let Some(val) = value {
@@ -958,26 +1012,22 @@ impl X86_64InstructionSelector {
                     // We check the type_map first (reliable at isel time
                     // because vregs haven't been allocated to physical regs
                     // yet, so is_xmm_reg on a vreg would always be false).
-                    let is_sse = self.type_map.get(val)
-                        .map(|t| t.is_float())
-                        .unwrap_or_else(|| {
-                            // Fallback: check if operand is already a
-                            // physical XMM register.
-                            match &src {
-                                MachineOperand::Register(r) => is_xmm_reg(*r),
-                                _ => false,
-                            }
-                        });
+                    let is_sse =
+                        self.type_map
+                            .get(val)
+                            .map(|t| t.is_float())
+                            .unwrap_or_else(|| {
+                                // Fallback: check if operand is already a
+                                // physical XMM register.
+                                match &src {
+                                    MachineOperand::Register(r) => is_xmm_reg(*r),
+                                    _ => false,
+                                }
+                            });
                     if is_sse {
-                        self.emit_instr(
-                            opcodes::MOVSD,
-                            vec![MachineOperand::Register(XMM0), src],
-                        );
+                        self.emit_instr(opcodes::MOVSD, vec![MachineOperand::Register(XMM0), src]);
                     } else {
-                        self.emit_instr(
-                            opcodes::MOV_RR,
-                            vec![MachineOperand::Register(RAX), src],
-                        );
+                        self.emit_instr(opcodes::MOV_RR, vec![MachineOperand::Register(RAX), src]);
                     }
                 }
                 self.emit_instr(opcodes::RET, vec![]);
@@ -1158,10 +1208,7 @@ impl X86_64InstructionSelector {
         self.emit_instr(opcodes::PUSH, vec![rhs_op]);
 
         // Move dividend to RAX.
-        self.emit_instr(
-            opcodes::MOV_RR,
-            vec![MachineOperand::Register(RAX), lhs_op],
-        );
+        self.emit_instr(opcodes::MOV_RR, vec![MachineOperand::Register(RAX), lhs_op]);
 
         // Prepare RDX:
         // - Signed: CQO (64-bit) or CDQ (32-bit) sign-extends RAX → RDX:RAX
@@ -1175,10 +1222,7 @@ impl X86_64InstructionSelector {
         } else {
             self.emit_instr(
                 opcodes::XOR_RR,
-                vec![
-                    MachineOperand::Register(RDX),
-                    MachineOperand::Register(RDX),
-                ],
+                vec![MachineOperand::Register(RDX), MachineOperand::Register(RDX)],
             );
         }
 
@@ -1238,10 +1282,7 @@ impl X86_64InstructionSelector {
             }
             _ => {
                 // Move shift amount to RCX (CL is the low byte of RCX).
-                self.emit_instr(
-                    opcodes::MOV_RR,
-                    vec![MachineOperand::Register(RCX), rhs_op],
-                );
+                self.emit_instr(opcodes::MOV_RR, vec![MachineOperand::Register(RCX), rhs_op]);
                 let opcode = if !is_right {
                     opcodes::SHL_RCL
                 } else if is_arithmetic {
@@ -1355,7 +1396,10 @@ impl X86_64InstructionSelector {
             // SETNP tmp — set if ordered (not NaN)
             self.emit_instr(
                 opcodes::SETCC,
-                vec![MachineOperand::Immediate(CondCode::NP as i64), tmp_op.clone()],
+                vec![
+                    MachineOperand::Immediate(CondCode::NP as i64),
+                    tmp_op.clone(),
+                ],
             );
             // SETE dst — set if equal
             self.emit_instr(
@@ -1384,12 +1428,7 @@ impl X86_64InstructionSelector {
     // ===================================================================
 
     /// Select a load from memory.
-    fn select_load(
-        &mut self,
-        result: Value,
-        ptr: Value,
-        ty: &IrType,
-    ) -> Result<(), CodeGenError> {
+    fn select_load(&mut self, result: Value, ptr: Value, ty: &IrType) -> Result<(), CodeGenError> {
         let ptr_op = self.get_operand(ptr);
         let dst = self.get_operand(result);
 
@@ -1494,10 +1533,7 @@ impl X86_64InstructionSelector {
         let effective_val = match &val_op {
             MachineOperand::Memory { .. } => {
                 let tmp = self.alloc_vreg();
-                self.emit_instr(
-                    opcodes::LEA,
-                    vec![MachineOperand::Register(tmp), val_op],
-                );
+                self.emit_instr(opcodes::LEA, vec![MachineOperand::Register(tmp), val_op]);
                 MachineOperand::Register(tmp)
             }
             _ => val_op,
@@ -1505,7 +1541,9 @@ impl X86_64InstructionSelector {
 
         // Determine if the value is a float type using the type map
         // (reliable at isel time, unlike is_xmm_reg on vregs).
-        let is_sse = self.type_map.get(&value)
+        let is_sse = self
+            .type_map
+            .get(&value)
             .map(|t| t.is_float())
             .unwrap_or_else(|| {
                 // Fallback: check if already a physical XMM register.
@@ -1582,14 +1620,14 @@ impl X86_64InstructionSelector {
             // sub rsp, size_reg (dynamic stack allocation)
             self.emit_instr(
                 opcodes::SUB_RR,
-                vec![MachineOperand::Register(RSP), MachineOperand::Register(size_reg)],
+                vec![
+                    MachineOperand::Register(RSP),
+                    MachineOperand::Register(size_reg),
+                ],
             );
             // Result is RSP.
             let dst = self.get_operand(result);
-            self.emit_instr(
-                opcodes::MOV_RR,
-                vec![dst, MachineOperand::Register(RSP)],
-            );
+            self.emit_instr(opcodes::MOV_RR, vec![dst, MachineOperand::Register(RSP)]);
             return Ok(());
         } else {
             // Align to at least 8 bytes for stack slots.
@@ -1668,10 +1706,7 @@ impl X86_64InstructionSelector {
                             if byte_offset != 0 {
                                 self.emit_instr(
                                     opcodes::ADD_RI,
-                                    vec![
-                                        dst.clone(),
-                                        MachineOperand::Immediate(byte_offset),
-                                    ],
+                                    vec![dst.clone(), MachineOperand::Immediate(byte_offset)],
                                 );
                             }
                         }
@@ -1682,10 +1717,7 @@ impl X86_64InstructionSelector {
                             // ADD_RR dst, dst_tmp.
                             // We reuse `dst` as the temporary: save base,
                             // compute scaled index into dst, then add base back.
-                            self.emit_instr(
-                                opcodes::PUSH,
-                                vec![dst.clone()],
-                            );
+                            self.emit_instr(opcodes::PUSH, vec![dst.clone()]);
                             self.emit_instr(
                                 opcodes::IMUL_RI,
                                 vec![
@@ -1695,10 +1727,7 @@ impl X86_64InstructionSelector {
                                 ],
                             );
                             // Pop saved base into R11, add to dst.
-                            self.emit_instr(
-                                opcodes::POP,
-                                vec![MachineOperand::Register(R11)],
-                            );
+                            self.emit_instr(opcodes::POP, vec![MachineOperand::Register(R11)]);
                             self.emit_instr(
                                 opcodes::ADD_RR,
                                 vec![dst.clone(), MachineOperand::Register(R11)],
@@ -1780,10 +1809,7 @@ impl X86_64InstructionSelector {
                             if byte_offset != 0 {
                                 self.emit_instr(
                                     opcodes::ADD_RI,
-                                    vec![
-                                        dst.clone(),
-                                        MachineOperand::Immediate(byte_offset),
-                                    ],
+                                    vec![dst.clone(), MachineOperand::Immediate(byte_offset)],
                                 );
                             }
                         }
@@ -1897,10 +1923,7 @@ impl X86_64InstructionSelector {
                                 opcodes::LEA,
                                 vec![MachineOperand::Register(R11), src.clone()],
                             );
-                            self.emit_instr(
-                                opcodes::PUSH,
-                                vec![MachineOperand::Register(R11)],
-                            );
+                            self.emit_instr(opcodes::PUSH, vec![MachineOperand::Register(R11)]);
                         }
                         MachineOperand::Immediate(val) => {
                             // Load immediate into R11, then PUSH.
@@ -1911,16 +1934,10 @@ impl X86_64InstructionSelector {
                                     MachineOperand::Immediate(*val),
                                 ],
                             );
-                            self.emit_instr(
-                                opcodes::PUSH,
-                                vec![MachineOperand::Register(R11)],
-                            );
+                            self.emit_instr(opcodes::PUSH, vec![MachineOperand::Register(R11)]);
                         }
                         _ => {
-                            self.emit_instr(
-                                opcodes::PUSH,
-                                vec![src.clone()],
-                            );
+                            self.emit_instr(opcodes::PUSH, vec![src.clone()]);
                         }
                     }
                 }
@@ -1929,10 +1946,7 @@ impl X86_64InstructionSelector {
                 // (LIFO: last pushed = first popped → reverse maps to
                 //  forward argument order.)
                 for (dst, _src) in gpr_args.iter().rev() {
-                    self.emit_instr(
-                        opcodes::POP,
-                        vec![MachineOperand::Register(*dst)],
-                    );
+                    self.emit_instr(opcodes::POP, vec![MachineOperand::Register(*dst)]);
                 }
             }
 
@@ -1956,10 +1970,7 @@ impl X86_64InstructionSelector {
                         vec![MachineOperand::Symbol(format!("{}@PLT", name))],
                     );
                 } else {
-                    self.emit_instr(
-                        opcodes::CALL,
-                        vec![MachineOperand::Symbol(name.clone())],
-                    );
+                    self.emit_instr(opcodes::CALL, vec![MachineOperand::Symbol(name.clone())]);
                 }
             }
             Callee::Indirect(val) => {
@@ -2005,10 +2016,7 @@ impl X86_64InstructionSelector {
                     // Hidden pointer return — the result pointer was passed
                     // as the first argument (in RDI). The callee copies the
                     // return value into that pointer and returns it in RAX.
-                    self.emit_instr(
-                        opcodes::MOV_RR,
-                        vec![dst, MachineOperand::Register(RAX)],
-                    );
+                    self.emit_instr(opcodes::MOV_RR, vec![dst, MachineOperand::Register(RAX)]);
                 }
                 ReturnClass::Void => {
                     // No return value.
@@ -2025,12 +2033,7 @@ impl X86_64InstructionSelector {
 
     /// Emit a single argument move into the target register, choosing the
     /// correct opcode based on whether the register is XMM (float) or GPR.
-    fn emit_arg_move(
-        &mut self,
-        dst: PhysReg,
-        src: &MachineOperand,
-        is_xmm: bool,
-    ) {
+    fn emit_arg_move(&mut self, dst: PhysReg, src: &MachineOperand, is_xmm: bool) {
         if is_xmm {
             self.emit_instr(
                 opcodes::MOVSD,
@@ -2072,10 +2075,7 @@ impl X86_64InstructionSelector {
                     IrType::I32 => 0xFFFF_FFFF,
                     _ => return Ok(()),
                 };
-                self.emit_instr(
-                    opcodes::AND_RI,
-                    vec![dst, MachineOperand::Immediate(mask)],
-                );
+                self.emit_instr(opcodes::AND_RI, vec![dst, MachineOperand::Immediate(mask)]);
             }
             CastOp::ZExt => {
                 self.emit_instr(opcodes::MOVZX, vec![dst, src]);
@@ -2189,11 +2189,7 @@ impl X86_64InstructionSelector {
             self.emit_instr(opcodes::TEST_RR, vec![cond_op.clone(), cond_op]);
             self.emit_instr(
                 opcodes::CMOVCC,
-                vec![
-                    MachineOperand::Immediate(CondCode::NE as i64),
-                    dst,
-                    true_op,
-                ],
+                vec![MachineOperand::Immediate(CondCode::NE as i64), dst, true_op],
             );
         }
         Ok(())
@@ -2204,11 +2200,7 @@ impl X86_64InstructionSelector {
     // ===================================================================
 
     /// Select a constant load instruction.
-    fn select_const(
-        &mut self,
-        result: Value,
-        value: &Constant,
-    ) -> Result<(), CodeGenError> {
+    fn select_const(&mut self, result: Value, value: &Constant) -> Result<(), CodeGenError> {
         // The IR builder emits a placeholder Const instruction for each
         // function parameter (with value = parameter index).  lower_params
         // has already mapped these Values to the correct ABI registers
@@ -2226,10 +2218,7 @@ impl X86_64InstructionSelector {
                     // xor reg, reg is shorter and clears flags.
                     self.emit_instr(opcodes::XOR_RR, vec![dst.clone(), dst]);
                 } else {
-                    self.emit_instr(
-                        opcodes::MOV_RI,
-                        vec![dst, MachineOperand::Immediate(*v)],
-                    );
+                    self.emit_instr(opcodes::MOV_RI, vec![dst, MachineOperand::Immediate(*v)]);
                 }
                 let _ = ty;
             }
@@ -2256,10 +2245,7 @@ impl X86_64InstructionSelector {
                     ],
                 );
                 // Spill integer bits to stack, then load as float.
-                self.emit_instr(
-                    opcodes::PUSH,
-                    vec![MachineOperand::Register(tmp)],
-                );
+                self.emit_instr(opcodes::PUSH, vec![MachineOperand::Register(tmp)]);
                 let mov_op = if *ty == IrType::F32 {
                     opcodes::MOVSS
                 } else {
@@ -2269,23 +2255,20 @@ impl X86_64InstructionSelector {
                     mov_op,
                     vec![
                         dst,
-                        MachineOperand::Memory { base: RSP, offset: 0 },
+                        MachineOperand::Memory {
+                            base: RSP,
+                            offset: 0,
+                        },
                     ],
                 );
-                self.emit_instr(
-                    opcodes::POP,
-                    vec![MachineOperand::Register(tmp)],
-                );
+                self.emit_instr(opcodes::POP, vec![MachineOperand::Register(tmp)]);
             }
             Constant::Bool(b) => {
                 let imm = if *b { 1i64 } else { 0i64 };
                 if imm == 0 {
                     self.emit_instr(opcodes::XOR_RR, vec![dst.clone(), dst]);
                 } else {
-                    self.emit_instr(
-                        opcodes::MOV_RI,
-                        vec![dst, MachineOperand::Immediate(imm)],
-                    );
+                    self.emit_instr(opcodes::MOV_RI, vec![dst, MachineOperand::Immediate(imm)]);
                 }
             }
             Constant::Null(_ty) => {
@@ -2304,15 +2287,9 @@ impl X86_64InstructionSelector {
                 let label = format!(".Lstr_{}", self.next_vreg);
                 self.next_vreg += 1;
                 if self.pic_enabled {
-                    self.emit_instr(
-                        opcodes::LEA,
-                        vec![dst, MachineOperand::Symbol(label)],
-                    );
+                    self.emit_instr(opcodes::LEA, vec![dst, MachineOperand::Symbol(label)]);
                 } else {
-                    self.emit_instr(
-                        opcodes::MOV_RI,
-                        vec![dst, MachineOperand::Symbol(label)],
-                    );
+                    self.emit_instr(opcodes::MOV_RI, vec![dst, MachineOperand::Symbol(label)]);
                 }
                 let _ = bytes;
             }
@@ -2321,10 +2298,7 @@ impl X86_64InstructionSelector {
                     // GOT-relative addressing for PIC.
                     self.emit_instr(
                         opcodes::MOV_RM,
-                        vec![
-                            dst,
-                            MachineOperand::Symbol(format!("{}@GOTPCREL", name)),
-                        ],
+                        vec![dst, MachineOperand::Symbol(format!("{}@GOTPCREL", name))],
                     );
                 } else {
                     self.emit_instr(
@@ -2351,7 +2325,10 @@ impl X86_64InstructionSelector {
             MachineOperand::Memory { base, .. } => *base,
             _ => {
                 let tmp = self.alloc_vreg();
-                self.emit_instr(opcodes::MOV_RR, vec![MachineOperand::Register(tmp), op.clone()]);
+                self.emit_instr(
+                    opcodes::MOV_RR,
+                    vec![MachineOperand::Register(tmp), op.clone()],
+                );
                 tmp
             }
         }
@@ -2492,9 +2469,9 @@ enum BinOpKind {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::{BasicBlock, BlockId, Function, Instruction, IrType, Value};
     use crate::ir::cfg::Terminator;
     use crate::ir::instructions::{Callee, CastOp, CompareOp, Constant, FloatCompareOp};
+    use crate::ir::{BasicBlock, BlockId, Function, Instruction, IrType, Value};
 
     /// Helper: create a minimal function with one block and the given instructions.
     fn make_function(instrs: Vec<Instruction>, terminator: Terminator) -> Function {
@@ -2510,8 +2487,11 @@ mod tests {
             blocks: vec![block],
             entry_block: entry,
             is_definition: true,
-is_static: false,
-is_weak: false,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         }
     }
 
@@ -2519,7 +2499,8 @@ is_weak: false,
     fn select(instrs: Vec<Instruction>, terminator: Terminator) -> Vec<MachineInstr> {
         let func = make_function(instrs, terminator);
         let mut sel = X86_64InstructionSelector::new(false);
-        sel.select_function(&func).expect("instruction selection should succeed")
+        sel.select_function(&func)
+            .expect("instruction selection should succeed")
     }
 
     /// Helper: check if any emitted instruction has the expected opcode.
@@ -2534,11 +2515,17 @@ is_weak: false,
         let instrs = vec![
             Instruction::Const {
                 result: Value(0),
-                value: Constant::Integer { value: 10, ty: IrType::I64 },
+                value: Constant::Integer {
+                    value: 10,
+                    ty: IrType::I64,
+                },
             },
             Instruction::Const {
                 result: Value(1),
-                value: Constant::Integer { value: 20, ty: IrType::I64 },
+                value: Constant::Integer {
+                    value: 20,
+                    ty: IrType::I64,
+                },
             },
             Instruction::Add {
                 result: Value(2),
@@ -2556,11 +2543,17 @@ is_weak: false,
         let instrs = vec![
             Instruction::Const {
                 result: Value(0),
-                value: Constant::Integer { value: 30, ty: IrType::I64 },
+                value: Constant::Integer {
+                    value: 30,
+                    ty: IrType::I64,
+                },
             },
             Instruction::Const {
                 result: Value(1),
-                value: Constant::Integer { value: 10, ty: IrType::I64 },
+                value: Constant::Integer {
+                    value: 10,
+                    ty: IrType::I64,
+                },
             },
             Instruction::Sub {
                 result: Value(2),
@@ -2578,11 +2571,17 @@ is_weak: false,
         let instrs = vec![
             Instruction::Const {
                 result: Value(0),
-                value: Constant::Integer { value: 5, ty: IrType::I64 },
+                value: Constant::Integer {
+                    value: 5,
+                    ty: IrType::I64,
+                },
             },
             Instruction::Const {
                 result: Value(1),
-                value: Constant::Integer { value: 6, ty: IrType::I64 },
+                value: Constant::Integer {
+                    value: 6,
+                    ty: IrType::I64,
+                },
             },
             Instruction::Mul {
                 result: Value(2),
@@ -2600,11 +2599,17 @@ is_weak: false,
         let instrs = vec![
             Instruction::Const {
                 result: Value(0),
-                value: Constant::Integer { value: 100, ty: IrType::I64 },
+                value: Constant::Integer {
+                    value: 100,
+                    ty: IrType::I64,
+                },
             },
             Instruction::Const {
                 result: Value(1),
-                value: Constant::Integer { value: 7, ty: IrType::I64 },
+                value: Constant::Integer {
+                    value: 7,
+                    ty: IrType::I64,
+                },
             },
             Instruction::Div {
                 result: Value(2),
@@ -2624,11 +2629,17 @@ is_weak: false,
         let instrs = vec![
             Instruction::Const {
                 result: Value(0),
-                value: Constant::Integer { value: 100, ty: IrType::I64 },
+                value: Constant::Integer {
+                    value: 100,
+                    ty: IrType::I64,
+                },
             },
             Instruction::Const {
                 result: Value(1),
-                value: Constant::Integer { value: 7, ty: IrType::I64 },
+                value: Constant::Integer {
+                    value: 7,
+                    ty: IrType::I64,
+                },
             },
             Instruction::Div {
                 result: Value(2),
@@ -2651,7 +2662,10 @@ is_weak: false,
         let instrs = vec![
             Instruction::Const {
                 result: Value(0),
-                value: Constant::Integer { value: 0x1000, ty: IrType::I64 },
+                value: Constant::Integer {
+                    value: 0x1000,
+                    ty: IrType::I64,
+                },
             },
             Instruction::Load {
                 result: Value(1),
@@ -2668,7 +2682,10 @@ is_weak: false,
         let instrs = vec![
             Instruction::Const {
                 result: Value(0),
-                value: Constant::Integer { value: 0x1000, ty: IrType::I64 },
+                value: Constant::Integer {
+                    value: 0x1000,
+                    ty: IrType::I64,
+                },
             },
             Instruction::Load {
                 result: Value(1),
@@ -2685,13 +2702,23 @@ is_weak: false,
         let instrs = vec![
             Instruction::Const {
                 result: Value(0),
-                value: Constant::Integer { value: 42, ty: IrType::I64 },
+                value: Constant::Integer {
+                    value: 42,
+                    ty: IrType::I64,
+                },
             },
             Instruction::Const {
                 result: Value(1),
-                value: Constant::Integer { value: 0x2000, ty: IrType::I64 },
+                value: Constant::Integer {
+                    value: 0x2000,
+                    ty: IrType::I64,
+                },
             },
-            Instruction::Store { value: Value(0), ptr: Value(1), store_ty: None },
+            Instruction::Store {
+                value: Value(0),
+                ptr: Value(1),
+                store_ty: None,
+            },
         ];
         let result = select(instrs, Terminator::Return { value: None });
         assert!(has_opcode(&result, opcodes::STORE64));
@@ -2704,11 +2731,17 @@ is_weak: false,
         let instrs = vec![
             Instruction::Const {
                 result: Value(0),
-                value: Constant::Integer { value: 1, ty: IrType::I32 },
+                value: Constant::Integer {
+                    value: 1,
+                    ty: IrType::I32,
+                },
             },
             Instruction::Const {
                 result: Value(1),
-                value: Constant::Integer { value: 1, ty: IrType::I32 },
+                value: Constant::Integer {
+                    value: 1,
+                    ty: IrType::I32,
+                },
             },
             Instruction::ICmp {
                 result: Value(2),
@@ -2728,11 +2761,17 @@ is_weak: false,
         let instrs = vec![
             Instruction::Const {
                 result: Value(0),
-                value: Constant::Integer { value: 5, ty: IrType::I32 },
+                value: Constant::Integer {
+                    value: 5,
+                    ty: IrType::I32,
+                },
             },
             Instruction::Const {
                 result: Value(1),
-                value: Constant::Integer { value: 10, ty: IrType::I32 },
+                value: Constant::Integer {
+                    value: 10,
+                    ty: IrType::I32,
+                },
             },
             Instruction::ICmp {
                 result: Value(2),
@@ -2751,11 +2790,17 @@ is_weak: false,
         let instrs = vec![
             Instruction::Const {
                 result: Value(0),
-                value: Constant::Float { value: 1.0, ty: IrType::F64 },
+                value: Constant::Float {
+                    value: 1.0,
+                    ty: IrType::F64,
+                },
             },
             Instruction::Const {
                 result: Value(1),
-                value: Constant::Float { value: 2.0, ty: IrType::F64 },
+                value: Constant::Float {
+                    value: 2.0,
+                    ty: IrType::F64,
+                },
             },
             Instruction::FCmp {
                 result: Value(2),
@@ -2777,13 +2822,34 @@ is_weak: false,
         assert_eq!(compare_op_to_cond_code(&CompareOp::Equal), CondCode::E);
         assert_eq!(compare_op_to_cond_code(&CompareOp::NotEqual), CondCode::NE);
         assert_eq!(compare_op_to_cond_code(&CompareOp::SignedLess), CondCode::L);
-        assert_eq!(compare_op_to_cond_code(&CompareOp::SignedLessEqual), CondCode::LE);
-        assert_eq!(compare_op_to_cond_code(&CompareOp::SignedGreater), CondCode::G);
-        assert_eq!(compare_op_to_cond_code(&CompareOp::SignedGreaterEqual), CondCode::GE);
-        assert_eq!(compare_op_to_cond_code(&CompareOp::UnsignedLess), CondCode::B);
-        assert_eq!(compare_op_to_cond_code(&CompareOp::UnsignedLessEqual), CondCode::BE);
-        assert_eq!(compare_op_to_cond_code(&CompareOp::UnsignedGreater), CondCode::A);
-        assert_eq!(compare_op_to_cond_code(&CompareOp::UnsignedGreaterEqual), CondCode::AE);
+        assert_eq!(
+            compare_op_to_cond_code(&CompareOp::SignedLessEqual),
+            CondCode::LE
+        );
+        assert_eq!(
+            compare_op_to_cond_code(&CompareOp::SignedGreater),
+            CondCode::G
+        );
+        assert_eq!(
+            compare_op_to_cond_code(&CompareOp::SignedGreaterEqual),
+            CondCode::GE
+        );
+        assert_eq!(
+            compare_op_to_cond_code(&CompareOp::UnsignedLess),
+            CondCode::B
+        );
+        assert_eq!(
+            compare_op_to_cond_code(&CompareOp::UnsignedLessEqual),
+            CondCode::BE
+        );
+        assert_eq!(
+            compare_op_to_cond_code(&CompareOp::UnsignedGreater),
+            CondCode::A
+        );
+        assert_eq!(
+            compare_op_to_cond_code(&CompareOp::UnsignedGreaterEqual),
+            CondCode::AE
+        );
     }
 
     // ---- Control flow tests ----
@@ -2816,9 +2882,17 @@ is_weak: false,
     fn test_select_return() {
         let instrs = vec![Instruction::Const {
             result: Value(0),
-            value: Constant::Integer { value: 42, ty: IrType::I64 },
+            value: Constant::Integer {
+                value: 42,
+                ty: IrType::I64,
+            },
         }];
-        let result = select(instrs, Terminator::Return { value: Some(Value(0)) });
+        let result = select(
+            instrs,
+            Terminator::Return {
+                value: Some(Value(0)),
+            },
+        );
         assert!(has_opcode(&result, opcodes::MOV_RR));
         assert!(has_opcode(&result, opcodes::RET));
     }
@@ -2830,7 +2904,10 @@ is_weak: false,
         let instrs = vec![
             Instruction::Const {
                 result: Value(0),
-                value: Constant::Integer { value: 42, ty: IrType::I8 },
+                value: Constant::Integer {
+                    value: 42,
+                    ty: IrType::I8,
+                },
             },
             Instruction::Cast {
                 result: Value(1),
@@ -2849,7 +2926,10 @@ is_weak: false,
         let instrs = vec![
             Instruction::Const {
                 result: Value(0),
-                value: Constant::Integer { value: -1, ty: IrType::I8 },
+                value: Constant::Integer {
+                    value: -1,
+                    ty: IrType::I8,
+                },
             },
             Instruction::Cast {
                 result: Value(1),
@@ -2868,7 +2948,10 @@ is_weak: false,
         let instrs = vec![
             Instruction::Const {
                 result: Value(0),
-                value: Constant::Integer { value: 256, ty: IrType::I32 },
+                value: Constant::Integer {
+                    value: 256,
+                    ty: IrType::I32,
+                },
             },
             Instruction::Cast {
                 result: Value(1),
@@ -2888,7 +2971,10 @@ is_weak: false,
         let instrs = vec![
             Instruction::Const {
                 result: Value(0),
-                value: Constant::Float { value: 3.14, ty: IrType::F32 },
+                value: Constant::Float {
+                    value: 3.14,
+                    ty: IrType::F32,
+                },
             },
             Instruction::Cast {
                 result: Value(1),

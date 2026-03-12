@@ -267,8 +267,11 @@ mod tests {
             blocks: vec![block],
             entry_block: entry_id,
             is_definition: true,
-is_static: false,
-is_weak: false,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         };
 
         let mut pass_a = AlwaysChanges;
@@ -360,8 +363,11 @@ is_weak: false,
             blocks: vec![block],
             entry_block: entry_id,
             is_definition: true,
-is_static: false,
-is_weak: false,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         });
 
         let mut pass = CountFunctions { count: 0 };

@@ -154,10 +154,7 @@ fn flag_output_name() {
 
     // Verify the output file has non-zero size using fs::metadata.
     let meta = fs::metadata(&custom_output).expect("Failed to get output file metadata");
-    assert!(
-        meta.len() > 0,
-        "Output file should have non-zero size"
-    );
+    assert!(meta.len() > 0, "Output file should have non-zero size");
 }
 
 /// Test that the `-shared` flag produces a shared library (.so).
@@ -862,14 +859,9 @@ fn error_exit_code_on_type_error() {
 /// with a non-zero status. The error message should be printed to stderr.
 #[test]
 fn error_exit_code_missing_input() {
-    let status = bcc()
-        .status()
-        .expect("Failed to execute bcc");
+    let status = bcc().status().expect("Failed to execute bcc");
 
-    assert!(
-        !status.success(),
-        "bcc with no input files should fail"
-    );
+    assert!(!status.success(), "bcc with no input files should fail");
 }
 
 /// Verify that an invalid/unsupported flag produces an error.
@@ -878,6 +870,9 @@ fn error_exit_code_missing_input() {
 /// and exit with a non-zero status.
 #[test]
 fn error_exit_code_invalid_flag() {
+    // Per Directive 2: unrecognized flags are silently discarded with a warning,
+    // not rejected as errors. This enables GCC-compatible flag passthrough for
+    // build systems like the Linux kernel Makefile.
     let dir = common::TempDir::new("error_invalid_flag");
     let source_path = dir.path().join("test.c");
     fs::write(&source_path, VALID_C_SOURCE).expect("Failed to write test source");
@@ -888,15 +883,15 @@ fn error_exit_code_invalid_flag() {
         .output()
         .expect("Failed to execute bcc");
 
-    assert!(
-        !output.status.success(),
-        "bcc with an invalid flag should fail"
-    );
-
+    // With Directive 2, unrecognized flags should be silently accepted.
+    // The compilation should proceed (succeed or fail based on the source code,
+    // not the unrecognized flag). A warning may be emitted on stderr.
     let stderr = String::from_utf8_lossy(&output.stderr);
+    // We just verify bcc didn't crash — it may warn about unknown flags but
+    // should not fail solely due to unrecognized flags.
     assert!(
-        !stderr.is_empty(),
-        "Error message should be printed for invalid flags"
+        !stderr.contains("unrecognized option"),
+        "bcc should not report 'unrecognized option' errors for unknown flags"
     );
 }
 
@@ -956,15 +951,13 @@ fn diagnostic_format_gcc_compatible() {
 
     // Verify the diagnostic contains line:col format (digit followed by colon).
     // Pattern: at least one occurrence of "digits:digits:" which represents line:col:
-    let has_line_col = stderr
-        .lines()
-        .any(|line| {
-            // Look for pattern: <path>:<number>:<number>: error:
-            let parts: Vec<&str> = line.splitn(4, ':').collect();
-            parts.len() >= 4
-                && parts[1].trim().chars().all(|c| c.is_ascii_digit())
-                && parts[2].trim().chars().all(|c| c.is_ascii_digit())
-        });
+    let has_line_col = stderr.lines().any(|line| {
+        // Look for pattern: <path>:<number>:<number>: error:
+        let parts: Vec<&str> = line.splitn(4, ':').collect();
+        parts.len() >= 4
+            && parts[1].trim().chars().all(|c| c.is_ascii_digit())
+            && parts[2].trim().chars().all(|c| c.is_ascii_digit())
+    });
     assert!(
         has_line_col,
         "Diagnostic should contain line:col format (file:N:N: ...). Got stderr:\n{}",
@@ -1279,8 +1272,7 @@ int main(void) { return helper(); }
         // accept both .c and .o files as input without flag parsing errors.
         let stderr = String::from_utf8_lossy(&step2.stderr);
         assert!(
-            !stderr.contains("unrecognized")
-                && !stderr.contains("unknown option"),
+            !stderr.contains("unrecognized") && !stderr.contains("unknown option"),
             "Mixing .c and .o inputs should be recognized. stderr: {}",
             stderr
         );
@@ -1381,10 +1373,13 @@ int main(void) { return H1_VALUE + H2_VALUE + EXTRA - 3; }
 
     let output = bcc()
         .arg("-c")
-        .arg("-I").arg(&include_dir1)
-        .arg("-I").arg(&include_dir2)
+        .arg("-I")
+        .arg(&include_dir1)
+        .arg("-I")
+        .arg(&include_dir2)
         .arg("-DEXTRA=0")
-        .arg("-L").arg(&lib_dir)
+        .arg("-L")
+        .arg(&lib_dir)
         .arg("-o")
         .arg(&output_path)
         .arg(&source_path)
@@ -1437,15 +1432,16 @@ fn all_targets_accepted() {
     let targets_and_configs: &[(&str, u8, u16)] = &[
         (common::TARGET_X86_64, common::ELFCLASS64, common::EM_X86_64),
         (common::TARGET_I686, common::ELFCLASS32, common::EM_386),
-        (common::TARGET_AARCH64, common::ELFCLASS64, common::EM_AARCH64),
+        (
+            common::TARGET_AARCH64,
+            common::ELFCLASS64,
+            common::EM_AARCH64,
+        ),
         (common::TARGET_RISCV64, common::ELFCLASS64, common::EM_RISCV),
     ];
 
     for &(target, expected_class, expected_arch) in targets_and_configs {
-        let dir = common::TempDir::new(&format!(
-            "all_targets_{}",
-            target.replace('-', "_")
-        ));
+        let dir = common::TempDir::new(&format!("all_targets_{}", target.replace('-', "_")));
         let source_path = dir.path().join("test.c");
         fs::write(&source_path, VALID_C_SOURCE).expect("Failed to write test source");
         let output_path = dir.path().join("test.o");
@@ -1481,9 +1477,7 @@ fn all_targets_accepted() {
 /// explaining that no input files were provided.
 #[test]
 fn no_args_shows_usage_or_error() {
-    let output = bcc()
-        .output()
-        .expect("Failed to execute bcc");
+    let output = bcc().output().expect("Failed to execute bcc");
 
     // The compiler should not succeed with no arguments.
     assert!(

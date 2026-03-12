@@ -37,10 +37,10 @@
 
 use std::collections::HashMap;
 
-use crate::ir::instructions::{Instruction, Value, Constant, CastOp, CompareOp};
-use crate::ir::types::IrType;
-use crate::ir::cfg::BasicBlock;
 use crate::ir::builder::Function;
+use crate::ir::cfg::BasicBlock;
+use crate::ir::instructions::{CastOp, CompareOp, Constant, Instruction, Value};
+use crate::ir::types::IrType;
 
 use super::FunctionPass;
 
@@ -440,7 +440,12 @@ fn try_simplify_instruction(
         // =================================================================
         // Add: identity (x+0, 0+x)
         // =================================================================
-        Instruction::Add { result: _, lhs, rhs, ty } => {
+        Instruction::Add {
+            result: _,
+            lhs,
+            rhs,
+            ty,
+        } => {
             // Only simplify integer adds (float +0 has signed-zero issues under IEEE 754).
             if !ty.is_integer() {
                 return None;
@@ -463,7 +468,12 @@ fn try_simplify_instruction(
         // =================================================================
         // Sub: identity (x-0), self-operation (x-x → 0)
         // =================================================================
-        Instruction::Sub { result: _, lhs, rhs, ty } => {
+        Instruction::Sub {
+            result: _,
+            lhs,
+            rhs,
+            ty,
+        } => {
             if !ty.is_integer() {
                 return None;
             }
@@ -487,7 +497,12 @@ fn try_simplify_instruction(
         // Mul: identity (x*1, 1*x), zero absorption (x*0, 0*x),
         //      strength reduction (x*2^n → x<<n)
         // =================================================================
-        Instruction::Mul { result, lhs, rhs, ty } => {
+        Instruction::Mul {
+            result,
+            lhs,
+            rhs,
+            ty,
+        } => {
             if !ty.is_integer() {
                 return None;
             }
@@ -545,7 +560,13 @@ fn try_simplify_instruction(
         // Div: identity (x/1), self-operation (x/x → 1),
         //      unsigned strength reduction (x/2^n → x>>n)
         // =================================================================
-        Instruction::Div { result, lhs, rhs, ty, is_signed } => {
+        Instruction::Div {
+            result,
+            lhs,
+            rhs,
+            ty,
+            is_signed,
+        } => {
             if !ty.is_integer() {
                 return None;
             }
@@ -596,7 +617,13 @@ fn try_simplify_instruction(
         // =================================================================
         // Mod: unsigned strength reduction (x%2^n → x & (2^n - 1))
         // =================================================================
-        Instruction::Mod { result, lhs, rhs, ty, is_signed } => {
+        Instruction::Mod {
+            result,
+            lhs,
+            rhs,
+            ty,
+            is_signed,
+        } => {
             if !ty.is_integer() {
                 return None;
             }
@@ -637,7 +664,12 @@ fn try_simplify_instruction(
         // And: identity (x & -1), zero absorption (x & 0),
         //      self-operation (x & x → x)
         // =================================================================
-        Instruction::And { result: _, lhs, rhs, ty } => {
+        Instruction::And {
+            result: _,
+            lhs,
+            rhs,
+            ty,
+        } => {
             if !ty.is_integer() {
                 return None;
             }
@@ -679,7 +711,12 @@ fn try_simplify_instruction(
         // =================================================================
         // Or: identity (x | 0), self-operation (x | x → x)
         // =================================================================
-        Instruction::Or { result: _, lhs, rhs, ty } => {
+        Instruction::Or {
+            result: _,
+            lhs,
+            rhs,
+            ty,
+        } => {
             if !ty.is_integer() {
                 return None;
             }
@@ -705,7 +742,12 @@ fn try_simplify_instruction(
         // =================================================================
         // Xor: identity (x ^ 0), self-operation (x ^ x → 0)
         // =================================================================
-        Instruction::Xor { result: _, lhs, rhs, ty } => {
+        Instruction::Xor {
+            result: _,
+            lhs,
+            rhs,
+            ty,
+        } => {
             if !ty.is_integer() {
                 return None;
             }
@@ -734,7 +776,12 @@ fn try_simplify_instruction(
         // =================================================================
         // Shl: identity (x << 0)
         // =================================================================
-        Instruction::Shl { result: _, lhs, rhs, ty } => {
+        Instruction::Shl {
+            result: _,
+            lhs,
+            rhs,
+            ty,
+        } => {
             if !ty.is_integer() {
                 return None;
             }
@@ -750,7 +797,13 @@ fn try_simplify_instruction(
         // =================================================================
         // Shr: identity (x >> 0)
         // =================================================================
-        Instruction::Shr { result: _, lhs, rhs, ty, .. } => {
+        Instruction::Shr {
+            result: _,
+            lhs,
+            rhs,
+            ty,
+            ..
+        } => {
             if !ty.is_integer() {
                 return None;
             }
@@ -766,7 +819,13 @@ fn try_simplify_instruction(
         // =================================================================
         // ICmp: constant operand simplifications
         // =================================================================
-        Instruction::ICmp { result: _, op, lhs, rhs, ty } => {
+        Instruction::ICmp {
+            result: _,
+            op,
+            lhs,
+            rhs,
+            ty,
+        } => {
             // ICmp(Equal, x, x) → true (any value equals itself)
             if *op == CompareOp::Equal && lhs == rhs {
                 return Some(SimplifyResult::ReplaceWithConstant(Constant::Integer {
@@ -780,7 +839,13 @@ fn try_simplify_instruction(
         // =================================================================
         // Select: constant condition
         // =================================================================
-        Instruction::Select { result: _, condition, true_val, false_val, ty: _ } => {
+        Instruction::Select {
+            result: _,
+            condition,
+            true_val,
+            false_val,
+            ty: _,
+        } => {
             if let Some(c) = constants.get(condition) {
                 match c {
                     Constant::Integer { value, .. } => {
@@ -806,7 +871,13 @@ fn try_simplify_instruction(
         // =================================================================
         // Cast: identity cast (from_ty == to_ty)
         // =================================================================
-        Instruction::Cast { result: _, op: _, value, from_ty, to_ty } => {
+        Instruction::Cast {
+            result: _,
+            op: _,
+            value,
+            from_ty,
+            to_ty,
+        } => {
             // A cast to the same type is a no-op.
             if from_ty == to_ty {
                 return Some(SimplifyResult::ReplaceWithValue(*value));
@@ -860,10 +931,10 @@ fn make_shift_left_replacement(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::instructions::{BlockId, Instruction, Value, Constant};
-    use crate::ir::types::IrType;
-    use crate::ir::cfg::{BasicBlock, Terminator};
     use crate::ir::builder::Function;
+    use crate::ir::cfg::{BasicBlock, Terminator};
+    use crate::ir::instructions::{BlockId, Constant, Instruction, Value};
+    use crate::ir::types::IrType;
 
     /// Helper: create a minimal function with given instructions in a single block
     /// and a void return terminator.
@@ -879,8 +950,11 @@ mod tests {
             blocks: vec![block],
             entry_block: BlockId(0),
             is_definition: true,
-is_static: false,
-is_weak: false,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         }
     }
 
@@ -936,9 +1010,18 @@ is_weak: false,
     #[test]
     fn test_add_x_zero_identity() {
         let mut constants = HashMap::new();
-        constants.insert(Value(1), Constant::Integer { value: 0, ty: IrType::I32 });
+        constants.insert(
+            Value(1),
+            Constant::Integer {
+                value: 0,
+                ty: IrType::I32,
+            },
+        );
         let inst = Instruction::Add {
-            result: Value(2), lhs: Value(0), rhs: Value(1), ty: IrType::I32,
+            result: Value(2),
+            lhs: Value(0),
+            rhs: Value(1),
+            ty: IrType::I32,
         };
         let mut nv = 10u32;
         match try_simplify_instruction(&inst, &constants, &mut nv) {
@@ -950,9 +1033,18 @@ is_weak: false,
     #[test]
     fn test_add_zero_x_identity() {
         let mut constants = HashMap::new();
-        constants.insert(Value(0), Constant::Integer { value: 0, ty: IrType::I32 });
+        constants.insert(
+            Value(0),
+            Constant::Integer {
+                value: 0,
+                ty: IrType::I32,
+            },
+        );
         let inst = Instruction::Add {
-            result: Value(2), lhs: Value(0), rhs: Value(1), ty: IrType::I32,
+            result: Value(2),
+            lhs: Value(0),
+            rhs: Value(1),
+            ty: IrType::I32,
         };
         let mut nv = 10u32;
         match try_simplify_instruction(&inst, &constants, &mut nv) {
@@ -964,9 +1056,18 @@ is_weak: false,
     #[test]
     fn test_sub_x_zero_identity() {
         let mut constants = HashMap::new();
-        constants.insert(Value(1), Constant::Integer { value: 0, ty: IrType::I32 });
+        constants.insert(
+            Value(1),
+            Constant::Integer {
+                value: 0,
+                ty: IrType::I32,
+            },
+        );
         let inst = Instruction::Sub {
-            result: Value(2), lhs: Value(0), rhs: Value(1), ty: IrType::I32,
+            result: Value(2),
+            lhs: Value(0),
+            rhs: Value(1),
+            ty: IrType::I32,
         };
         let mut nv = 10u32;
         match try_simplify_instruction(&inst, &constants, &mut nv) {
@@ -978,9 +1079,18 @@ is_weak: false,
     #[test]
     fn test_mul_x_one_identity() {
         let mut constants = HashMap::new();
-        constants.insert(Value(1), Constant::Integer { value: 1, ty: IrType::I32 });
+        constants.insert(
+            Value(1),
+            Constant::Integer {
+                value: 1,
+                ty: IrType::I32,
+            },
+        );
         let inst = Instruction::Mul {
-            result: Value(2), lhs: Value(0), rhs: Value(1), ty: IrType::I32,
+            result: Value(2),
+            lhs: Value(0),
+            rhs: Value(1),
+            ty: IrType::I32,
         };
         let mut nv = 10u32;
         match try_simplify_instruction(&inst, &constants, &mut nv) {
@@ -992,10 +1102,19 @@ is_weak: false,
     #[test]
     fn test_div_x_one_identity() {
         let mut constants = HashMap::new();
-        constants.insert(Value(1), Constant::Integer { value: 1, ty: IrType::I32 });
+        constants.insert(
+            Value(1),
+            Constant::Integer {
+                value: 1,
+                ty: IrType::I32,
+            },
+        );
         let inst = Instruction::Div {
-            result: Value(2), lhs: Value(0), rhs: Value(1),
-            ty: IrType::I32, is_signed: true,
+            result: Value(2),
+            lhs: Value(0),
+            rhs: Value(1),
+            ty: IrType::I32,
+            is_signed: true,
         };
         let mut nv = 10u32;
         match try_simplify_instruction(&inst, &constants, &mut nv) {
@@ -1007,9 +1126,18 @@ is_weak: false,
     #[test]
     fn test_and_x_all_ones_identity() {
         let mut constants = HashMap::new();
-        constants.insert(Value(1), Constant::Integer { value: -1, ty: IrType::I32 });
+        constants.insert(
+            Value(1),
+            Constant::Integer {
+                value: -1,
+                ty: IrType::I32,
+            },
+        );
         let inst = Instruction::And {
-            result: Value(2), lhs: Value(0), rhs: Value(1), ty: IrType::I32,
+            result: Value(2),
+            lhs: Value(0),
+            rhs: Value(1),
+            ty: IrType::I32,
         };
         let mut nv = 10u32;
         match try_simplify_instruction(&inst, &constants, &mut nv) {
@@ -1021,9 +1149,18 @@ is_weak: false,
     #[test]
     fn test_or_x_zero_identity() {
         let mut constants = HashMap::new();
-        constants.insert(Value(1), Constant::Integer { value: 0, ty: IrType::I32 });
+        constants.insert(
+            Value(1),
+            Constant::Integer {
+                value: 0,
+                ty: IrType::I32,
+            },
+        );
         let inst = Instruction::Or {
-            result: Value(2), lhs: Value(0), rhs: Value(1), ty: IrType::I32,
+            result: Value(2),
+            lhs: Value(0),
+            rhs: Value(1),
+            ty: IrType::I32,
         };
         let mut nv = 10u32;
         match try_simplify_instruction(&inst, &constants, &mut nv) {
@@ -1035,9 +1172,18 @@ is_weak: false,
     #[test]
     fn test_xor_x_zero_identity() {
         let mut constants = HashMap::new();
-        constants.insert(Value(1), Constant::Integer { value: 0, ty: IrType::I32 });
+        constants.insert(
+            Value(1),
+            Constant::Integer {
+                value: 0,
+                ty: IrType::I32,
+            },
+        );
         let inst = Instruction::Xor {
-            result: Value(2), lhs: Value(0), rhs: Value(1), ty: IrType::I32,
+            result: Value(2),
+            lhs: Value(0),
+            rhs: Value(1),
+            ty: IrType::I32,
         };
         let mut nv = 10u32;
         match try_simplify_instruction(&inst, &constants, &mut nv) {
@@ -1049,9 +1195,18 @@ is_weak: false,
     #[test]
     fn test_shl_x_zero_identity() {
         let mut constants = HashMap::new();
-        constants.insert(Value(1), Constant::Integer { value: 0, ty: IrType::I32 });
+        constants.insert(
+            Value(1),
+            Constant::Integer {
+                value: 0,
+                ty: IrType::I32,
+            },
+        );
         let inst = Instruction::Shl {
-            result: Value(2), lhs: Value(0), rhs: Value(1), ty: IrType::I32,
+            result: Value(2),
+            lhs: Value(0),
+            rhs: Value(1),
+            ty: IrType::I32,
         };
         let mut nv = 10u32;
         match try_simplify_instruction(&inst, &constants, &mut nv) {
@@ -1063,10 +1218,19 @@ is_weak: false,
     #[test]
     fn test_shr_x_zero_identity() {
         let mut constants = HashMap::new();
-        constants.insert(Value(1), Constant::Integer { value: 0, ty: IrType::I32 });
+        constants.insert(
+            Value(1),
+            Constant::Integer {
+                value: 0,
+                ty: IrType::I32,
+            },
+        );
         let inst = Instruction::Shr {
-            result: Value(2), lhs: Value(0), rhs: Value(1),
-            ty: IrType::I32, is_arithmetic: false,
+            result: Value(2),
+            lhs: Value(0),
+            rhs: Value(1),
+            ty: IrType::I32,
+            is_arithmetic: false,
         };
         let mut nv = 10u32;
         match try_simplify_instruction(&inst, &constants, &mut nv) {
@@ -1082,9 +1246,18 @@ is_weak: false,
     #[test]
     fn test_mul_x_zero_absorption() {
         let mut constants = HashMap::new();
-        constants.insert(Value(1), Constant::Integer { value: 0, ty: IrType::I32 });
+        constants.insert(
+            Value(1),
+            Constant::Integer {
+                value: 0,
+                ty: IrType::I32,
+            },
+        );
         let inst = Instruction::Mul {
-            result: Value(2), lhs: Value(0), rhs: Value(1), ty: IrType::I32,
+            result: Value(2),
+            lhs: Value(0),
+            rhs: Value(1),
+            ty: IrType::I32,
         };
         let mut nv = 10u32;
         match try_simplify_instruction(&inst, &constants, &mut nv) {
@@ -1096,9 +1269,18 @@ is_weak: false,
     #[test]
     fn test_mul_zero_x_absorption() {
         let mut constants = HashMap::new();
-        constants.insert(Value(0), Constant::Integer { value: 0, ty: IrType::I32 });
+        constants.insert(
+            Value(0),
+            Constant::Integer {
+                value: 0,
+                ty: IrType::I32,
+            },
+        );
         let inst = Instruction::Mul {
-            result: Value(2), lhs: Value(0), rhs: Value(1), ty: IrType::I32,
+            result: Value(2),
+            lhs: Value(0),
+            rhs: Value(1),
+            ty: IrType::I32,
         };
         let mut nv = 10u32;
         match try_simplify_instruction(&inst, &constants, &mut nv) {
@@ -1110,9 +1292,18 @@ is_weak: false,
     #[test]
     fn test_and_x_zero_absorption() {
         let mut constants = HashMap::new();
-        constants.insert(Value(1), Constant::Integer { value: 0, ty: IrType::I32 });
+        constants.insert(
+            Value(1),
+            Constant::Integer {
+                value: 0,
+                ty: IrType::I32,
+            },
+        );
         let inst = Instruction::And {
-            result: Value(2), lhs: Value(0), rhs: Value(1), ty: IrType::I32,
+            result: Value(2),
+            lhs: Value(0),
+            rhs: Value(1),
+            ty: IrType::I32,
         };
         let mut nv = 10u32;
         match try_simplify_instruction(&inst, &constants, &mut nv) {
@@ -1124,9 +1315,18 @@ is_weak: false,
     #[test]
     fn test_and_zero_x_absorption() {
         let mut constants = HashMap::new();
-        constants.insert(Value(0), Constant::Integer { value: 0, ty: IrType::I32 });
+        constants.insert(
+            Value(0),
+            Constant::Integer {
+                value: 0,
+                ty: IrType::I32,
+            },
+        );
         let inst = Instruction::And {
-            result: Value(2), lhs: Value(0), rhs: Value(1), ty: IrType::I32,
+            result: Value(2),
+            lhs: Value(0),
+            rhs: Value(1),
+            ty: IrType::I32,
         };
         let mut nv = 10u32;
         match try_simplify_instruction(&inst, &constants, &mut nv) {
@@ -1143,7 +1343,10 @@ is_weak: false,
     fn test_sub_x_x_is_zero() {
         let constants = HashMap::new();
         let inst = Instruction::Sub {
-            result: Value(2), lhs: Value(0), rhs: Value(0), ty: IrType::I32,
+            result: Value(2),
+            lhs: Value(0),
+            rhs: Value(0),
+            ty: IrType::I32,
         };
         let mut nv = 10u32;
         match try_simplify_instruction(&inst, &constants, &mut nv) {
@@ -1156,7 +1359,10 @@ is_weak: false,
     fn test_xor_x_x_is_zero() {
         let constants = HashMap::new();
         let inst = Instruction::Xor {
-            result: Value(2), lhs: Value(0), rhs: Value(0), ty: IrType::I32,
+            result: Value(2),
+            lhs: Value(0),
+            rhs: Value(0),
+            ty: IrType::I32,
         };
         let mut nv = 10u32;
         match try_simplify_instruction(&inst, &constants, &mut nv) {
@@ -1169,7 +1375,10 @@ is_weak: false,
     fn test_and_x_x_is_x() {
         let constants = HashMap::new();
         let inst = Instruction::And {
-            result: Value(2), lhs: Value(0), rhs: Value(0), ty: IrType::I32,
+            result: Value(2),
+            lhs: Value(0),
+            rhs: Value(0),
+            ty: IrType::I32,
         };
         let mut nv = 10u32;
         match try_simplify_instruction(&inst, &constants, &mut nv) {
@@ -1182,7 +1391,10 @@ is_weak: false,
     fn test_or_x_x_is_x() {
         let constants = HashMap::new();
         let inst = Instruction::Or {
-            result: Value(2), lhs: Value(0), rhs: Value(0), ty: IrType::I32,
+            result: Value(2),
+            lhs: Value(0),
+            rhs: Value(0),
+            ty: IrType::I32,
         };
         let mut nv = 10u32;
         match try_simplify_instruction(&inst, &constants, &mut nv) {
@@ -1195,8 +1407,11 @@ is_weak: false,
     fn test_div_x_x_is_one() {
         let constants = HashMap::new();
         let inst = Instruction::Div {
-            result: Value(2), lhs: Value(0), rhs: Value(0),
-            ty: IrType::I32, is_signed: false,
+            result: Value(2),
+            lhs: Value(0),
+            rhs: Value(0),
+            ty: IrType::I32,
+            is_signed: false,
         };
         let mut nv = 10u32;
         match try_simplify_instruction(&inst, &constants, &mut nv) {
@@ -1212,9 +1427,18 @@ is_weak: false,
     #[test]
     fn test_mul_x_two_to_shl() {
         let mut constants = HashMap::new();
-        constants.insert(Value(1), Constant::Integer { value: 2, ty: IrType::I32 });
+        constants.insert(
+            Value(1),
+            Constant::Integer {
+                value: 2,
+                ty: IrType::I32,
+            },
+        );
         let inst = Instruction::Mul {
-            result: Value(2), lhs: Value(0), rhs: Value(1), ty: IrType::I32,
+            result: Value(2),
+            lhs: Value(0),
+            rhs: Value(1),
+            ty: IrType::I32,
         };
         let mut nv = 10u32;
         match try_simplify_instruction(&inst, &constants, &mut nv) {
@@ -1222,7 +1446,10 @@ is_weak: false,
                 assert_eq!(insts.len(), 2);
                 // First: Const for shift amount 1
                 match &insts[0] {
-                    Instruction::Const { value: Constant::Integer { value: 1, .. }, .. } => {}
+                    Instruction::Const {
+                        value: Constant::Integer { value: 1, .. },
+                        ..
+                    } => {}
                     other => panic!("Expected Const(1), got {:?}", other),
                 }
                 // Second: Shl with original result Value(2)
@@ -1234,23 +1461,38 @@ is_weak: false,
                     other => panic!("Expected Shl, got {:?}", other),
                 }
             }
-            other => panic!("Expected ReplaceWithInstructions, got {:?}", other.is_some()),
+            other => panic!(
+                "Expected ReplaceWithInstructions, got {:?}",
+                other.is_some()
+            ),
         }
     }
 
     #[test]
     fn test_mul_x_four_to_shl() {
         let mut constants = HashMap::new();
-        constants.insert(Value(1), Constant::Integer { value: 4, ty: IrType::I32 });
+        constants.insert(
+            Value(1),
+            Constant::Integer {
+                value: 4,
+                ty: IrType::I32,
+            },
+        );
         let inst = Instruction::Mul {
-            result: Value(2), lhs: Value(0), rhs: Value(1), ty: IrType::I32,
+            result: Value(2),
+            lhs: Value(0),
+            rhs: Value(1),
+            ty: IrType::I32,
         };
         let mut nv = 10u32;
         match try_simplify_instruction(&inst, &constants, &mut nv) {
             Some(SimplifyResult::ReplaceWithInstructions(insts)) => {
                 assert_eq!(insts.len(), 2);
                 match &insts[0] {
-                    Instruction::Const { value: Constant::Integer { value: 2, .. }, .. } => {}
+                    Instruction::Const {
+                        value: Constant::Integer { value: 2, .. },
+                        ..
+                    } => {}
                     _ => panic!("Expected Const(2)"),
                 }
             }
@@ -1261,16 +1503,28 @@ is_weak: false,
     #[test]
     fn test_mul_x_sixteen_to_shl() {
         let mut constants = HashMap::new();
-        constants.insert(Value(1), Constant::Integer { value: 16, ty: IrType::I32 });
+        constants.insert(
+            Value(1),
+            Constant::Integer {
+                value: 16,
+                ty: IrType::I32,
+            },
+        );
         let inst = Instruction::Mul {
-            result: Value(2), lhs: Value(0), rhs: Value(1), ty: IrType::I32,
+            result: Value(2),
+            lhs: Value(0),
+            rhs: Value(1),
+            ty: IrType::I32,
         };
         let mut nv = 10u32;
         match try_simplify_instruction(&inst, &constants, &mut nv) {
             Some(SimplifyResult::ReplaceWithInstructions(insts)) => {
                 assert_eq!(insts.len(), 2);
                 match &insts[0] {
-                    Instruction::Const { value: Constant::Integer { value: 4, .. }, .. } => {}
+                    Instruction::Const {
+                        value: Constant::Integer { value: 4, .. },
+                        ..
+                    } => {}
                     _ => panic!("Expected Const(4)"),
                 }
             }
@@ -1281,10 +1535,19 @@ is_weak: false,
     #[test]
     fn test_unsigned_div_power_of_two_to_shr() {
         let mut constants = HashMap::new();
-        constants.insert(Value(1), Constant::Integer { value: 4, ty: IrType::I32 });
+        constants.insert(
+            Value(1),
+            Constant::Integer {
+                value: 4,
+                ty: IrType::I32,
+            },
+        );
         let inst = Instruction::Div {
-            result: Value(2), lhs: Value(0), rhs: Value(1),
-            ty: IrType::I32, is_signed: false,
+            result: Value(2),
+            lhs: Value(0),
+            rhs: Value(1),
+            ty: IrType::I32,
+            is_signed: false,
         };
         let mut nv = 10u32;
         match try_simplify_instruction(&inst, &constants, &mut nv) {
@@ -1292,12 +1555,20 @@ is_weak: false,
                 assert_eq!(insts.len(), 2);
                 // First: Const for shift amount 2
                 match &insts[0] {
-                    Instruction::Const { value: Constant::Integer { value: 2, .. }, .. } => {}
+                    Instruction::Const {
+                        value: Constant::Integer { value: 2, .. },
+                        ..
+                    } => {}
                     _ => panic!("Expected Const(2)"),
                 }
                 // Second: Shr (logical, not arithmetic)
                 match &insts[1] {
-                    Instruction::Shr { result, lhs, is_arithmetic, .. } => {
+                    Instruction::Shr {
+                        result,
+                        lhs,
+                        is_arithmetic,
+                        ..
+                    } => {
                         assert_eq!(*result, Value(2));
                         assert_eq!(*lhs, Value(0));
                         assert!(!is_arithmetic, "Expected logical shift for unsigned div");
@@ -1312,26 +1583,47 @@ is_weak: false,
     #[test]
     fn test_signed_div_power_of_two_not_simplified() {
         let mut constants = HashMap::new();
-        constants.insert(Value(1), Constant::Integer { value: 4, ty: IrType::I32 });
+        constants.insert(
+            Value(1),
+            Constant::Integer {
+                value: 4,
+                ty: IrType::I32,
+            },
+        );
         let inst = Instruction::Div {
-            result: Value(2), lhs: Value(0), rhs: Value(1),
-            ty: IrType::I32, is_signed: true,
+            result: Value(2),
+            lhs: Value(0),
+            rhs: Value(1),
+            ty: IrType::I32,
+            is_signed: true,
         };
         let mut nv = 10u32;
         // Signed division by power of two should NOT be strength-reduced
         // because signed division rounds toward zero, while arithmetic
         // right shift rounds toward negative infinity.
         let result = try_simplify_instruction(&inst, &constants, &mut nv);
-        assert!(result.is_none(), "Signed div by power of 2 should not be simplified");
+        assert!(
+            result.is_none(),
+            "Signed div by power of 2 should not be simplified"
+        );
     }
 
     #[test]
     fn test_unsigned_mod_power_of_two_to_and() {
         let mut constants = HashMap::new();
-        constants.insert(Value(1), Constant::Integer { value: 8, ty: IrType::I32 });
+        constants.insert(
+            Value(1),
+            Constant::Integer {
+                value: 8,
+                ty: IrType::I32,
+            },
+        );
         let inst = Instruction::Mod {
-            result: Value(2), lhs: Value(0), rhs: Value(1),
-            ty: IrType::I32, is_signed: false,
+            result: Value(2),
+            lhs: Value(0),
+            rhs: Value(1),
+            ty: IrType::I32,
+            is_signed: false,
         };
         let mut nv = 10u32;
         match try_simplify_instruction(&inst, &constants, &mut nv) {
@@ -1339,7 +1631,10 @@ is_weak: false,
                 assert_eq!(insts.len(), 2);
                 // First: Const for mask value 7 (8 - 1)
                 match &insts[0] {
-                    Instruction::Const { value: Constant::Integer { value: 7, .. }, .. } => {}
+                    Instruction::Const {
+                        value: Constant::Integer { value: 7, .. },
+                        ..
+                    } => {}
                     _ => panic!("Expected Const(7)"),
                 }
                 // Second: And(x, 7)
@@ -1358,9 +1653,18 @@ is_weak: false,
     #[test]
     fn test_mul_x_three_not_simplified() {
         let mut constants = HashMap::new();
-        constants.insert(Value(1), Constant::Integer { value: 3, ty: IrType::I32 });
+        constants.insert(
+            Value(1),
+            Constant::Integer {
+                value: 3,
+                ty: IrType::I32,
+            },
+        );
         let inst = Instruction::Mul {
-            result: Value(2), lhs: Value(0), rhs: Value(1), ty: IrType::I32,
+            result: Value(2),
+            lhs: Value(0),
+            rhs: Value(1),
+            ty: IrType::I32,
         };
         let mut nv = 10u32;
         // 3 is not a power of two, so no strength reduction.
@@ -1375,10 +1679,19 @@ is_weak: false,
     #[test]
     fn test_select_const_true() {
         let mut constants = HashMap::new();
-        constants.insert(Value(0), Constant::Integer { value: 1, ty: IrType::I1 });
+        constants.insert(
+            Value(0),
+            Constant::Integer {
+                value: 1,
+                ty: IrType::I1,
+            },
+        );
         let inst = Instruction::Select {
-            result: Value(3), condition: Value(0),
-            true_val: Value(1), false_val: Value(2), ty: IrType::I32,
+            result: Value(3),
+            condition: Value(0),
+            true_val: Value(1),
+            false_val: Value(2),
+            ty: IrType::I32,
         };
         let mut nv = 10u32;
         match try_simplify_instruction(&inst, &constants, &mut nv) {
@@ -1390,10 +1703,19 @@ is_weak: false,
     #[test]
     fn test_select_const_false() {
         let mut constants = HashMap::new();
-        constants.insert(Value(0), Constant::Integer { value: 0, ty: IrType::I1 });
+        constants.insert(
+            Value(0),
+            Constant::Integer {
+                value: 0,
+                ty: IrType::I1,
+            },
+        );
         let inst = Instruction::Select {
-            result: Value(3), condition: Value(0),
-            true_val: Value(1), false_val: Value(2), ty: IrType::I32,
+            result: Value(3),
+            condition: Value(0),
+            true_val: Value(1),
+            false_val: Value(2),
+            ty: IrType::I32,
         };
         let mut nv = 10u32;
         match try_simplify_instruction(&inst, &constants, &mut nv) {
@@ -1407,8 +1729,11 @@ is_weak: false,
         let mut constants = HashMap::new();
         constants.insert(Value(0), Constant::Bool(true));
         let inst = Instruction::Select {
-            result: Value(3), condition: Value(0),
-            true_val: Value(1), false_val: Value(2), ty: IrType::I32,
+            result: Value(3),
+            condition: Value(0),
+            true_val: Value(1),
+            false_val: Value(2),
+            ty: IrType::I32,
         };
         let mut nv = 10u32;
         match try_simplify_instruction(&inst, &constants, &mut nv) {
@@ -1425,8 +1750,11 @@ is_weak: false,
     fn test_cast_same_type_identity() {
         let constants = HashMap::new();
         let inst = Instruction::Cast {
-            result: Value(2), op: CastOp::ZExt, value: Value(0),
-            from_ty: IrType::I32, to_ty: IrType::I32,
+            result: Value(2),
+            op: CastOp::ZExt,
+            value: Value(0),
+            from_ty: IrType::I32,
+            to_ty: IrType::I32,
         };
         let mut nv = 10u32;
         match try_simplify_instruction(&inst, &constants, &mut nv) {
@@ -1439,12 +1767,18 @@ is_weak: false,
     fn test_cast_different_type_not_simplified() {
         let constants = HashMap::new();
         let inst = Instruction::Cast {
-            result: Value(2), op: CastOp::ZExt, value: Value(0),
-            from_ty: IrType::I16, to_ty: IrType::I32,
+            result: Value(2),
+            op: CastOp::ZExt,
+            value: Value(0),
+            from_ty: IrType::I16,
+            to_ty: IrType::I32,
         };
         let mut nv = 10u32;
         let result = try_simplify_instruction(&inst, &constants, &mut nv);
-        assert!(result.is_none(), "Cast with different types should not be simplified");
+        assert!(
+            result.is_none(),
+            "Cast with different types should not be simplified"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1455,8 +1789,11 @@ is_weak: false,
     fn test_icmp_equal_same_value_is_true() {
         let constants = HashMap::new();
         let inst = Instruction::ICmp {
-            result: Value(2), op: CompareOp::Equal,
-            lhs: Value(0), rhs: Value(0), ty: IrType::I32,
+            result: Value(2),
+            op: CompareOp::Equal,
+            lhs: Value(0),
+            rhs: Value(0),
+            ty: IrType::I32,
         };
         let mut nv = 10u32;
         match try_simplify_instruction(&inst, &constants, &mut nv) {
@@ -1472,15 +1809,19 @@ is_weak: false,
     #[test]
     fn test_no_simplifiable_instructions_returns_false() {
         // Create a function with only a non-simplifiable Add (no constant operands).
-        let instructions = vec![
-            Instruction::Add {
-                result: Value(2), lhs: Value(0), rhs: Value(1), ty: IrType::I32,
-            },
-        ];
+        let instructions = vec![Instruction::Add {
+            result: Value(2),
+            lhs: Value(0),
+            rhs: Value(1),
+            ty: IrType::I32,
+        }];
         let mut func = make_function(instructions);
         let mut pass = SimplifyPass::new();
         let changed = pass.run_on_function(&mut func);
-        assert!(!changed, "Pass should return false when no simplifications apply");
+        assert!(
+            !changed,
+            "Pass should return false when no simplifications apply"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1495,16 +1836,25 @@ is_weak: false,
         let instructions = vec![
             Instruction::Const {
                 result: Value(0),
-                value: Constant::Integer { value: 0, ty: IrType::I32 },
+                value: Constant::Integer {
+                    value: 0,
+                    ty: IrType::I32,
+                },
             },
             Instruction::Add {
-                result: Value(2), lhs: Value(1), rhs: Value(0), ty: IrType::I32,
+                result: Value(2),
+                lhs: Value(1),
+                rhs: Value(0),
+                ty: IrType::I32,
             },
         ];
         let mut func = make_function(instructions);
         let mut pass = SimplifyPass::new();
         let changed = pass.run_on_function(&mut func);
-        assert!(changed, "Pass should return true when simplifications apply");
+        assert!(
+            changed,
+            "Pass should return true when simplifications apply"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1518,15 +1868,23 @@ is_weak: false,
         let instructions = vec![
             Instruction::Const {
                 result: Value(0),
-                value: Constant::Integer { value: 0, ty: IrType::I32 },
+                value: Constant::Integer {
+                    value: 0,
+                    ty: IrType::I32,
+                },
             },
             Instruction::Add {
-                result: Value(2), lhs: Value(1), rhs: Value(0), ty: IrType::I32,
+                result: Value(2),
+                lhs: Value(1),
+                rhs: Value(0),
+                ty: IrType::I32,
             },
         ];
         let mut block = BasicBlock::new(BlockId(0), "entry".to_string());
         block.instructions = instructions;
-        block.terminator = Some(Terminator::Return { value: Some(Value(2)) });
+        block.terminator = Some(Terminator::Return {
+            value: Some(Value(2)),
+        });
         let mut func = Function {
             name: "test".to_string(),
             return_type: IrType::I32,
@@ -1535,8 +1893,11 @@ is_weak: false,
             blocks: vec![block],
             entry_block: BlockId(0),
             is_definition: true,
-is_static: false,
-is_weak: false,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         };
 
         let mut pass = SimplifyPass::new();
@@ -1559,10 +1920,16 @@ is_weak: false,
         let instructions = vec![
             Instruction::Const {
                 result: Value(1),
-                value: Constant::Integer { value: 8, ty: IrType::I32 },
+                value: Constant::Integer {
+                    value: 8,
+                    ty: IrType::I32,
+                },
             },
             Instruction::Mul {
-                result: Value(2), lhs: Value(0), rhs: Value(1), ty: IrType::I32,
+                result: Value(2),
+                lhs: Value(0),
+                rhs: Value(1),
+                ty: IrType::I32,
             },
         ];
         let mut func = make_function(instructions);
@@ -1573,8 +1940,13 @@ is_weak: false,
         // Check that we now have a Const + Shl where the Mul used to be.
         let block_insts = &func.blocks[0].instructions;
         // Should have: Const(Value(1), 8), Const(new_val, 3), Shl(Value(2), Value(0), new_val)
-        let has_shl = block_insts.iter().any(|inst| matches!(inst, Instruction::Shl { .. }));
-        assert!(has_shl, "Should contain a Shl instruction after strength reduction");
+        let has_shl = block_insts
+            .iter()
+            .any(|inst| matches!(inst, Instruction::Shl { .. }));
+        assert!(
+            has_shl,
+            "Should contain a Shl instruction after strength reduction"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1584,25 +1956,49 @@ is_weak: false,
     #[test]
     fn test_float_add_zero_not_simplified() {
         let mut constants = HashMap::new();
-        constants.insert(Value(1), Constant::Float { value: 0.0, ty: IrType::F32 });
+        constants.insert(
+            Value(1),
+            Constant::Float {
+                value: 0.0,
+                ty: IrType::F32,
+            },
+        );
         let inst = Instruction::Add {
-            result: Value(2), lhs: Value(0), rhs: Value(1), ty: IrType::F32,
+            result: Value(2),
+            lhs: Value(0),
+            rhs: Value(1),
+            ty: IrType::F32,
         };
         let mut nv = 10u32;
         let result = try_simplify_instruction(&inst, &constants, &mut nv);
-        assert!(result.is_none(), "Float add x+0 should not be simplified (IEEE 754 edge cases)");
+        assert!(
+            result.is_none(),
+            "Float add x+0 should not be simplified (IEEE 754 edge cases)"
+        );
     }
 
     #[test]
     fn test_float_mul_not_strength_reduced() {
         let mut constants = HashMap::new();
-        constants.insert(Value(1), Constant::Float { value: 2.0, ty: IrType::F64 });
+        constants.insert(
+            Value(1),
+            Constant::Float {
+                value: 2.0,
+                ty: IrType::F64,
+            },
+        );
         let inst = Instruction::Mul {
-            result: Value(2), lhs: Value(0), rhs: Value(1), ty: IrType::F64,
+            result: Value(2),
+            lhs: Value(0),
+            rhs: Value(1),
+            ty: IrType::F64,
         };
         let mut nv = 10u32;
         let result = try_simplify_instruction(&inst, &constants, &mut nv);
-        assert!(result.is_none(), "Float mul should not be strength-reduced to shift");
+        assert!(
+            result.is_none(),
+            "Float mul should not be strength-reduced to shift"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1611,31 +2007,46 @@ is_weak: false,
 
     #[test]
     fn test_all_ones_i32_minus_one() {
-        let c = Constant::Integer { value: -1, ty: IrType::I32 };
+        let c = Constant::Integer {
+            value: -1,
+            ty: IrType::I32,
+        };
         assert!(is_const_all_ones(&c));
     }
 
     #[test]
     fn test_all_ones_i64_minus_one() {
-        let c = Constant::Integer { value: -1, ty: IrType::I64 };
+        let c = Constant::Integer {
+            value: -1,
+            ty: IrType::I64,
+        };
         assert!(is_const_all_ones(&c));
     }
 
     #[test]
     fn test_all_ones_i8_0xff() {
-        let c = Constant::Integer { value: 0xFF, ty: IrType::I8 };
+        let c = Constant::Integer {
+            value: 0xFF,
+            ty: IrType::I8,
+        };
         assert!(is_const_all_ones(&c));
     }
 
     #[test]
     fn test_not_all_ones() {
-        let c = Constant::Integer { value: 42, ty: IrType::I32 };
+        let c = Constant::Integer {
+            value: 42,
+            ty: IrType::I32,
+        };
         assert!(!is_const_all_ones(&c));
     }
 
     #[test]
     fn test_not_all_ones_float() {
-        let c = Constant::Float { value: -1.0, ty: IrType::F64 };
+        let c = Constant::Float {
+            value: -1.0,
+            ty: IrType::F64,
+        };
         assert!(!is_const_all_ones(&c));
     }
 }

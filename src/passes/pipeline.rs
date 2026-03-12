@@ -406,12 +406,10 @@ impl Pipeline {
                     let prev_hook = std::panic::take_hook();
                     std::panic::set_hook(Box::new(|_| {}));
                     let func_ptr = function as *mut Function;
-                    let promoted = std::panic::catch_unwind(
-                        std::panic::AssertUnwindSafe(|| {
-                            let f = unsafe { &mut *func_ptr };
-                            Mem2RegPass::new().run_on_function(f)
-                        }),
-                    )
+                    let promoted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        let f = unsafe { &mut *func_ptr };
+                        Mem2RegPass::new().run_on_function(f)
+                    }))
                     .unwrap_or(false);
                     std::panic::set_hook(prev_hook);
                     if promoted {
@@ -444,12 +442,11 @@ impl Pipeline {
                         let prev = std::panic::take_hook();
                         std::panic::set_hook(Box::new(|_| {}));
                         let p = function as *mut Function;
-                        let r = std::panic::catch_unwind(
-                            std::panic::AssertUnwindSafe(|| {
-                                let f = unsafe { &mut *p };
-                                ConstantFoldPass::new().run_on_function(f)
-                            }),
-                        ).unwrap_or(false);
+                        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            let f = unsafe { &mut *p };
+                            ConstantFoldPass::new().run_on_function(f)
+                        }))
+                        .unwrap_or(false);
                         std::panic::set_hook(prev);
                         r
                     };
@@ -463,12 +460,11 @@ impl Pipeline {
                         let prev = std::panic::take_hook();
                         std::panic::set_hook(Box::new(|_| {}));
                         let p = function as *mut Function;
-                        let r = std::panic::catch_unwind(
-                            std::panic::AssertUnwindSafe(|| {
-                                let f = unsafe { &mut *p };
-                                CsePass::new().run_on_function(f)
-                            }),
-                        ).unwrap_or(false);
+                        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            let f = unsafe { &mut *p };
+                            CsePass::new().run_on_function(f)
+                        }))
+                        .unwrap_or(false);
                         std::panic::set_hook(prev);
                         r
                     };
@@ -487,14 +483,12 @@ impl Pipeline {
                             // to catch_unwind rather than exiting the process.
                         }));
                         let func_ptr = function as *mut Function;
-                        let result = std::panic::catch_unwind(
-                            std::panic::AssertUnwindSafe(|| {
-                                // SAFETY: func_ptr is valid for the duration of
-                                // catch_unwind; no other references exist.
-                                let f = unsafe { &mut *func_ptr };
-                                SimplifyPass::new().run_on_function(f)
-                            }),
-                        )
+                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            // SAFETY: func_ptr is valid for the duration of
+                            // catch_unwind; no other references exist.
+                            let f = unsafe { &mut *func_ptr };
+                            SimplifyPass::new().run_on_function(f)
+                        }))
                         .unwrap_or(false);
                         std::panic::set_hook(prev_hook);
                         result
@@ -509,12 +503,11 @@ impl Pipeline {
                         let prev = std::panic::take_hook();
                         std::panic::set_hook(Box::new(|_| {}));
                         let p = function as *mut Function;
-                        let r = std::panic::catch_unwind(
-                            std::panic::AssertUnwindSafe(|| {
-                                let f = unsafe { &mut *p };
-                                DcePass::new().run_on_function(f)
-                            }),
-                        ).unwrap_or(false);
+                        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            let f = unsafe { &mut *p };
+                            DcePass::new().run_on_function(f)
+                        }))
+                        .unwrap_or(false);
                         std::panic::set_hook(prev);
                         r
                     };
@@ -571,8 +564,11 @@ mod tests {
             blocks: vec![block],
             entry_block: entry_id,
             is_definition: true,
-is_static: false,
-is_weak: false,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         }
     }
 
@@ -618,8 +614,11 @@ is_weak: false,
             blocks: vec![block],
             entry_block: entry_id,
             is_definition: true,
-is_static: false,
-is_weak: false,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         }
     }
 
@@ -648,7 +647,11 @@ is_weak: false,
                 ty: IrType::I32,
             },
         });
-        block.instructions.push(Instruction::Store { value: const_val, ptr: Value(0), store_ty: None });
+        block.instructions.push(Instruction::Store {
+            value: const_val,
+            ptr: Value(0),
+            store_ty: None,
+        });
 
         // Load from the alloca
         block.instructions.push(Instruction::Load {
@@ -669,8 +672,11 @@ is_weak: false,
             blocks: vec![block],
             entry_block: entry_id,
             is_definition: true,
-is_static: false,
-is_weak: false,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         }
     }
 
@@ -869,9 +875,12 @@ is_weak: false,
 
         // The foldable function has Add(Const(2), Const(3)) which should be
         // folded to Const(5). Constant folding should report changes.
-        assert!(stats.constants_folded > 0 || stats.dead_instructions_removed > 0
-            || stats.allocas_promoted > 0,
-            "O1 should make at least some changes on foldable input");
+        assert!(
+            stats.constants_folded > 0
+                || stats.dead_instructions_removed > 0
+                || stats.allocas_promoted > 0,
+            "O1 should make at least some changes on foldable input"
+        );
     }
 
     #[test]
@@ -945,8 +954,11 @@ is_weak: false,
             blocks: Vec::new(),
             entry_block: BlockId(0),
             is_definition: false,
-is_static: false,
-is_weak: false,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         };
 
         let mut module = make_module(vec![extern_func]);
@@ -969,8 +981,11 @@ is_weak: false,
             blocks: Vec::new(),
             entry_block: BlockId(0),
             is_definition: false,
-is_static: false,
-is_weak: false,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         };
 
         let defined_func = make_foldable_function();

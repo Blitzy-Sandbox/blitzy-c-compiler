@@ -83,6 +83,12 @@ pub enum Declaration {
     },
     /// Empty declaration (just `;`).
     Empty { span: SourceSpan },
+    /// Top-level inline assembly declaration: `asm("...");` or `__asm__("...");`
+    /// at file scope. Used extensively by the Linux kernel for `EXPORT_SYMBOL`.
+    TopLevelAsm {
+        asm_string: String,
+        span: SourceSpan,
+    },
 }
 
 /// A function definition: declaration specifiers, declarator (name + params),

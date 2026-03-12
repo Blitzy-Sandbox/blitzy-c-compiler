@@ -32,13 +32,12 @@
 //!
 //! This module uses only the Rust standard library and sibling linker modules.
 
-use crate::driver::target::{Architecture, TargetConfig};
 use super::elf::{
-    PF_R, PF_W, PF_X,
-    PT_DYNAMIC, PT_GNU_RELRO, PT_GNU_STACK, PT_INTERP, PT_LOAD, PT_NOTE,
+    PF_R, PF_W, PF_X, PT_DYNAMIC, PT_GNU_RELRO, PT_GNU_STACK, PT_INTERP, PT_LOAD, PT_NOTE,
 };
 use super::sections::align_up;
 use super::OutputMode;
+use crate::driver::target::{Architecture, TargetConfig};
 
 // ============================================================================
 // Section Ordering
@@ -331,73 +330,121 @@ pub fn section_to_segment(name: &str) -> (SegmentType, SegmentFlags) {
         // Interpreter path section: gets its own PT_INTERP segment
         ".interp" => (
             SegmentType::Interp,
-            SegmentFlags { readable: true, writable: false, executable: false },
+            SegmentFlags {
+                readable: true,
+                writable: false,
+                executable: false,
+            },
         ),
 
         // Executable code sections: PT_LOAD with R+X
         ".text" | ".init" | ".fini" | ".plt" => (
             SegmentType::Load,
-            SegmentFlags { readable: true, writable: false, executable: true },
+            SegmentFlags {
+                readable: true,
+                writable: false,
+                executable: true,
+            },
         ),
 
         // Read-only data sections: PT_LOAD with R
         ".rodata" | ".eh_frame" | ".eh_frame_hdr" => (
             SegmentType::Load,
-            SegmentFlags { readable: true, writable: false, executable: false },
+            SegmentFlags {
+                readable: true,
+                writable: false,
+                executable: false,
+            },
         ),
 
         // Hash tables and dynamic symbol/string tables: PT_LOAD with R
         ".hash" | ".gnu.hash" | ".dynsym" | ".dynstr" => (
             SegmentType::Load,
-            SegmentFlags { readable: true, writable: false, executable: false },
+            SegmentFlags {
+                readable: true,
+                writable: false,
+                executable: false,
+            },
         ),
 
         // Relocation sections used at runtime: PT_LOAD with R
         ".rela.dyn" | ".rela.plt" | ".rel.dyn" | ".rel.plt" => (
             SegmentType::Load,
-            SegmentFlags { readable: true, writable: false, executable: false },
+            SegmentFlags {
+                readable: true,
+                writable: false,
+                executable: false,
+            },
         ),
 
         // Read-write data sections: PT_LOAD with R+W
         ".data" | ".bss" | ".got" | ".got.plt" => (
             SegmentType::Load,
-            SegmentFlags { readable: true, writable: true, executable: false },
+            SegmentFlags {
+                readable: true,
+                writable: true,
+                executable: false,
+            },
         ),
 
         // Init/fini arrays: PT_LOAD with R+W
         ".init_array" | ".fini_array" => (
             SegmentType::Load,
-            SegmentFlags { readable: true, writable: true, executable: false },
+            SegmentFlags {
+                readable: true,
+                writable: true,
+                executable: false,
+            },
         ),
 
         // Dynamic linking information: PT_DYNAMIC segment with R+W
         ".dynamic" => (
             SegmentType::Dynamic,
-            SegmentFlags { readable: true, writable: true, executable: false },
+            SegmentFlags {
+                readable: true,
+                writable: true,
+                executable: false,
+            },
         ),
 
         // Debug sections: not loaded into memory
         s if s.starts_with(".debug_") => (
             SegmentType::None,
-            SegmentFlags { readable: false, writable: false, executable: false },
+            SegmentFlags {
+                readable: false,
+                writable: false,
+                executable: false,
+            },
         ),
 
         // Note sections: PT_NOTE with R
         s if s.starts_with(".note") => (
             SegmentType::Note,
-            SegmentFlags { readable: true, writable: false, executable: false },
+            SegmentFlags {
+                readable: true,
+                writable: false,
+                executable: false,
+            },
         ),
 
         // Symbol and string table sections: not loaded
         ".symtab" | ".strtab" | ".shstrtab" | ".comment" => (
             SegmentType::None,
-            SegmentFlags { readable: false, writable: false, executable: false },
+            SegmentFlags {
+                readable: false,
+                writable: false,
+                executable: false,
+            },
         ),
 
         // Unknown sections: default to PT_LOAD with read-only
         _ => (
             SegmentType::Load,
-            SegmentFlags { readable: true, writable: false, executable: false },
+            SegmentFlags {
+                readable: true,
+                writable: false,
+                executable: false,
+            },
         ),
     }
 }
@@ -505,10 +552,7 @@ pub struct AddressAssignment {
 ///
 /// # Returns
 /// A vector of `SegmentLayout` entries representing PT_LOAD program headers.
-pub fn group_into_segments(
-    sections: &[SectionLayout],
-    _base_address: u64,
-) -> Vec<SegmentLayout> {
+pub fn group_into_segments(sections: &[SectionLayout], _base_address: u64) -> Vec<SegmentLayout> {
     let mut segments: Vec<SegmentLayout> = Vec::new();
 
     // Track the current segment being built. We start a new segment whenever
@@ -768,8 +812,14 @@ mod tests {
 
     #[test]
     fn test_default_section_order_text_before_rodata() {
-        let text_pos = DEFAULT_SECTION_ORDER.iter().position(|&s| s == ".text").unwrap();
-        let rodata_pos = DEFAULT_SECTION_ORDER.iter().position(|&s| s == ".rodata").unwrap();
+        let text_pos = DEFAULT_SECTION_ORDER
+            .iter()
+            .position(|&s| s == ".text")
+            .unwrap();
+        let rodata_pos = DEFAULT_SECTION_ORDER
+            .iter()
+            .position(|&s| s == ".rodata")
+            .unwrap();
         assert!(
             text_pos < rodata_pos,
             ".text (pos {}) should come before .rodata (pos {})",
@@ -780,8 +830,14 @@ mod tests {
 
     #[test]
     fn test_default_section_order_rodata_before_data() {
-        let rodata_pos = DEFAULT_SECTION_ORDER.iter().position(|&s| s == ".rodata").unwrap();
-        let data_pos = DEFAULT_SECTION_ORDER.iter().position(|&s| s == ".data").unwrap();
+        let rodata_pos = DEFAULT_SECTION_ORDER
+            .iter()
+            .position(|&s| s == ".rodata")
+            .unwrap();
+        let data_pos = DEFAULT_SECTION_ORDER
+            .iter()
+            .position(|&s| s == ".data")
+            .unwrap();
         assert!(
             rodata_pos < data_pos,
             ".rodata (pos {}) should come before .data (pos {})",
@@ -792,8 +848,14 @@ mod tests {
 
     #[test]
     fn test_default_section_order_data_before_bss() {
-        let data_pos = DEFAULT_SECTION_ORDER.iter().position(|&s| s == ".data").unwrap();
-        let bss_pos = DEFAULT_SECTION_ORDER.iter().position(|&s| s == ".bss").unwrap();
+        let data_pos = DEFAULT_SECTION_ORDER
+            .iter()
+            .position(|&s| s == ".data")
+            .unwrap();
+        let bss_pos = DEFAULT_SECTION_ORDER
+            .iter()
+            .position(|&s| s == ".bss")
+            .unwrap();
         assert!(
             data_pos < bss_pos,
             ".data (pos {}) should come before .bss (pos {})",
@@ -804,7 +866,10 @@ mod tests {
 
     #[test]
     fn test_default_section_order_bss_before_debug() {
-        let bss_pos = DEFAULT_SECTION_ORDER.iter().position(|&s| s == ".bss").unwrap();
+        let bss_pos = DEFAULT_SECTION_ORDER
+            .iter()
+            .position(|&s| s == ".bss")
+            .unwrap();
         let debug_pos = DEFAULT_SECTION_ORDER
             .iter()
             .position(|&s| s == ".debug_info")
@@ -845,8 +910,14 @@ mod tests {
         let bss_key = section_sort_key(".bss");
         let rodata_key = section_sort_key(".rodata");
 
-        assert!(text_key < rodata_key, ".text key should be less than .rodata key");
-        assert!(rodata_key < data_key, ".rodata key should be less than .data key");
+        assert!(
+            text_key < rodata_key,
+            ".text key should be less than .rodata key"
+        );
+        assert!(
+            rodata_key < data_key,
+            ".rodata key should be less than .data key"
+        );
         assert!(data_key < bss_key, ".data key should be less than .bss key");
     }
 
@@ -905,7 +976,10 @@ mod tests {
     #[test]
     fn test_select_entry_point_relocatable() {
         let result = select_entry_point(&OutputMode::Relocatable, "_start");
-        assert_eq!(result, None, "Relocatable objects should have no entry point");
+        assert_eq!(
+            result, None,
+            "Relocatable objects should have no entry point"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1013,7 +1087,11 @@ mod tests {
     #[test]
     fn test_section_to_segment_debug() {
         let (seg_type, flags) = section_to_segment(".debug_info");
-        assert_eq!(seg_type, SegmentType::None, "Debug sections should not be loaded");
+        assert_eq!(
+            seg_type,
+            SegmentType::None,
+            "Debug sections should not be loaded"
+        );
         assert!(!flags.readable);
         assert!(!flags.writable);
         assert!(!flags.executable);
@@ -1082,7 +1160,11 @@ mod tests {
     #[test]
     fn test_section_to_segment_unknown() {
         let (seg_type, flags) = section_to_segment(".custom_section");
-        assert_eq!(seg_type, SegmentType::Load, "Unknown sections default to PT_LOAD");
+        assert_eq!(
+            seg_type,
+            SegmentType::Load,
+            "Unknown sections default to PT_LOAD"
+        );
         assert!(flags.readable);
         assert!(!flags.writable);
         assert!(!flags.executable);
@@ -1095,28 +1177,19 @@ mod tests {
     #[test]
     fn test_interpreter_path_x86_64() {
         let target = TargetConfig::x86_64();
-        assert_eq!(
-            interpreter_path(&target),
-            "/lib64/ld-linux-x86-64.so.2"
-        );
+        assert_eq!(interpreter_path(&target), "/lib64/ld-linux-x86-64.so.2");
     }
 
     #[test]
     fn test_interpreter_path_i686() {
         let target = TargetConfig::i686();
-        assert_eq!(
-            interpreter_path(&target),
-            "/lib/ld-linux.so.2"
-        );
+        assert_eq!(interpreter_path(&target), "/lib/ld-linux.so.2");
     }
 
     #[test]
     fn test_interpreter_path_aarch64() {
         let target = TargetConfig::aarch64();
-        assert_eq!(
-            interpreter_path(&target),
-            "/lib/ld-linux-aarch64.so.1"
-        );
+        assert_eq!(interpreter_path(&target), "/lib/ld-linux-aarch64.so.1");
     }
 
     #[test]
@@ -1203,24 +1276,52 @@ mod tests {
 
     #[test]
     fn test_segment_flags_to_elf_flags() {
-        let rx = SegmentFlags { readable: true, writable: false, executable: true };
+        let rx = SegmentFlags {
+            readable: true,
+            writable: false,
+            executable: true,
+        };
         assert_eq!(rx.to_elf_flags(), PF_R | PF_X);
 
-        let rw = SegmentFlags { readable: true, writable: true, executable: false };
+        let rw = SegmentFlags {
+            readable: true,
+            writable: true,
+            executable: false,
+        };
         assert_eq!(rw.to_elf_flags(), PF_R | PF_W);
 
-        let r = SegmentFlags { readable: true, writable: false, executable: false };
+        let r = SegmentFlags {
+            readable: true,
+            writable: false,
+            executable: false,
+        };
         assert_eq!(r.to_elf_flags(), PF_R);
 
-        let none = SegmentFlags { readable: false, writable: false, executable: false };
+        let none = SegmentFlags {
+            readable: false,
+            writable: false,
+            executable: false,
+        };
         assert_eq!(none.to_elf_flags(), 0);
     }
 
     #[test]
     fn test_segment_flags_same_permissions() {
-        let rx1 = SegmentFlags { readable: true, writable: false, executable: true };
-        let rx2 = SegmentFlags { readable: true, writable: false, executable: true };
-        let rw = SegmentFlags { readable: true, writable: true, executable: false };
+        let rx1 = SegmentFlags {
+            readable: true,
+            writable: false,
+            executable: true,
+        };
+        let rx2 = SegmentFlags {
+            readable: true,
+            writable: false,
+            executable: true,
+        };
+        let rw = SegmentFlags {
+            readable: true,
+            writable: true,
+            executable: false,
+        };
 
         assert!(rx1.same_permissions(&rx2));
         assert!(!rx1.same_permissions(&rw));
@@ -1240,7 +1341,11 @@ mod tests {
                 size: 0x200,
                 mem_size: 0x200,
                 alignment: 16,
-                flags: SegmentFlags { readable: true, writable: false, executable: true },
+                flags: SegmentFlags {
+                    readable: true,
+                    writable: false,
+                    executable: true,
+                },
             },
             SectionLayout {
                 name: ".rodata".to_string(),
@@ -1249,7 +1354,11 @@ mod tests {
                 size: 0x100,
                 mem_size: 0x100,
                 alignment: 8,
-                flags: SegmentFlags { readable: true, writable: false, executable: false },
+                flags: SegmentFlags {
+                    readable: true,
+                    writable: false,
+                    executable: false,
+                },
             },
             SectionLayout {
                 name: ".data".to_string(),
@@ -1258,14 +1367,22 @@ mod tests {
                 size: 0x80,
                 mem_size: 0x80,
                 alignment: 8,
-                flags: SegmentFlags { readable: true, writable: true, executable: false },
+                flags: SegmentFlags {
+                    readable: true,
+                    writable: true,
+                    executable: false,
+                },
             },
         ];
 
         let segments = group_into_segments(&sections, 0x400000);
 
         // Three different permission groups → three PT_LOAD segments
-        assert_eq!(segments.len(), 3, "Should have 3 segments for 3 permission groups");
+        assert_eq!(
+            segments.len(),
+            3,
+            "Should have 3 segments for 3 permission groups"
+        );
         assert_eq!(segments[0].segment_type, PT_LOAD);
         assert_eq!(segments[1].segment_type, PT_LOAD);
         assert_eq!(segments[2].segment_type, PT_LOAD);
@@ -1281,7 +1398,11 @@ mod tests {
                 size: 0x10,
                 mem_size: 0x10,
                 alignment: 4,
-                flags: SegmentFlags { readable: true, writable: false, executable: true },
+                flags: SegmentFlags {
+                    readable: true,
+                    writable: false,
+                    executable: true,
+                },
             },
             SectionLayout {
                 name: ".text".to_string(),
@@ -1290,14 +1411,22 @@ mod tests {
                 size: 0x200,
                 mem_size: 0x200,
                 alignment: 16,
-                flags: SegmentFlags { readable: true, writable: false, executable: true },
+                flags: SegmentFlags {
+                    readable: true,
+                    writable: false,
+                    executable: true,
+                },
             },
         ];
 
         let segments = group_into_segments(&sections, 0x400000);
 
         // Same permissions → should be merged into one segment
-        assert_eq!(segments.len(), 1, ".init and .text with same flags should merge");
+        assert_eq!(
+            segments.len(),
+            1,
+            ".init and .text with same flags should merge"
+        );
         assert_eq!(segments[0].sections.len(), 2);
         assert!(segments[0].sections.contains(&".init".to_string()));
         assert!(segments[0].sections.contains(&".text".to_string()));
@@ -1313,7 +1442,11 @@ mod tests {
                 size: 0x200,
                 mem_size: 0x200,
                 alignment: 16,
-                flags: SegmentFlags { readable: true, writable: false, executable: true },
+                flags: SegmentFlags {
+                    readable: true,
+                    writable: false,
+                    executable: true,
+                },
             },
             SectionLayout {
                 name: ".debug_info".to_string(),
@@ -1322,14 +1455,22 @@ mod tests {
                 size: 0x100,
                 mem_size: 0x100,
                 alignment: 1,
-                flags: SegmentFlags { readable: false, writable: false, executable: false },
+                flags: SegmentFlags {
+                    readable: false,
+                    writable: false,
+                    executable: false,
+                },
             },
         ];
 
         let segments = group_into_segments(&sections, 0x400000);
 
         // Debug section should be skipped
-        assert_eq!(segments.len(), 1, "Debug sections should not create segments");
+        assert_eq!(
+            segments.len(),
+            1,
+            "Debug sections should not create segments"
+        );
         assert_eq!(segments[0].sections[0], ".text");
     }
 
@@ -1347,7 +1488,11 @@ mod tests {
                 size: 0x100,
                 mem_size: 0x100,
                 alignment: 16,
-                flags: SegmentFlags { readable: true, writable: false, executable: true },
+                flags: SegmentFlags {
+                    readable: true,
+                    writable: false,
+                    executable: true,
+                },
             },
             SectionLayout {
                 name: ".data".to_string(),
@@ -1356,14 +1501,21 @@ mod tests {
                 size: 0x40,
                 mem_size: 0x40,
                 alignment: 8,
-                flags: SegmentFlags { readable: true, writable: true, executable: false },
+                flags: SegmentFlags {
+                    readable: true,
+                    writable: true,
+                    executable: false,
+                },
             },
         ];
 
         let result = assign_addresses(&mut sections, 0x400000, 64, 56 * 4);
 
         // Entry address should be the start of .text
-        assert_ne!(result.entry_address, 0, "Entry address should be set to .text");
+        assert_ne!(
+            result.entry_address, 0,
+            "Entry address should be set to .text"
+        );
 
         // Total file size should cover all sections
         assert!(result.total_file_size > 0);
@@ -1384,16 +1536,24 @@ mod tests {
                 size: 0x100,
                 mem_size: 0x100,
                 alignment: 16,
-                flags: SegmentFlags { readable: true, writable: false, executable: true },
+                flags: SegmentFlags {
+                    readable: true,
+                    writable: false,
+                    executable: true,
+                },
             },
             SectionLayout {
                 name: ".bss".to_string(),
                 virtual_address: 0,
                 file_offset: 0,
-                size: 0, // BSS has no file data
+                size: 0,         // BSS has no file data
                 mem_size: 0x200, // But occupies 0x200 bytes in memory
                 alignment: 16,
-                flags: SegmentFlags { readable: true, writable: true, executable: false },
+                flags: SegmentFlags {
+                    readable: true,
+                    writable: true,
+                    executable: false,
+                },
             },
         ];
 
@@ -1420,7 +1580,11 @@ mod tests {
                 size: 0x100,
                 mem_size: 0x100,
                 alignment: 16,
-                flags: SegmentFlags { readable: true, writable: false, executable: true },
+                flags: SegmentFlags {
+                    readable: true,
+                    writable: false,
+                    executable: true,
+                },
             },
             SectionLayout {
                 name: ".debug_info".to_string(),
@@ -1429,7 +1593,11 @@ mod tests {
                 size: 0x80,
                 mem_size: 0x80,
                 alignment: 1,
-                flags: SegmentFlags { readable: false, writable: false, executable: false },
+                flags: SegmentFlags {
+                    readable: false,
+                    writable: false,
+                    executable: false,
+                },
             },
         ];
 
@@ -1448,17 +1616,19 @@ mod tests {
 
     #[test]
     fn test_assign_addresses_includes_gnu_stack() {
-        let mut sections = vec![
-            SectionLayout {
-                name: ".text".to_string(),
-                virtual_address: 0,
-                file_offset: 0,
-                size: 0x100,
-                mem_size: 0x100,
-                alignment: 16,
-                flags: SegmentFlags { readable: true, writable: false, executable: true },
+        let mut sections = vec![SectionLayout {
+            name: ".text".to_string(),
+            virtual_address: 0,
+            file_offset: 0,
+            size: 0x100,
+            mem_size: 0x100,
+            alignment: 16,
+            flags: SegmentFlags {
+                readable: true,
+                writable: false,
+                executable: true,
             },
-        ];
+        }];
 
         let result = assign_addresses(&mut sections, 0x400000, 64, 56 * 4);
 
@@ -1467,7 +1637,10 @@ mod tests {
             .segments
             .iter()
             .any(|s| s.segment_type == PT_GNU_STACK);
-        assert!(has_gnu_stack, "Address assignment should include PT_GNU_STACK segment");
+        assert!(
+            has_gnu_stack,
+            "Address assignment should include PT_GNU_STACK segment"
+        );
     }
 
     #[test]
@@ -1480,7 +1653,11 @@ mod tests {
                 size: 0x100,
                 mem_size: 0x100,
                 alignment: 16,
-                flags: SegmentFlags { readable: true, writable: false, executable: true },
+                flags: SegmentFlags {
+                    readable: true,
+                    writable: false,
+                    executable: true,
+                },
             },
             SectionLayout {
                 name: ".data".to_string(),
@@ -1489,7 +1666,11 @@ mod tests {
                 size: 0x40,
                 mem_size: 0x40,
                 alignment: 8,
-                flags: SegmentFlags { readable: true, writable: true, executable: false },
+                flags: SegmentFlags {
+                    readable: true,
+                    writable: true,
+                    executable: false,
+                },
             },
         ];
 
@@ -1514,17 +1695,19 @@ mod tests {
 
     #[test]
     fn test_address_assignment_entry_zero_for_no_text() {
-        let mut sections = vec![
-            SectionLayout {
-                name: ".data".to_string(),
-                virtual_address: 0,
-                file_offset: 0,
-                size: 0x40,
-                mem_size: 0x40,
-                alignment: 8,
-                flags: SegmentFlags { readable: true, writable: true, executable: false },
+        let mut sections = vec![SectionLayout {
+            name: ".data".to_string(),
+            virtual_address: 0,
+            file_offset: 0,
+            size: 0x40,
+            mem_size: 0x40,
+            alignment: 8,
+            flags: SegmentFlags {
+                readable: true,
+                writable: true,
+                executable: false,
             },
-        ];
+        }];
 
         let result = assign_addresses(&mut sections, 0x400000, 64, 56 * 4);
 

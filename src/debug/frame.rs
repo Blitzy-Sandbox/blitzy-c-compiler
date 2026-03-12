@@ -716,7 +716,8 @@ impl CfiInstructionBuilder {
 
         if factored < 0x40 {
             // 1-byte compact encoding: opcode high bits + 6-bit delta.
-            self.instructions.push(DW_CFA_ADVANCE_LOC | (factored as u8));
+            self.instructions
+                .push(DW_CFA_ADVANCE_LOC | (factored as u8));
         } else if factored <= 0xFF {
             // 2-byte encoding: opcode + 1-byte delta.
             self.instructions.push(DW_CFA_ADVANCE_LOC1);
@@ -819,8 +820,8 @@ impl FrameInfoEmitter {
 /// | RISC-V 64  | 2         | -8        | 1  (RA)   | SP+0        |
 pub fn build_cie_for_arch(arch: Architecture, address_size: u8) -> CommonInformationEntry {
     let (caf, daf, ra_reg): (u64, i64, u64) = match arch {
-        Architecture::X86_64  => (1, -8, x86_64_regs::RA as u64),
-        Architecture::I686    => (1, -4, i686_regs::RA as u64),
+        Architecture::X86_64 => (1, -8, x86_64_regs::RA as u64),
+        Architecture::I686 => (1, -4, i686_regs::RA as u64),
         Architecture::Aarch64 => (4, -8, aarch64_regs::X30 as u64),
         Architecture::Riscv64 => (2, -8, riscv64_regs::X1 as u64),
     };
@@ -877,13 +878,10 @@ pub fn build_cie_for_arch(arch: Architecture, address_size: u8) -> CommonInforma
 ///
 /// This is the convenience variant that derives the data alignment factor
 /// from the target architecture, then delegates to [`build_function_fde`].
-pub fn build_fde(
-    func_info: &FunctionFrameInfo,
-    arch: Architecture,
-) -> FrameDescriptionEntry {
+pub fn build_fde(func_info: &FunctionFrameInfo, arch: Architecture) -> FrameDescriptionEntry {
     let daf = match arch {
-        Architecture::X86_64  => -8i64,
-        Architecture::I686    => -4i64,
+        Architecture::X86_64 => -8i64,
+        Architecture::I686 => -4i64,
         Architecture::Aarch64 => -8i64,
         Architecture::Riscv64 => -8i64,
     };
@@ -923,8 +921,8 @@ pub fn build_function_fde(
     data_alignment_factor: i64,
 ) -> FrameDescriptionEntry {
     let caf = match arch {
-        Architecture::X86_64  => 1u64,
-        Architecture::I686    => 1u64,
+        Architecture::X86_64 => 1u64,
+        Architecture::I686 => 1u64,
         Architecture::Aarch64 => 4u64,
         Architecture::Riscv64 => 2u64,
     };
@@ -933,10 +931,10 @@ pub fn build_function_fde(
 
     // Determine architecture-specific register numbers for SP and FP.
     let (sp_reg, fp_reg) = match arch {
-        Architecture::X86_64  => (x86_64_regs::RSP, x86_64_regs::RBP),
-        Architecture::I686    => (i686_regs::ESP,    i686_regs::EBP),
-        Architecture::Aarch64 => (aarch64_regs::SP,  aarch64_regs::X29),
-        Architecture::Riscv64 => (riscv64_regs::X2,  riscv64_regs::X8),
+        Architecture::X86_64 => (x86_64_regs::RSP, x86_64_regs::RBP),
+        Architecture::I686 => (i686_regs::ESP, i686_regs::EBP),
+        Architecture::Aarch64 => (aarch64_regs::SP, aarch64_regs::X29),
+        Architecture::Riscv64 => (riscv64_regs::X2, riscv64_regs::X8),
     };
 
     // The absolute value of data_alignment_factor, used for offset factoring.
@@ -949,9 +947,9 @@ pub fn build_function_fde(
             // === Frame-pointer based function ===
             let ptr_size = frame_info_ptr_size(arch);
             let initial_cfa_offset = match arch {
-                Architecture::X86_64 => 8u64,  // CIE: CFA = RSP + 8
-                Architecture::I686   => 4u64,  // CIE: CFA = ESP + 4
-                _                    => 0u64,  // AArch64/RISC-V: CFA = SP + 0
+                Architecture::X86_64 => 8u64, // CIE: CFA = RSP + 8
+                Architecture::I686 => 4u64,   // CIE: CFA = ESP + 4
+                _ => 0u64,                    // AArch64/RISC-V: CFA = SP + 0
             };
 
             match arch {
@@ -968,8 +966,8 @@ pub fn build_function_fde(
                     // mov %rsp, %rbp (3 bytes on x86-64, 2 bytes on i686).
                     let mov_size = match arch {
                         Architecture::X86_64 => 3u64,
-                        Architecture::I686   => 2u64,
-                        _                    => unreachable!(),
+                        Architecture::I686 => 2u64,
+                        _ => unreachable!(),
                     };
                     builder.advance_loc(mov_size);
                     builder.def_cfa_register(fp_reg);
@@ -1021,8 +1019,8 @@ pub fn build_function_fde(
             // === Frame-pointer-less function (SP tracking only) ===
             let initial_cfa_offset = match arch {
                 Architecture::X86_64 => 8u64,
-                Architecture::I686   => 4u64,
-                _                    => 0u64,
+                Architecture::I686 => 4u64,
+                _ => 0u64,
             };
 
             if frame_info.frame_size > 0 {
@@ -1081,7 +1079,7 @@ pub fn build_function_fde(
         // Restore CFA to the initial state established by the CIE.
         let initial_offset = match arch {
             Architecture::X86_64 => 8u64,
-            Architecture::I686   => 4u64,
+            Architecture::I686 => 4u64,
             Architecture::Aarch64 => 0u64,
             Architecture::Riscv64 => 0u64,
         };
@@ -1205,11 +1203,7 @@ pub fn serialize_cie(cie: &CommonInformationEntry) -> Vec<u8> {
 /// | padding          : DW_CFA_nop x N     |  Pad to address_size alignment
 /// +----------------------------------------+
 /// ```
-pub fn serialize_fde(
-    fde: &FrameDescriptionEntry,
-    cie_offset: u32,
-    address_size: u8,
-) -> Vec<u8> {
+pub fn serialize_fde(fde: &FrameDescriptionEntry, cie_offset: u32, address_size: u8) -> Vec<u8> {
     let mut content = Vec::new();
 
     // CIE_pointer: offset of the CIE in .debug_frame.
@@ -1636,8 +1630,7 @@ mod tests {
         // After 4 (length) + 4 (CIE_ptr) = offset 8, next 8 bytes = initial_location.
         assert!(data.len() >= 16);
         let loc = u64::from_le_bytes([
-            data[8], data[9], data[10], data[11],
-            data[12], data[13], data[14], data[15],
+            data[8], data[9], data[10], data[11], data[12], data[13], data[14], data[15],
         ]);
         assert_eq!(loc, 0xDEAD_BEEF);
     }
@@ -1693,13 +1686,11 @@ mod tests {
 
         // First entry: CIE.
         assert!(!section.is_empty());
-        let cie_length =
-            u32::from_le_bytes([section[0], section[1], section[2], section[3]]);
+        let cie_length = u32::from_le_bytes([section[0], section[1], section[2], section[3]]);
         let cie_total = 4 + cie_length as usize;
 
         // Verify the CIE id.
-        let cie_id =
-            u32::from_le_bytes([section[4], section[5], section[6], section[7]]);
+        let cie_id = u32::from_le_bytes([section[4], section[5], section[6], section[7]]);
         assert_eq!(cie_id, 0xFFFF_FFFF);
 
         // Second entry: first FDE.
@@ -1743,8 +1734,7 @@ mod tests {
         let section = serialize_debug_frame(&cie, &[], 4);
         // CIE_id at bytes 4..8.
         assert!(section.len() >= 8);
-        let cie_id =
-            u32::from_le_bytes([section[4], section[5], section[6], section[7]]);
+        let cie_id = u32::from_le_bytes([section[4], section[5], section[6], section[7]]);
         assert_eq!(
             cie_id, 0xFFFF_FFFF,
             "CIE_id should be 0xFFFFFFFF for .debug_frame"
@@ -1765,8 +1755,7 @@ mod tests {
         let section = serialize_debug_frame(&cie, &fdes, 8);
 
         // Walk entries and verify all FDE CIE_pointers are 0.
-        let cie_len =
-            u32::from_le_bytes([section[0], section[1], section[2], section[3]]);
+        let cie_len = u32::from_le_bytes([section[0], section[1], section[2], section[3]]);
         let mut pos = 4 + cie_len as usize;
         let mut fde_count = 0;
         while pos + 8 <= section.len() {
@@ -1828,8 +1817,7 @@ mod tests {
         let data = emitter.emit(&[]);
         // Should contain at least a CIE.
         assert!(!data.is_empty());
-        let cie_id =
-            u32::from_le_bytes([data[4], data[5], data[6], data[7]]);
+        let cie_id = u32::from_le_bytes([data[4], data[5], data[6], data[7]]);
         assert_eq!(cie_id, 0xFFFF_FFFF);
     }
 
@@ -1934,9 +1922,7 @@ mod tests {
             size: 100,
             frame_size: 32,
             uses_frame_pointer: true,
-            callee_saved_regs: vec![
-                (x86_64_regs::RBX, -24),
-            ],
+            callee_saved_regs: vec![(x86_64_regs::RBX, -24)],
             prologue_size: 5,
             epilogue_offset: 90,
         };
@@ -1987,8 +1973,8 @@ mod tests {
         assert_eq!(aarch64_regs::V31, 95);
 
         assert_eq!(riscv64_regs::X0, 0);
-        assert_eq!(riscv64_regs::X2, 2);  // SP
-        assert_eq!(riscv64_regs::X8, 8);  // s0/fp
+        assert_eq!(riscv64_regs::X2, 2); // SP
+        assert_eq!(riscv64_regs::X8, 8); // s0/fp
         assert_eq!(riscv64_regs::F0, 32);
         assert_eq!(riscv64_regs::F31, 63);
     }

@@ -575,10 +575,7 @@ pub fn generate_prologue(frame: &FrameLayout) -> Vec<MachineInstr> {
         // Operand order: destination (ebp), source (esp)
         instrs.push(MachineInstr::with_operands(
             OP_MOV_RR,
-            vec![
-                MachineOperand::Register(EBP),
-                MachineOperand::Register(ESP),
-            ],
+            vec![MachineOperand::Register(EBP), MachineOperand::Register(ESP)],
         ));
     }
 
@@ -880,10 +877,7 @@ pub fn setup_call_arguments(
             // value into two 32-bit halves. We emit a sub + store pattern.
             push_instructions.push(MachineInstr::with_operands(
                 OP_SUB_RI,
-                vec![
-                    MachineOperand::Register(ESP),
-                    MachineOperand::Immediate(8),
-                ],
+                vec![MachineOperand::Register(ESP), MachineOperand::Immediate(8)],
             ));
             // Store low 32 bits at [esp + 0]
             push_instructions.push(MachineInstr::with_operands(
@@ -948,8 +942,11 @@ mod tests {
             param_values: Vec::new(),
             entry_block: BlockId(0),
             is_definition: true,
-is_static: false,
-is_weak: false,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         }
     }
 
@@ -968,7 +965,10 @@ is_weak: false,
     fn test_classify_arguments_empty() {
         let target = i686_target();
         let args = classify_arguments(&[], &target);
-        assert!(args.is_empty(), "empty param list should produce empty args");
+        assert!(
+            args.is_empty(),
+            "empty param list should produce empty args"
+        );
     }
 
     #[test]
@@ -1007,13 +1007,12 @@ is_weak: false,
     fn test_classify_arguments_mixed_types() {
         let target = i686_target();
         // (i32, f64, i32) — tests offset computation with 8-byte f64
-        let args =
-            classify_arguments(&[IrType::I32, IrType::F64, IrType::I32], &target);
+        let args = classify_arguments(&[IrType::I32, IrType::F64, IrType::I32], &target);
         assert_eq!(args.len(), 3);
         assert_eq!(args[0].stack_offset, 8);
         assert_eq!(args[0].size, 4);
         assert_eq!(args[1].stack_offset, 12); // f64 at offset 12
-        assert_eq!(args[1].size, 8);          // f64 is 8 bytes
+        assert_eq!(args[1].size, 8); // f64 is 8 bytes
         assert_eq!(args[2].stack_offset, 20); // 12 + 8 = 20
         assert_eq!(args[2].size, 4);
     }
@@ -1170,7 +1169,10 @@ is_weak: false,
             fields: vec![IrType::I32],
             packed: false,
         };
-        assert!(!needs_struct_return(&small, &target), "4-byte struct doesn't need sret");
+        assert!(
+            !needs_struct_return(&small, &target),
+            "4-byte struct doesn't need sret"
+        );
     }
 
     #[test]
@@ -1206,7 +1208,10 @@ is_weak: false,
             fields: vec![IrType::I64, IrType::I64, IrType::I64, IrType::I64],
             packed: false,
         };
-        assert!(needs_struct_return(&big, &target), "32-byte struct needs sret");
+        assert!(
+            needs_struct_return(&big, &target),
+            "32-byte struct needs sret"
+        );
     }
 
     // =================================================================
@@ -1418,7 +1423,10 @@ is_weak: false,
 
         let layout = compute_frame_layout(&func, 4, &[], &target);
 
-        assert!(layout.frame_size >= 16, "must allocate space for 4 spill slots");
+        assert!(
+            layout.frame_size >= 16,
+            "must allocate space for 4 spill slots"
+        );
         assert_eq!((8 + layout.frame_size) % 16, 0, "must be 16-byte aligned");
     }
 
@@ -1452,10 +1460,8 @@ is_weak: false,
                     .map(|i| PhysReg(3 + i as u16))
                     .collect();
 
-                let layout =
-                    compute_frame_layout(&func, num_spills, &callee_saved, &target);
-                let total =
-                    8 + (num_callee_saved * 4) + layout.frame_size;
+                let layout = compute_frame_layout(&func, num_spills, &callee_saved, &target);
+                let total = 8 + (num_callee_saved * 4) + layout.frame_size;
                 assert_eq!(
                     total % 16,
                     0,
@@ -1647,7 +1653,7 @@ is_weak: false,
         let mut sret_args = vec![IrType::Pointer(Box::new(return_type))];
         sret_args.extend(explicit_args);
         let args_with_sret = classify_arguments(&sret_args, &target);
-        assert_eq!(args_with_sret[0].stack_offset, 8);  // hidden ptr
+        assert_eq!(args_with_sret[0].stack_offset, 8); // hidden ptr
         assert_eq!(args_with_sret[0].size, 4);
         assert_eq!(args_with_sret[1].stack_offset, 12); // first explicit (+4)
         assert_eq!(args_with_sret[2].stack_offset, 16); // second explicit (+4)
@@ -1672,14 +1678,8 @@ is_weak: false,
         let prologue = generate_prologue(&frame);
         let epilogue = generate_epilogue(&frame);
 
-        let prologue_pushes: Vec<_> = prologue
-            .iter()
-            .filter(|i| i.opcode == OP_PUSH)
-            .collect();
-        let epilogue_pops: Vec<_> = epilogue
-            .iter()
-            .filter(|i| i.opcode == OP_POP)
-            .collect();
+        let prologue_pushes: Vec<_> = prologue.iter().filter(|i| i.opcode == OP_PUSH).collect();
+        let epilogue_pops: Vec<_> = epilogue.iter().filter(|i| i.opcode == OP_POP).collect();
 
         // 1 push for ebp + 2 for callee-saved = 3 pushes
         assert_eq!(prologue_pushes.len(), 3);
@@ -1700,8 +1700,14 @@ is_weak: false,
     fn test_no_register_arguments() {
         let target = i686_target();
         let many_args = vec![
-            IrType::I32, IrType::I32, IrType::I32, IrType::I32,
-            IrType::I32, IrType::I32, IrType::I32, IrType::I32,
+            IrType::I32,
+            IrType::I32,
+            IrType::I32,
+            IrType::I32,
+            IrType::I32,
+            IrType::I32,
+            IrType::I32,
+            IrType::I32,
         ];
         let args = classify_arguments(&many_args, &target);
         for (i, arg) in args.iter().enumerate() {

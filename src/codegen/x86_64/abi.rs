@@ -189,8 +189,8 @@ pub const CALLER_SAVED_GPRS: [PhysReg; 9] = [RAX, RCX, RDX, RSI, RDI, R8, R9, R1
 
 /// All XMM registers are caller-saved in the System V AMD64 ABI.
 pub const CALLER_SAVED_XMMS: [PhysReg; 16] = [
-    XMM0, XMM1, XMM2, XMM3, XMM4, XMM5, XMM6, XMM7,
-    XMM8, XMM9, XMM10, XMM11, XMM12, XMM13, XMM14, XMM15,
+    XMM0, XMM1, XMM2, XMM3, XMM4, XMM5, XMM6, XMM7, XMM8, XMM9, XMM10, XMM11, XMM12, XMM13, XMM14,
+    XMM15,
 ];
 
 /// Callee-saved (non-volatile) general-purpose registers.
@@ -224,7 +224,11 @@ pub fn is_xmm_reg(reg: PhysReg) -> bool {
 /// Debug-asserts that `reg` is actually an XMM register.
 #[inline]
 pub fn xmm_encoding(reg: PhysReg) -> u8 {
-    debug_assert!(is_xmm_reg(reg), "xmm_encoding called on non-XMM register {:?}", reg);
+    debug_assert!(
+        is_xmm_reg(reg),
+        "xmm_encoding called on non-XMM register {:?}",
+        reg
+    );
     (reg.0 - 16) as u8
 }
 
@@ -286,13 +290,12 @@ pub fn x86_64_register_info() -> RegisterInfo {
         // Caller-saved first (RAX..R11), then callee-saved (RBX, R12-R15).
         // RSP and RBP are excluded (stack/frame pointers).
         int_regs: vec![
-            RAX, RCX, RDX, RSI, RDI, R8, R9, R10, R11,
-            RBX, R12, R13, R14, R15,
+            RAX, RCX, RDX, RSI, RDI, R8, R9, R10, R11, RBX, R12, R13, R14, R15,
         ],
         // All 16 XMM registers are allocatable (all caller-saved).
         float_regs: vec![
-            XMM0, XMM1, XMM2, XMM3, XMM4, XMM5, XMM6, XMM7,
-            XMM8, XMM9, XMM10, XMM11, XMM12, XMM13, XMM14, XMM15,
+            XMM0, XMM1, XMM2, XMM3, XMM4, XMM5, XMM6, XMM7, XMM8, XMM9, XMM10, XMM11, XMM12, XMM13,
+            XMM14, XMM15,
         ],
         callee_saved_int: vec![RBX, R12, R13, R14, R15],
         // No callee-saved XMM registers in System V AMD64 ABI.
@@ -353,7 +356,11 @@ fn x86_64_type_alignment(ty: &IrType) -> u64 {
             if *packed {
                 1
             } else {
-                fields.iter().map(|f| x86_64_type_alignment(f)).max().unwrap_or(1)
+                fields
+                    .iter()
+                    .map(|f| x86_64_type_alignment(f))
+                    .max()
+                    .unwrap_or(1)
             }
         }
         IrType::Function { .. } | IrType::Label => 1,
@@ -431,11 +438,8 @@ pub fn classify_type(ty: &IrType) -> Vec<ArgumentClass> {
                 return vec![ArgumentClass::NoClass];
             }
             let offsets = x86_64_struct_field_offsets(fields, *packed);
-            let fields_with_offsets: Vec<(IrType, u64)> = fields
-                .iter()
-                .cloned()
-                .zip(offsets.into_iter())
-                .collect();
+            let fields_with_offsets: Vec<(IrType, u64)> =
+                fields.iter().cloned().zip(offsets.into_iter()).collect();
             classify_aggregate(size, &fields_with_offsets)
         }
         IrType::Array { element, count } => {
@@ -724,7 +728,10 @@ pub fn compute_argument_locations(param_types: &[IrType]) -> ArgumentLayout {
 
         // Multi-eightbyte: check if ALL eightbytes fit in registers.
         // If not, the entire argument goes on the stack (ABI rule).
-        let needs_int = classes.iter().filter(|c| **c == ArgumentClass::Integer).count();
+        let needs_int = classes
+            .iter()
+            .filter(|c| **c == ArgumentClass::Integer)
+            .count();
         let needs_sse = classes.iter().filter(|c| **c == ArgumentClass::Sse).count();
         let have_int = INT_ARG_REGS.len() - int_idx;
         let have_sse = FLOAT_ARG_REGS.len() - sse_idx;
@@ -902,7 +909,8 @@ pub fn compute_stack_frame(
     // Red zone requires: leaf function, small frame, no callee saves,
     // AND no locals/spills that would use RBP-relative addressing (since
     // red zone skips the frame pointer setup entirely).
-    let use_red_zone = !has_calls && total_unaligned <= 128 && callee_saved.is_empty() && body_size == 0;
+    let use_red_zone =
+        !has_calls && total_unaligned <= 128 && callee_saved.is_empty() && body_size == 0;
 
     // Compute aligned frame size for the sub rsp instruction.
     // After push rbp (8 bytes) the stack is 16-byte aligned (because the
@@ -970,10 +978,7 @@ pub fn generate_prologue(frame: &StackFrame) -> Vec<MachineInstr> {
     // mov rbp, rsp
     instrs.push(MachineInstr::with_operands(
         OP_MOV_RR,
-        vec![
-            MachineOperand::Register(RBP),
-            MachineOperand::Register(RSP),
-        ],
+        vec![MachineOperand::Register(RBP), MachineOperand::Register(RSP)],
     ));
 
     // Push callee-saved registers (in forward order)
@@ -1417,7 +1422,9 @@ mod tests {
         };
         assert_eq!(
             classify_return_type(&s),
-            ReturnClass::Integer { regs: vec![RAX, RDX] }
+            ReturnClass::Integer {
+                regs: vec![RAX, RDX]
+            }
         );
     }
 
@@ -1539,10 +1546,10 @@ mod tests {
         let prologue = generate_prologue(&frame);
         // push rbp, mov rbp rsp, push rbx, push r12, sub rsp N
         assert!(prologue.len() >= 4);
-        assert_eq!(prologue[0].opcode, OP_PUSH);  // push rbp
+        assert_eq!(prologue[0].opcode, OP_PUSH); // push rbp
         assert_eq!(prologue[1].opcode, OP_MOV_RR); // mov rbp, rsp
-        assert_eq!(prologue[2].opcode, OP_PUSH);  // push rbx
-        assert_eq!(prologue[3].opcode, OP_PUSH);  // push r12
+        assert_eq!(prologue[2].opcode, OP_PUSH); // push rbx
+        assert_eq!(prologue[3].opcode, OP_PUSH); // push r12
     }
 
     #[test]
@@ -1701,10 +1708,7 @@ mod tests {
     fn test_classify_aggregate_two_eightbytes() {
         let fields = vec![(IrType::I64, 0u64), (IrType::F64, 8u64)];
         let result = classify_aggregate(16, &fields);
-        assert_eq!(
-            result,
-            vec![ArgumentClass::Integer, ArgumentClass::Sse]
-        );
+        assert_eq!(result, vec![ArgumentClass::Integer, ArgumentClass::Sse]);
     }
 
     // ----- Type size helper tests -----
@@ -1719,10 +1723,7 @@ mod tests {
         assert_eq!(x86_64_type_size(&IrType::I64), 8);
         assert_eq!(x86_64_type_size(&IrType::F32), 4);
         assert_eq!(x86_64_type_size(&IrType::F64), 8);
-        assert_eq!(
-            x86_64_type_size(&IrType::Pointer(Box::new(IrType::I32))),
-            8
-        );
+        assert_eq!(x86_64_type_size(&IrType::Pointer(Box::new(IrType::I32))), 8);
     }
 
     #[test]
@@ -1795,13 +1796,34 @@ mod tests {
 
     #[test]
     fn test_merge_classes() {
-        assert_eq!(merge_classes(ArgumentClass::Integer, ArgumentClass::Integer), ArgumentClass::Integer);
-        assert_eq!(merge_classes(ArgumentClass::Sse, ArgumentClass::Sse), ArgumentClass::Sse);
-        assert_eq!(merge_classes(ArgumentClass::NoClass, ArgumentClass::Integer), ArgumentClass::Integer);
-        assert_eq!(merge_classes(ArgumentClass::Integer, ArgumentClass::NoClass), ArgumentClass::Integer);
-        assert_eq!(merge_classes(ArgumentClass::Memory, ArgumentClass::Integer), ArgumentClass::Memory);
-        assert_eq!(merge_classes(ArgumentClass::Integer, ArgumentClass::Sse), ArgumentClass::Integer);
-        assert_eq!(merge_classes(ArgumentClass::X87, ArgumentClass::Integer), ArgumentClass::Memory);
+        assert_eq!(
+            merge_classes(ArgumentClass::Integer, ArgumentClass::Integer),
+            ArgumentClass::Integer
+        );
+        assert_eq!(
+            merge_classes(ArgumentClass::Sse, ArgumentClass::Sse),
+            ArgumentClass::Sse
+        );
+        assert_eq!(
+            merge_classes(ArgumentClass::NoClass, ArgumentClass::Integer),
+            ArgumentClass::Integer
+        );
+        assert_eq!(
+            merge_classes(ArgumentClass::Integer, ArgumentClass::NoClass),
+            ArgumentClass::Integer
+        );
+        assert_eq!(
+            merge_classes(ArgumentClass::Memory, ArgumentClass::Integer),
+            ArgumentClass::Memory
+        );
+        assert_eq!(
+            merge_classes(ArgumentClass::Integer, ArgumentClass::Sse),
+            ArgumentClass::Integer
+        );
+        assert_eq!(
+            merge_classes(ArgumentClass::X87, ArgumentClass::Integer),
+            ArgumentClass::Memory
+        );
     }
 
     // ----- Classification constants array tests -----
@@ -1813,7 +1835,10 @@ mod tests {
 
     #[test]
     fn test_float_arg_regs_order() {
-        assert_eq!(FLOAT_ARG_REGS, [XMM0, XMM1, XMM2, XMM3, XMM4, XMM5, XMM6, XMM7]);
+        assert_eq!(
+            FLOAT_ARG_REGS,
+            [XMM0, XMM1, XMM2, XMM3, XMM4, XMM5, XMM6, XMM7]
+        );
     }
 
     #[test]
@@ -1823,7 +1848,10 @@ mod tests {
 
     #[test]
     fn test_caller_saved_gprs() {
-        assert_eq!(CALLER_SAVED_GPRS, [RAX, RCX, RDX, RSI, RDI, R8, R9, R10, R11]);
+        assert_eq!(
+            CALLER_SAVED_GPRS,
+            [RAX, RCX, RDX, RSI, RDI, R8, R9, R10, R11]
+        );
     }
 
     #[test]

@@ -37,8 +37,8 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::ir::cfg::{
-    BasicBlock, ControlFlowGraph, DominanceTree, PhiNode, Terminator,
-    compute_dominance_tree, compute_dominance_frontiers,
+    compute_dominance_frontiers, compute_dominance_tree, BasicBlock, ControlFlowGraph,
+    DominanceTree, PhiNode, Terminator,
 };
 use crate::ir::instructions::{BlockId, Instruction, Value};
 use crate::ir::types::IrType;
@@ -106,13 +106,7 @@ pub fn construct_ssa(cfg: &mut ControlFlowGraph) {
 
     // Step 5: Rename variables via dominator tree preorder walk.
     let mut value_counter = find_max_value(cfg).wrapping_add(1);
-    rename_variables(
-        cfg,
-        &dom_tree,
-        &phi_vars,
-        &promoted_set,
-        &mut value_counter,
-    );
+    rename_variables(cfg, &dom_tree, &phi_vars, &promoted_set, &mut value_counter);
 
     // Step 6: Simplify trivial phi nodes.
     simplify_phi_nodes(cfg);
@@ -460,10 +454,7 @@ enum RenameAction {
     DeleteAlloca,
     /// A `Load` from a promoted variable. The load result will be replaced
     /// with the current reaching definition from the variable's stack.
-    ReplaceLoad {
-        result: Value,
-        variable: Variable,
-    },
+    ReplaceLoad { result: Value, variable: Variable },
     /// A `Store` to a promoted variable. The stored value becomes the new
     /// reaching definition and is pushed onto the variable's stack.
     DeleteStore {
@@ -476,10 +467,7 @@ enum RenameAction {
 ///
 /// Pattern-matches the instruction to determine whether it involves a
 /// promoted alloca variable and what rename action to take.
-fn classify_instruction(
-    inst: &Instruction,
-    promoted_set: &HashSet<Variable>,
-) -> RenameAction {
+fn classify_instruction(inst: &Instruction, promoted_set: &HashSet<Variable>) -> RenameAction {
     match inst {
         Instruction::Alloca { result, .. } if promoted_set.contains(result) => {
             RenameAction::DeleteAlloca
@@ -928,7 +916,10 @@ fn verify_ssa(cfg: &ControlFlowGraph) -> Result<(), Vec<String>> {
                 errors.push(format!(
                     "Block {} phi for Value({}) has {} incoming values \
                      but {} predecessors",
-                    block.id.0, phi.result.0, phi.incoming.len(), pred_count
+                    block.id.0,
+                    phi.result.0,
+                    phi.incoming.len(),
+                    pred_count
                 ));
             }
 
@@ -996,10 +987,8 @@ fn split_critical_edges(cfg: &mut ControlFlowGraph) {
 
         // Create an intermediate block with an unconditional branch to the
         // original target.
-        let mut new_block = BasicBlock::new(
-            new_block_id,
-            format!("split_{}_{}", from_id.0, to_id.0),
-        );
+        let mut new_block =
+            BasicBlock::new(new_block_id, format!("split_{}_{}", from_id.0, to_id.0));
         new_block.terminator = Some(Terminator::Branch { target: to_id });
 
         cfg.add_block(new_block);
@@ -1029,11 +1018,7 @@ fn split_critical_edges(cfg: &mut ControlFlowGraph) {
 ///
 /// Handles all terminator variants that carry block targets:
 /// `Branch`, `CondBranch`, and `Switch`.
-fn replace_terminator_target(
-    block: &mut BasicBlock,
-    old_target: BlockId,
-    new_target: BlockId,
-) {
+fn replace_terminator_target(block: &mut BasicBlock, old_target: BlockId, new_target: BlockId) {
     if let Some(ref mut term) = block.terminator {
         match term {
             Terminator::Branch { target } => {
@@ -1053,9 +1038,7 @@ fn replace_terminator_target(
                     *false_block = new_target;
                 }
             }
-            Terminator::Switch {
-                default, cases, ..
-            } => {
+            Terminator::Switch { default, cases, .. } => {
                 if *default == old_target {
                     *default = new_target;
                 }
@@ -1108,7 +1091,11 @@ mod tests {
             ty: IrType::I32,
             count: None,
         });
-        entry.instructions.push(Instruction::Store { value: val(10), ptr: val(1), store_ty: None });
+        entry.instructions.push(Instruction::Store {
+            value: val(10),
+            ptr: val(1),
+            store_ty: None,
+        });
         entry.terminator = Some(Terminator::CondBranch {
             condition: val(20),
             true_block: bid(1),
@@ -1117,16 +1104,20 @@ mod tests {
         cfg.add_block(entry);
 
         let mut then_block = BasicBlock::new(bid(1), "then".to_string());
-        then_block
-            .instructions
-            .push(Instruction::Store { value: val(42), ptr: val(1), store_ty: None });
+        then_block.instructions.push(Instruction::Store {
+            value: val(42),
+            ptr: val(1),
+            store_ty: None,
+        });
         then_block.terminator = Some(Terminator::Branch { target: bid(3) });
         cfg.add_block(then_block);
 
         let mut else_block = BasicBlock::new(bid(2), "else".to_string());
-        else_block
-            .instructions
-            .push(Instruction::Store { value: val(99), ptr: val(1), store_ty: None });
+        else_block.instructions.push(Instruction::Store {
+            value: val(99),
+            ptr: val(1),
+            store_ty: None,
+        });
         else_block.terminator = Some(Terminator::Branch { target: bid(3) });
         cfg.add_block(else_block);
 
@@ -1170,7 +1161,11 @@ mod tests {
             ty: IrType::I32,
             count: None,
         });
-        entry.instructions.push(Instruction::Store { value: val(10), ptr: val(1), store_ty: None });
+        entry.instructions.push(Instruction::Store {
+            value: val(10),
+            ptr: val(1),
+            store_ty: None,
+        });
         entry.instructions.push(Instruction::Load {
             result: val(2),
             ty: IrType::I32,
@@ -1212,8 +1207,7 @@ mod tests {
         assert_eq!(phi.incoming.len(), 2, "Phi should have 2 incoming edges");
 
         // Verify incoming values by predecessor.
-        let incoming: HashMap<BlockId, Value> =
-            phi.incoming.iter().map(|&(v, b)| (b, v)).collect();
+        let incoming: HashMap<BlockId, Value> = phi.incoming.iter().map(|&(v, b)| (b, v)).collect();
         assert_eq!(incoming[&bid(1)], val(42), "Then branch should provide 42");
         assert_eq!(incoming[&bid(2)], val(99), "Else branch should provide 99");
 
@@ -1254,7 +1248,11 @@ mod tests {
             ty: IrType::I32,
             count: None,
         });
-        entry.instructions.push(Instruction::Store { value: val(10), ptr: val(1), store_ty: None });
+        entry.instructions.push(Instruction::Store {
+            value: val(10),
+            ptr: val(1),
+            store_ty: None,
+        });
         entry.terminator = Some(Terminator::Branch { target: bid(1) });
         cfg.add_block(entry);
 
@@ -1272,7 +1270,11 @@ mod tests {
         cfg.add_block(header);
 
         let mut body = BasicBlock::new(bid(2), "body".to_string());
-        body.instructions.push(Instruction::Store { value: val(30), ptr: val(1), store_ty: None });
+        body.instructions.push(Instruction::Store {
+            value: val(30),
+            ptr: val(1),
+            store_ty: None,
+        });
         body.terminator = Some(Terminator::Branch { target: bid(1) });
         cfg.add_block(body);
 
@@ -1301,10 +1303,17 @@ mod tests {
         let phi = &hdr.phi_nodes[0];
         assert_eq!(phi.incoming.len(), 2);
 
-        let incoming: HashMap<BlockId, Value> =
-            phi.incoming.iter().map(|&(v, b)| (b, v)).collect();
-        assert_eq!(incoming[&bid(0)], val(10), "Entry should provide initial value");
-        assert_eq!(incoming[&bid(2)], val(30), "Loop body should provide updated value");
+        let incoming: HashMap<BlockId, Value> = phi.incoming.iter().map(|&(v, b)| (b, v)).collect();
+        assert_eq!(
+            incoming[&bid(0)],
+            val(10),
+            "Entry should provide initial value"
+        );
+        assert_eq!(
+            incoming[&bid(2)],
+            val(30),
+            "Loop body should provide updated value"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1320,7 +1329,11 @@ mod tests {
             ty: IrType::I32,
             count: None,
         });
-        entry.instructions.push(Instruction::Store { value: val(10), ptr: val(1), store_ty: None });
+        entry.instructions.push(Instruction::Store {
+            value: val(10),
+            ptr: val(1),
+            store_ty: None,
+        });
         entry.instructions.push(Instruction::Load {
             result: val(2),
             ty: IrType::I32,
@@ -1331,7 +1344,10 @@ mod tests {
         });
         cfg.add_block(entry);
 
-        assert!(is_promotable(val(1), &cfg), "Simple alloca should be promotable");
+        assert!(
+            is_promotable(val(1), &cfg),
+            "Simple alloca should be promotable"
+        );
     }
 
     #[test]
@@ -1370,7 +1386,11 @@ mod tests {
             count: None,
         });
         // Store the alloca ADDRESS as a value (escapes).
-        entry.instructions.push(Instruction::Store { value: val(1), ptr: val(50), store_ty: None });
+        entry.instructions.push(Instruction::Store {
+            value: val(1),
+            ptr: val(50),
+            store_ty: None,
+        });
         entry.terminator = Some(Terminator::Return { value: None });
         cfg.add_block(entry);
 
@@ -1569,7 +1589,11 @@ mod tests {
             ty: IrType::I32,
             count: None,
         });
-        entry.instructions.push(Instruction::Store { value: val(1), ptr: val(50), store_ty: None });
+        entry.instructions.push(Instruction::Store {
+            value: val(1),
+            ptr: val(50),
+            store_ty: None,
+        });
         entry.terminator = Some(Terminator::Return { value: None });
         cfg.add_block(entry);
 

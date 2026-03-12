@@ -40,6 +40,14 @@ enum ExprToken {
     Char(BigInt),
     /// The `defined` keyword.
     Defined,
+    /// `__has_attribute(name)` — evaluates to 1 if the attribute is supported, 0 otherwise.
+    HasAttribute(String),
+    /// `__has_builtin(name)` — evaluates to 1 if the builtin is supported, 0 otherwise.
+    HasBuiltin(String),
+    /// `__has_extension(name)` — evaluates to 1 if the language extension is supported, 0 otherwise.
+    HasExtension(String),
+    /// `__has_include(<header>)` or `__has_include("header")` — evaluates to 1 if the header exists.
+    HasInclude(String),
     /// An identifier (after macro expansion, evaluates to 0 per C11 §6.10.1p4).
     Identifier(String),
 
@@ -124,7 +132,7 @@ fn tokenize_expression(input: &str) -> Result<Vec<ExprToken>, String> {
             continue;
         }
 
-        // Identifier or `defined` keyword
+        // Identifier or `defined` / `__has_attribute` / `__has_builtin` keyword
         if ch.is_ascii_alphabetic() || ch == '_' {
             let start = pos;
             while pos < len && (chars[pos].is_ascii_alphanumeric() || chars[pos] == '_') {
@@ -133,6 +141,111 @@ fn tokenize_expression(input: &str) -> Result<Vec<ExprToken>, String> {
             let word: String = chars[start..pos].iter().collect();
             if word == "defined" {
                 tokens.push(ExprToken::Defined);
+            } else if word == "sizeof"
+                || word == "_Alignof"
+                || word == "__alignof__"
+                || word == "__alignof"
+                || word == "alignof"
+            {
+                // Handle sizeof/alignof/etc. operators in preprocessor expressions.
+                // These appear in kernel headers like:
+                //   #define ARCH_KMALLOC_MINALIGN __alignof__(unsigned long long)
+                //   #elif ARCH_KMALLOC_MINALIGN > 8
+                // After macro expansion, the #elif becomes:
+                //   __alignof__(unsigned long long) > 8
+                // We need to evaluate this to an integer constant.
+                let mut p = pos;
+                while p < len && chars[p].is_ascii_whitespace() {
+                    p += 1;
+                }
+                if p < len && chars[p] == '(' {
+                    p += 1; // skip '('
+                    let mut depth: u32 = 1;
+                    let type_start = p;
+                    while p < len && depth > 0 {
+                        match chars[p] {
+                            '(' => depth += 1,
+                            ')' => depth -= 1,
+                            _ => {}
+                        }
+                        if depth > 0 {
+                            p += 1;
+                        }
+                    }
+                    let type_str: String = chars[type_start..p].iter().collect();
+                    let type_str = type_str.trim();
+                    if p < len {
+                        p += 1; // skip closing ')'
+                    }
+                    pos = p;
+                    let is_sizeof = word == "sizeof";
+                    let value = evaluate_sizeof_alignof_type(type_str, is_sizeof);
+                    tokens.push(ExprToken::Integer(BigInt::from_i64(value)));
+                } else {
+                    // No parens — treat as identifier evaluating to 0
+                    tokens.push(ExprToken::Identifier(word));
+                }
+            } else if word == "__has_attribute"
+                || word == "__has_builtin"
+                || word == "__has_extension"
+                || word == "__has_include"
+            {
+                // Parse __has_attribute(name), __has_builtin(name),
+                // __has_extension(name), or __has_include(<hdr>/"hdr") as a single token.
+                // Skip whitespace between the keyword and '('.
+                let mut p = pos;
+                while p < len && chars[p].is_ascii_whitespace() {
+                    p += 1;
+                }
+                if p < len && chars[p] == '(' {
+                    p += 1; // consume '('
+                            // Skip whitespace before the argument
+                    while p < len && chars[p].is_ascii_whitespace() {
+                        p += 1;
+                    }
+                    // For __has_include, the argument may be <header> or "header"
+                    let arg_name: String;
+                    if word == "__has_include" && p < len && (chars[p] == '<' || chars[p] == '"') {
+                        // Parse angle-bracket or quoted header name
+                        let close_ch = if chars[p] == '<' { '>' } else { '"' };
+                        p += 1; // skip opening delimiter
+                        let name_start = p;
+                        while p < len && chars[p] != close_ch {
+                            p += 1;
+                        }
+                        arg_name = chars[name_start..p].iter().collect();
+                        if p < len {
+                            p += 1; // skip closing delimiter
+                        }
+                    } else {
+                        // Parse a plain identifier name
+                        let name_start = p;
+                        while p < len && (chars[p].is_ascii_alphanumeric() || chars[p] == '_') {
+                            p += 1;
+                        }
+                        arg_name = chars[name_start..p].iter().collect();
+                    }
+                    // Skip whitespace after the argument
+                    while p < len && chars[p].is_ascii_whitespace() {
+                        p += 1;
+                    }
+                    if p < len && chars[p] == ')' {
+                        p += 1; // consume ')'
+                        pos = p;
+                        match word.as_str() {
+                            "__has_attribute" => tokens.push(ExprToken::HasAttribute(arg_name)),
+                            "__has_builtin" => tokens.push(ExprToken::HasBuiltin(arg_name)),
+                            "__has_extension" => tokens.push(ExprToken::HasExtension(arg_name)),
+                            "__has_include" => tokens.push(ExprToken::HasInclude(arg_name)),
+                            _ => unreachable!(),
+                        }
+                    } else {
+                        return Err(format!("expected ')' after {}(name", word));
+                    }
+                } else {
+                    // No parenthesis: treat as regular identifier (evaluates to 0)
+                    tokens.push(ExprToken::Identifier(word));
+                }
             } else {
                 tokens.push(ExprToken::Identifier(word));
             }
@@ -143,14 +256,46 @@ fn tokenize_expression(input: &str) -> Result<Vec<ExprToken>, String> {
         if pos + 1 < len {
             let next = chars[pos + 1];
             match (ch, next) {
-                ('&', '&') => { tokens.push(ExprToken::AmpAmp); pos += 2; continue; }
-                ('|', '|') => { tokens.push(ExprToken::PipePipe); pos += 2; continue; }
-                ('<', '<') => { tokens.push(ExprToken::LessLess); pos += 2; continue; }
-                ('>', '>') => { tokens.push(ExprToken::GreaterGreater); pos += 2; continue; }
-                ('=', '=') => { tokens.push(ExprToken::EqualEqual); pos += 2; continue; }
-                ('!', '=') => { tokens.push(ExprToken::ExclaimEqual); pos += 2; continue; }
-                ('<', '=') => { tokens.push(ExprToken::LessEqual); pos += 2; continue; }
-                ('>', '=') => { tokens.push(ExprToken::GreaterEqual); pos += 2; continue; }
+                ('&', '&') => {
+                    tokens.push(ExprToken::AmpAmp);
+                    pos += 2;
+                    continue;
+                }
+                ('|', '|') => {
+                    tokens.push(ExprToken::PipePipe);
+                    pos += 2;
+                    continue;
+                }
+                ('<', '<') => {
+                    tokens.push(ExprToken::LessLess);
+                    pos += 2;
+                    continue;
+                }
+                ('>', '>') => {
+                    tokens.push(ExprToken::GreaterGreater);
+                    pos += 2;
+                    continue;
+                }
+                ('=', '=') => {
+                    tokens.push(ExprToken::EqualEqual);
+                    pos += 2;
+                    continue;
+                }
+                ('!', '=') => {
+                    tokens.push(ExprToken::ExclaimEqual);
+                    pos += 2;
+                    continue;
+                }
+                ('<', '=') => {
+                    tokens.push(ExprToken::LessEqual);
+                    pos += 2;
+                    continue;
+                }
+                ('>', '=') => {
+                    tokens.push(ExprToken::GreaterEqual);
+                    pos += 2;
+                    continue;
+                }
                 _ => {}
             }
         }
@@ -175,10 +320,7 @@ fn tokenize_expression(input: &str) -> Result<Vec<ExprToken>, String> {
             ')' => tokens.push(ExprToken::RightParen),
             ',' => tokens.push(ExprToken::Comma),
             _ => {
-                return Err(format!(
-                    "invalid token '{}' in preprocessor expression",
-                    ch
-                ));
+                return Err(format!("invalid token '{}' in preprocessor expression", ch));
             }
         }
         pos += 1;
@@ -494,7 +636,20 @@ impl<'a> ExprEvaluator<'a> {
 
         // Verify the entire token stream was consumed
         if self.pos < self.tokens.len() {
-            self.emit_error("unexpected token in preprocessor expression");
+            let remaining: Vec<String> = self.tokens[self.pos..]
+                .iter()
+                .map(|t| format!("{:?}", t))
+                .collect();
+            let msg = format!(
+                "unexpected token in preprocessor expression (remaining: {})",
+                remaining
+                    .iter()
+                    .take(5)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            self.emit_error(&msg);
             return Err(());
         }
 
@@ -720,24 +875,22 @@ impl<'a> ExprEvaluator<'a> {
                     self.advance();
                     let right = self.parse_shift(skip)?;
                     if !skip {
-                        result =
-                            if result.less_than(&right) || result.eq_value(&right) {
-                                BigInt::one()
-                            } else {
-                                BigInt::zero()
-                            };
+                        result = if result.less_than(&right) || result.eq_value(&right) {
+                            BigInt::one()
+                        } else {
+                            BigInt::zero()
+                        };
                     }
                 }
                 Some(&ExprToken::GreaterEqual) => {
                     self.advance();
                     let right = self.parse_shift(skip)?;
                     if !skip {
-                        result =
-                            if result.greater_than(&right) || result.eq_value(&right) {
-                                BigInt::one()
-                            } else {
-                                BigInt::zero()
-                            };
+                        result = if result.greater_than(&right) || result.eq_value(&right) {
+                            BigInt::one()
+                        } else {
+                            BigInt::zero()
+                        };
                     }
                 }
                 _ => break,
@@ -804,9 +957,7 @@ impl<'a> ExprEvaluator<'a> {
                     if !skip {
                         let (sum, overflow) = result.add(&right);
                         if overflow {
-                            self.emit_warning(
-                                "integer overflow in preprocessor expression",
-                            );
+                            self.emit_warning("integer overflow in preprocessor expression");
                         }
                         result = sum;
                     }
@@ -817,9 +968,7 @@ impl<'a> ExprEvaluator<'a> {
                     if !skip {
                         let (diff, overflow) = result.sub(&right);
                         if overflow {
-                            self.emit_warning(
-                                "integer overflow in preprocessor expression",
-                            );
+                            self.emit_warning("integer overflow in preprocessor expression");
                         }
                         result = diff;
                     }
@@ -844,9 +993,7 @@ impl<'a> ExprEvaluator<'a> {
                     if !skip {
                         let (prod, overflow) = result.mul(&right);
                         if overflow {
-                            self.emit_warning(
-                                "integer overflow in preprocessor expression",
-                            );
+                            self.emit_warning("integer overflow in preprocessor expression");
                         }
                         result = prod;
                     }
@@ -858,9 +1005,7 @@ impl<'a> ExprEvaluator<'a> {
                         match result.div(&right) {
                             Some(quotient) => result = quotient,
                             None => {
-                                self.emit_error(
-                                    "division by zero in preprocessor expression",
-                                );
+                                self.emit_error("division by zero in preprocessor expression");
                                 return Err(());
                             }
                         }
@@ -873,9 +1018,7 @@ impl<'a> ExprEvaluator<'a> {
                         match result.rem(&right) {
                             Some(remainder) => result = remainder,
                             None => {
-                                self.emit_error(
-                                    "division by zero in preprocessor expression",
-                                );
+                                self.emit_error("division by zero in preprocessor expression");
                                 return Err(());
                             }
                         }
@@ -900,12 +1043,20 @@ impl<'a> ExprEvaluator<'a> {
             Some(&ExprToken::Minus) => {
                 self.advance();
                 let operand = self.parse_unary(skip)?;
-                if skip { Ok(BigInt::zero()) } else { Ok(operand.neg()) }
+                if skip {
+                    Ok(BigInt::zero())
+                } else {
+                    Ok(operand.neg())
+                }
             }
             Some(&ExprToken::Tilde) => {
                 self.advance();
                 let operand = self.parse_unary(skip)?;
-                if skip { Ok(BigInt::zero()) } else { Ok(!operand) }
+                if skip {
+                    Ok(BigInt::zero())
+                } else {
+                    Ok(!operand)
+                }
             }
             Some(&ExprToken::Exclaim) => {
                 self.advance();
@@ -913,7 +1064,11 @@ impl<'a> ExprEvaluator<'a> {
                 if skip {
                     Ok(BigInt::zero())
                 } else {
-                    Ok(if operand.is_zero() { BigInt::one() } else { BigInt::zero() })
+                    Ok(if operand.is_zero() {
+                        BigInt::one()
+                    } else {
+                        BigInt::zero()
+                    })
                 }
             }
             _ => self.parse_primary(skip),
@@ -950,6 +1105,52 @@ impl<'a> ExprEvaluator<'a> {
             Some(ExprToken::Defined) => {
                 self.advance(); // consume 'defined'
                 self.parse_defined(skip)
+            }
+            Some(ExprToken::HasAttribute(ref name)) => {
+                let attr_name = name.clone();
+                self.advance();
+                if skip {
+                    Ok(BigInt::zero())
+                } else {
+                    Ok(if is_supported_attribute(&attr_name) {
+                        BigInt::one()
+                    } else {
+                        BigInt::zero()
+                    })
+                }
+            }
+            Some(ExprToken::HasBuiltin(ref name)) => {
+                let builtin_name = name.clone();
+                self.advance();
+                if skip {
+                    Ok(BigInt::zero())
+                } else {
+                    Ok(if is_supported_builtin(&builtin_name) {
+                        BigInt::one()
+                    } else {
+                        BigInt::zero()
+                    })
+                }
+            }
+            Some(ExprToken::HasExtension(ref name)) => {
+                let ext_name = name.clone();
+                self.advance();
+                if skip {
+                    Ok(BigInt::zero())
+                } else {
+                    Ok(if is_supported_extension(&ext_name) {
+                        BigInt::one()
+                    } else {
+                        BigInt::zero()
+                    })
+                }
+            }
+            Some(ExprToken::HasInclude(ref _name)) => {
+                // For __has_include, we conservatively return 0 (header not found)
+                // since we don't have access to the include path resolver here.
+                // Real resolution would require preprocessor context.
+                self.advance();
+                Ok(BigInt::zero())
             }
             Some(ExprToken::Identifier(_)) => {
                 self.advance();
@@ -1008,9 +1209,396 @@ impl<'a> ExprEvaluator<'a> {
             Ok(BigInt::zero())
         } else {
             let is_defined = (self.is_macro_defined)(&name);
-            Ok(if is_defined { BigInt::one() } else { BigInt::zero() })
+            Ok(if is_defined {
+                BigInt::one()
+            } else {
+                BigInt::zero()
+            })
         }
     }
+}
+
+// ===========================================================================
+// __has_attribute / __has_builtin Support Tables
+// ===========================================================================
+
+/// Evaluates `sizeof(type)` or `alignof(type)` for common C types in the
+/// preprocessor expression evaluator. This handles cases like the Linux kernel's:
+///   `#define ARCH_KMALLOC_MINALIGN __alignof__(unsigned long long)`
+/// which after expansion appears in `#elif ARCH_KMALLOC_MINALIGN > 8`.
+///
+/// Returns the size (if `is_sizeof`) or alignment of the type on x86-64.
+/// For types not recognized, returns a conservative default of 1 for alignof
+/// and 4 for sizeof.
+fn evaluate_sizeof_alignof_type(type_str: &str, is_sizeof: bool) -> i64 {
+    // Normalize the type string by collapsing whitespace and removing pointer declarators
+    let normalized = type_str.replace("*", "").trim().to_string();
+    let has_pointer = type_str.contains('*');
+
+    // If it's a pointer type, size=8 and align=8 on x86-64
+    if has_pointer {
+        return 8;
+    }
+
+    // Match common C types — values are for x86-64 (LP64 model)
+    let (size, align) = match normalized.as_str() {
+        "char" | "signed char" | "unsigned char" | "_Bool" | "bool" => (1, 1),
+        "short" | "signed short" | "short int" | "signed short int" | "unsigned short"
+        | "unsigned short int" => (2, 2),
+        "int" | "signed int" | "signed" | "unsigned int" | "unsigned" => (4, 4),
+        "long" | "signed long" | "long int" | "signed long int" | "unsigned long"
+        | "unsigned long int" => (8, 8),
+        "long long"
+        | "signed long long"
+        | "long long int"
+        | "signed long long int"
+        | "unsigned long long"
+        | "unsigned long long int" => (8, 8),
+        "float" => (4, 4),
+        "double" => (8, 8),
+        "long double" => (16, 16),
+        "void" => (1, 1),
+        "__int128" | "unsigned __int128" | "__int128_t" | "__uint128_t" => (16, 16),
+        // GCC extension: __int128 type
+        _ => {
+            // For struct/union/enum or unknown types, use conservative defaults
+            if is_sizeof {
+                (4, 4)
+            } else {
+                (4, 4)
+            }
+        }
+    };
+
+    if is_sizeof {
+        size
+    } else {
+        align
+    }
+}
+
+/// Returns `true` if `name` is an attribute that bcc's codegen implements.
+///
+/// Covers both the GNU-style double-underscore forms and the plain forms.
+/// For example, both `packed` and `__packed__` are recognized.
+fn is_supported_attribute(name: &str) -> bool {
+    matches!(
+        name,
+        // Core attributes bcc implements
+        "packed"
+            | "__packed__"
+            | "aligned"
+            | "__aligned__"
+            | "section"
+            | "__section__"
+            | "used"
+            | "__used__"
+            | "weak"
+            | "__weak__"
+            | "noreturn"
+            | "__noreturn__"
+            | "visibility"
+            | "__visibility__"
+            | "alias"
+            | "__alias__"
+            | "constructor"
+            | "__constructor__"
+            | "destructor"
+            | "__destructor__"
+            | "cold"
+            | "__cold__"
+            | "hot"
+            | "__hot__"
+            | "noinline"
+            | "__noinline__"
+            | "always_inline"
+            | "__always_inline__"
+            | "format"
+            | "__format__"
+            | "noclone"
+            | "__noclone__"
+            | "copy"
+            | "__copy__"
+            | "unused"
+            | "__unused__"
+            | "deprecated"
+            | "__deprecated__"
+            | "warn_unused_result"
+            | "__warn_unused_result__"
+            | "may_alias"
+            | "__may_alias__"
+            | "pure"
+            | "__pure__"
+            | "const"
+            | "__const__"
+            | "malloc"
+            | "__malloc__"
+            | "nonnull"
+            | "__nonnull__"
+            | "returns_nonnull"
+            | "__returns_nonnull__"
+            | "sentinel"
+            | "__sentinel__"
+            | "format_arg"
+            | "__format_arg__"
+            | "fallthrough"
+            | "__fallthrough__"
+            | "no_sanitize"
+            | "__no_sanitize__"
+            | "no_sanitize_address"
+            | "__no_sanitize_address__"
+            | "no_instrument_function"
+            | "__no_instrument_function__"
+            | "error"
+            | "__error__"
+            | "warning"
+            | "__warning__"
+            | "externally_visible"
+            | "__externally_visible__"
+            | "no_reorder"
+            | "__no_reorder__"
+            | "assume_aligned"
+            | "__assume_aligned__"
+            | "alloc_size"
+            | "__alloc_size__"
+            | "designated_init"
+            | "__designated_init__"
+            | "transparent_union"
+            | "__transparent_union__"
+            | "mode"
+            | "__mode__"
+            | "artificial"
+            | "__artificial__"
+            | "flatten"
+            | "__flatten__"
+            | "nothrow"
+            | "__nothrow__"
+            | "leaf"
+            | "__leaf__"
+            | "gnu_inline"
+            | "__gnu_inline__"
+            | "noipa"
+            | "__noipa__"
+            | "target"
+            | "__target__"
+            | "optimize"
+            | "__optimize__"
+            | "returns_twice"
+            | "__returns_twice__"
+            | "naked"
+            | "__naked__"
+            | "ms_struct"
+            | "__ms_struct__"
+            | "gcc_struct"
+            | "__gcc_struct__"
+            | "regparm"
+            | "__regparm__"
+            | "force_align_arg_pointer"
+            | "__force_align_arg_pointer__"
+            | "interrupt"
+            | "__interrupt__"
+            | "no_caller_saved_registers"
+            | "__no_caller_saved_registers__"
+            | "no_split_stack"
+            | "__no_split_stack__"
+            | "no_stack_limit"
+            | "__no_stack_limit__"
+            | "no_stack_protector"
+            | "__no_stack_protector__"
+            | "noplt"
+            | "__noplt__"
+            | "nocf_check"
+            | "__nocf_check__"
+            | "nonstring"
+            | "__nonstring__"
+            | "access"
+            | "__access__"
+            | "counted_by"
+            | "__counted_by__"
+            | "cleanup"
+            | "__cleanup__"
+    )
+}
+
+/// Returns `true` if `name` is a builtin that bcc lowers to real IR instructions.
+///
+/// Covers the common GCC/Clang builtins used in the Linux kernel and libc.
+fn is_supported_builtin(name: &str) -> bool {
+    matches!(
+        name,
+        // Varargs builtins
+        "__builtin_va_start"
+        | "__builtin_va_end"
+        | "__builtin_va_arg"
+        | "__builtin_va_copy"
+        | "__builtin_va_list"
+        // Overflow-checked arithmetic
+        | "__builtin_add_overflow"
+        | "__builtin_sub_overflow"
+        | "__builtin_mul_overflow"
+        // Memory/string builtins
+        | "__builtin_memcpy"
+        | "__builtin_memset"
+        | "__builtin_memmove"
+        | "__builtin_memcmp"
+        | "__builtin_strlen"
+        | "__builtin_strcmp"
+        | "__builtin_strncmp"
+        | "__builtin_strcpy"
+        | "__builtin_strncpy"
+        // Bit manipulation
+        | "__builtin_clz"
+        | "__builtin_clzl"
+        | "__builtin_clzll"
+        | "__builtin_ctz"
+        | "__builtin_ctzl"
+        | "__builtin_ctzll"
+        | "__builtin_ffs"
+        | "__builtin_ffsl"
+        | "__builtin_ffsll"
+        | "__builtin_popcount"
+        | "__builtin_popcountl"
+        | "__builtin_popcountll"
+        | "__builtin_parity"
+        | "__builtin_parityl"
+        | "__builtin_parityll"
+        | "__builtin_bswap16"
+        | "__builtin_bswap32"
+        | "__builtin_bswap64"
+        // Compiler hints
+        | "__builtin_expect"
+        | "__builtin_expect_with_probability"
+        | "__builtin_unreachable"
+        | "__builtin_trap"
+        | "__builtin_assume"
+        | "__builtin_assume_aligned"
+        // Object size / type
+        | "__builtin_object_size"
+        | "__builtin_constant_p"
+        | "__builtin_types_compatible_p"
+        | "__builtin_choose_expr"
+        | "__builtin_classify_type"
+        // Offsetof
+        | "__builtin_offsetof"
+        // Frame / return address
+        | "__builtin_frame_address"
+        | "__builtin_return_address"
+        | "__builtin_extract_return_addr"
+        // Atomics
+        | "__builtin_atomic_load_n"
+        | "__builtin_atomic_store_n"
+        | "__builtin_atomic_exchange_n"
+        | "__builtin_atomic_compare_exchange_n"
+        | "__builtin_atomic_compare_exchange"
+        | "__builtin_atomic_add_fetch"
+        | "__builtin_atomic_sub_fetch"
+        | "__builtin_atomic_and_fetch"
+        | "__builtin_atomic_or_fetch"
+        | "__builtin_atomic_xor_fetch"
+        | "__builtin_atomic_nand_fetch"
+        | "__builtin_atomic_fetch_add"
+        | "__builtin_atomic_fetch_sub"
+        | "__builtin_atomic_fetch_and"
+        | "__builtin_atomic_fetch_or"
+        | "__builtin_atomic_fetch_xor"
+        | "__builtin_atomic_fetch_nand"
+        | "__builtin_atomic_test_and_set"
+        | "__builtin_atomic_clear"
+        | "__builtin_atomic_thread_fence"
+        | "__builtin_atomic_signal_fence"
+        | "__builtin_atomic_always_lock_free"
+        | "__builtin_atomic_is_lock_free"
+        // Sync builtins (legacy __sync_*)
+        | "__sync_fetch_and_add"
+        | "__sync_fetch_and_sub"
+        | "__sync_fetch_and_or"
+        | "__sync_fetch_and_and"
+        | "__sync_fetch_and_xor"
+        | "__sync_fetch_and_nand"
+        | "__sync_add_and_fetch"
+        | "__sync_sub_and_fetch"
+        | "__sync_or_and_fetch"
+        | "__sync_and_and_fetch"
+        | "__sync_xor_and_fetch"
+        | "__sync_nand_and_fetch"
+        | "__sync_val_compare_and_swap"
+        | "__sync_bool_compare_and_swap"
+        | "__sync_lock_test_and_set"
+        | "__sync_lock_release"
+        | "__sync_synchronize"
+        // Overflow checking
+        | "__builtin_sadd_overflow"
+        | "__builtin_saddl_overflow"
+        | "__builtin_saddll_overflow"
+        | "__builtin_uadd_overflow"
+        | "__builtin_uaddl_overflow"
+        | "__builtin_uaddll_overflow"
+        | "__builtin_ssub_overflow"
+        | "__builtin_ssubl_overflow"
+        | "__builtin_ssubll_overflow"
+        | "__builtin_usub_overflow"
+        | "__builtin_usubl_overflow"
+        | "__builtin_usubll_overflow"
+        | "__builtin_smul_overflow"
+        | "__builtin_smull_overflow"
+        | "__builtin_smulll_overflow"
+        | "__builtin_umul_overflow"
+        | "__builtin_umull_overflow"
+        | "__builtin_umulll_overflow"
+        // Math builtins
+        | "__builtin_huge_val"
+        | "__builtin_huge_valf"
+        | "__builtin_inf"
+        | "__builtin_inff"
+        | "__builtin_nan"
+        | "__builtin_nanf"
+        | "__builtin_isnan"
+        | "__builtin_isinf"
+        | "__builtin_isfinite"
+        | "__builtin_isinf_sign"
+        | "__builtin_abs"
+        | "__builtin_labs"
+        | "__builtin_llabs"
+        | "__builtin_fabs"
+        | "__builtin_fabsf"
+        // Prefetch
+        | "__builtin_prefetch"
+        // Misc
+        | "__builtin_alloca"
+        | "__builtin_alloca_with_align"
+        | "__builtin_LINE"
+        | "__builtin_FUNCTION"
+        | "__builtin_FILE"
+        | "__builtin_likely"
+        | "__builtin_unlikely"
+    )
+}
+
+/// Checks whether a given language extension name is supported by bcc.
+///
+/// This is used for the `__has_extension(name)` built-in preprocessor operator,
+/// which is a Clang extension also checked by glibc headers. We report support
+/// for the same extensions that GCC provides compatibility for.
+fn is_supported_extension(name: &str) -> bool {
+    matches!(
+        name,
+        // C11 features exposed as extensions
+        "c_alignas"
+        | "c_alignof"
+        | "c_atomic"
+        | "c_generic_selections"
+        | "c_static_assert"
+        | "c_thread_local"
+        // GCC-compatible extensions
+        | "gnu_asm"
+        | "gnu_asm_goto_with_outputs"
+        | "attribute_deprecated_with_message"
+        | "enumerator_attributes"
+        | "address_sanitizer"
+        // Statement expressions, typeof, etc.
+        | "statement_expressions"
+        | "typeof"
+    )
 }
 
 // ===========================================================================
@@ -1435,7 +2023,10 @@ mod tests {
 
     #[test]
     fn test_defined_multiple_macros() {
-        assert_eq!(eval_with("defined(FOO) && defined(BAR)", &["FOO", "BAR"]), 1);
+        assert_eq!(
+            eval_with("defined(FOO) && defined(BAR)", &["FOO", "BAR"]),
+            1
+        );
         assert_eq!(eval_with("defined(FOO) && defined(BAR)", &["FOO"]), 0);
     }
 
@@ -1630,10 +2221,9 @@ mod tests {
 
     #[test]
     fn test_tokenize_all_operators() {
-        let tokens = tokenize_expression(
-            "+ - * / % & | ^ ~ ! && || << >> == != < > <= >= ? : ( ) ,",
-        )
-        .unwrap();
+        let tokens =
+            tokenize_expression("+ - * / % & | ^ ~ ! && || << >> == != < > <= >= ? : ( ) ,")
+                .unwrap();
         assert_eq!(tokens.len(), 25);
     }
 

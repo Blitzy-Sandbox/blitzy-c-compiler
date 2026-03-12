@@ -543,7 +543,10 @@ pub(crate) fn pointer_conversion(
                 ..
             },
         ) => {
-            if from_pointee.unqualified().is_compatible(to_pointee.unqualified()) {
+            if from_pointee
+                .unqualified()
+                .is_compatible(to_pointee.unqualified())
+            {
                 // Compatible pointee types → no warning.
                 ConversionResult::Valid {
                     kind: ImplicitCastKind::PointerToPointer,
@@ -937,45 +940,95 @@ mod tests {
 
     // -- Test helper constructors ------------------------------------------
 
-    fn mk_bool() -> CType { CType::Integer(IntegerKind::Bool) }
-    fn mk_char() -> CType { CType::Integer(IntegerKind::Char) }
-    fn mk_schar() -> CType { CType::Integer(IntegerKind::SignedChar) }
-    fn mk_uchar() -> CType { CType::Integer(IntegerKind::UnsignedChar) }
-    fn mk_short() -> CType { CType::Integer(IntegerKind::Short) }
-    fn mk_ushort() -> CType { CType::Integer(IntegerKind::UnsignedShort) }
-    fn mk_int() -> CType { CType::Integer(IntegerKind::Int) }
-    fn mk_uint() -> CType { CType::Integer(IntegerKind::UnsignedInt) }
-    fn mk_long() -> CType { CType::Integer(IntegerKind::Long) }
-    fn mk_ulong() -> CType { CType::Integer(IntegerKind::UnsignedLong) }
-    fn mk_llong() -> CType { CType::Integer(IntegerKind::LongLong) }
-    fn mk_ullong() -> CType { CType::Integer(IntegerKind::UnsignedLongLong) }
-    fn mk_float() -> CType { CType::Float(FloatKind::Float) }
-    fn mk_double() -> CType { CType::Float(FloatKind::Double) }
-    fn mk_ldouble() -> CType { CType::Float(FloatKind::LongDouble) }
-    fn mk_void() -> CType { CType::Void }
+    fn mk_bool() -> CType {
+        CType::Integer(IntegerKind::Bool)
+    }
+    fn mk_char() -> CType {
+        CType::Integer(IntegerKind::Char)
+    }
+    fn mk_schar() -> CType {
+        CType::Integer(IntegerKind::SignedChar)
+    }
+    fn mk_uchar() -> CType {
+        CType::Integer(IntegerKind::UnsignedChar)
+    }
+    fn mk_short() -> CType {
+        CType::Integer(IntegerKind::Short)
+    }
+    fn mk_ushort() -> CType {
+        CType::Integer(IntegerKind::UnsignedShort)
+    }
+    fn mk_int() -> CType {
+        CType::Integer(IntegerKind::Int)
+    }
+    fn mk_uint() -> CType {
+        CType::Integer(IntegerKind::UnsignedInt)
+    }
+    fn mk_long() -> CType {
+        CType::Integer(IntegerKind::Long)
+    }
+    fn mk_ulong() -> CType {
+        CType::Integer(IntegerKind::UnsignedLong)
+    }
+    fn mk_llong() -> CType {
+        CType::Integer(IntegerKind::LongLong)
+    }
+    fn mk_ullong() -> CType {
+        CType::Integer(IntegerKind::UnsignedLongLong)
+    }
+    fn mk_float() -> CType {
+        CType::Float(FloatKind::Float)
+    }
+    fn mk_double() -> CType {
+        CType::Float(FloatKind::Double)
+    }
+    fn mk_ldouble() -> CType {
+        CType::Float(FloatKind::LongDouble)
+    }
+    fn mk_void() -> CType {
+        CType::Void
+    }
     fn mk_void_ptr() -> CType {
-        CType::Pointer { pointee: Box::new(CType::Void), qualifiers: TypeQualifiers::default() }
+        CType::Pointer {
+            pointee: Box::new(CType::Void),
+            qualifiers: TypeQualifiers::default(),
+        }
     }
     fn mk_int_ptr() -> CType {
-        CType::Pointer { pointee: Box::new(mk_int()), qualifiers: TypeQualifiers::default() }
+        CType::Pointer {
+            pointee: Box::new(mk_int()),
+            qualifiers: TypeQualifiers::default(),
+        }
     }
     fn mk_float_ptr() -> CType {
-        CType::Pointer { pointee: Box::new(mk_float()), qualifiers: TypeQualifiers::default() }
+        CType::Pointer {
+            pointee: Box::new(mk_float()),
+            qualifiers: TypeQualifiers::default(),
+        }
     }
     fn mk_const_int_ptr() -> CType {
         CType::Pointer {
             pointee: Box::new(CType::Qualified {
                 base: Box::new(mk_int()),
-                qualifiers: TypeQualifiers { is_const: true, ..TypeQualifiers::default() },
+                qualifiers: TypeQualifiers {
+                    is_const: true,
+                    ..TypeQualifiers::default()
+                },
             }),
             qualifiers: TypeQualifiers::default(),
         }
     }
     fn mk_int_array(n: usize) -> CType {
-        CType::Array { element: Box::new(mk_int()), size: ArraySize::Fixed(n) }
+        CType::Array {
+            element: Box::new(mk_int()),
+            size: ArraySize::Fixed(n),
+        }
     }
     fn mk_char_array_incomplete() -> CType {
-        CType::Array { element: Box::new(mk_char()), size: ArraySize::Incomplete }
+        CType::Array {
+            element: Box::new(mk_char()),
+            size: ArraySize::Incomplete,
+        }
     }
     fn mk_int_array_2d(rows: usize, cols: usize) -> CType {
         CType::Array {
@@ -989,24 +1042,41 @@ mod tests {
     fn mk_enum() -> CType {
         CType::Enum(EnumType {
             tag: Some("color".to_string()),
-            variants: vec![("RED".to_string(), 0), ("GREEN".to_string(), 1), ("BLUE".to_string(), 2)],
+            variants: vec![
+                ("RED".to_string(), 0),
+                ("GREEN".to_string(), 1),
+                ("BLUE".to_string(), 2),
+            ],
             is_complete: true,
         })
     }
     fn mk_fn_int_to_int() -> CType {
         CType::Function(FunctionType {
             return_type: Box::new(mk_int()),
-            params: vec![FunctionParam { name: Some("x".to_string()), ty: mk_int() }],
+            params: vec![FunctionParam {
+                name: Some("x".to_string()),
+                ty: mk_int(),
+            }],
             is_variadic: false,
             is_old_style: false,
         })
     }
 
-    fn x86_64() -> TargetConfig { TargetConfig::x86_64() }
-    fn i686() -> TargetConfig { TargetConfig::i686() }
-    fn dummy_span() -> SourceSpan { SourceSpan::dummy() }
-    fn is_int(ty: &CType) -> bool { matches!(ty.unqualified(), CType::Integer(IntegerKind::Int)) }
-    fn is_uint(ty: &CType) -> bool { matches!(ty.unqualified(), CType::Integer(IntegerKind::UnsignedInt)) }
+    fn x86_64() -> TargetConfig {
+        TargetConfig::x86_64()
+    }
+    fn i686() -> TargetConfig {
+        TargetConfig::i686()
+    }
+    fn dummy_span() -> SourceSpan {
+        SourceSpan::dummy()
+    }
+    fn is_int(ty: &CType) -> bool {
+        matches!(ty.unqualified(), CType::Integer(IntegerKind::Int))
+    }
+    fn is_uint(ty: &CType) -> bool {
+        matches!(ty.unqualified(), CType::Integer(IntegerKind::UnsignedInt))
+    }
 
     // ======================================================================
     // Integer promotion tests — C11 §6.3.1.1
@@ -1014,37 +1084,58 @@ mod tests {
 
     #[test]
     fn test_promote_bool_to_int() {
-        assert!(is_int(&integer_promotion(&mk_bool(), &x86_64())), "Bool -> int");
+        assert!(
+            is_int(&integer_promotion(&mk_bool(), &x86_64())),
+            "Bool -> int"
+        );
     }
 
     #[test]
     fn test_promote_char_to_int() {
-        assert!(is_int(&integer_promotion(&mk_char(), &x86_64())), "char -> int");
+        assert!(
+            is_int(&integer_promotion(&mk_char(), &x86_64())),
+            "char -> int"
+        );
     }
 
     #[test]
     fn test_promote_signed_char_to_int() {
-        assert!(is_int(&integer_promotion(&mk_schar(), &x86_64())), "signed char -> int");
+        assert!(
+            is_int(&integer_promotion(&mk_schar(), &x86_64())),
+            "signed char -> int"
+        );
     }
 
     #[test]
     fn test_promote_unsigned_char_to_int() {
-        assert!(is_int(&integer_promotion(&mk_uchar(), &x86_64())), "unsigned char -> int");
+        assert!(
+            is_int(&integer_promotion(&mk_uchar(), &x86_64())),
+            "unsigned char -> int"
+        );
     }
 
     #[test]
     fn test_promote_short_to_int() {
-        assert!(is_int(&integer_promotion(&mk_short(), &x86_64())), "short -> int");
+        assert!(
+            is_int(&integer_promotion(&mk_short(), &x86_64())),
+            "short -> int"
+        );
     }
 
     #[test]
     fn test_promote_unsigned_short_to_int() {
-        assert!(is_int(&integer_promotion(&mk_ushort(), &x86_64())), "unsigned short -> int");
+        assert!(
+            is_int(&integer_promotion(&mk_ushort(), &x86_64())),
+            "unsigned short -> int"
+        );
     }
 
     #[test]
     fn test_int_no_promotion() {
-        assert!(is_int(&integer_promotion(&mk_int(), &x86_64())), "int stays int");
+        assert!(
+            is_int(&integer_promotion(&mk_int(), &x86_64())),
+            "int stays int"
+        );
     }
 
     #[test]
@@ -1056,12 +1147,18 @@ mod tests {
     #[test]
     fn test_long_long_no_promotion() {
         let r = integer_promotion(&mk_llong(), &x86_64());
-        assert!(matches!(r.unqualified(), CType::Integer(IntegerKind::LongLong)));
+        assert!(matches!(
+            r.unqualified(),
+            CType::Integer(IntegerKind::LongLong)
+        ));
     }
 
     #[test]
     fn test_enum_promotes_to_int() {
-        assert!(is_int(&integer_promotion(&mk_enum(), &x86_64())), "enum -> int");
+        assert!(
+            is_int(&integer_promotion(&mk_enum(), &x86_64())),
+            "enum -> int"
+        );
     }
 
     #[test]
@@ -1075,7 +1172,10 @@ mod tests {
         let t = i686();
         assert!(is_int(&integer_promotion(&mk_char(), &t)));
         assert!(is_int(&integer_promotion(&mk_ushort(), &t)));
-        assert!(matches!(integer_promotion(&mk_long(), &t).unqualified(), CType::Integer(IntegerKind::Long)));
+        assert!(matches!(
+            integer_promotion(&mk_long(), &t).unqualified(),
+            CType::Integer(IntegerKind::Long)
+        ));
     }
 
     // ======================================================================
@@ -1085,25 +1185,37 @@ mod tests {
     #[test]
     fn test_uac_int_plus_float() {
         let r = usual_arithmetic_conversions(&mk_int(), &mk_float(), &x86_64());
-        assert!(matches!(r.unqualified(), CType::Float(FloatKind::Float)), "int + float -> float");
+        assert!(
+            matches!(r.unqualified(), CType::Float(FloatKind::Float)),
+            "int + float -> float"
+        );
     }
 
     #[test]
     fn test_uac_float_plus_double() {
         let r = usual_arithmetic_conversions(&mk_float(), &mk_double(), &x86_64());
-        assert!(matches!(r.unqualified(), CType::Float(FloatKind::Double)), "float + double -> double");
+        assert!(
+            matches!(r.unqualified(), CType::Float(FloatKind::Double)),
+            "float + double -> double"
+        );
     }
 
     #[test]
     fn test_uac_double_plus_long_double() {
         let r = usual_arithmetic_conversions(&mk_double(), &mk_ldouble(), &x86_64());
-        assert!(matches!(r.unqualified(), CType::Float(FloatKind::LongDouble)));
+        assert!(matches!(
+            r.unqualified(),
+            CType::Float(FloatKind::LongDouble)
+        ));
     }
 
     #[test]
     fn test_uac_int_plus_long() {
         let r = usual_arithmetic_conversions(&mk_int(), &mk_long(), &x86_64());
-        assert!(matches!(r.unqualified(), CType::Integer(IntegerKind::Long)), "int + long -> long");
+        assert!(
+            matches!(r.unqualified(), CType::Integer(IntegerKind::Long)),
+            "int + long -> long"
+        );
     }
 
     #[test]
@@ -1121,15 +1233,19 @@ mod tests {
     #[test]
     fn test_uac_long_plus_uint_x86_64() {
         let r = usual_arithmetic_conversions(&mk_long(), &mk_uint(), &x86_64());
-        assert!(matches!(r.unqualified(), CType::Integer(IntegerKind::Long)),
-            "long + unsigned int on x86-64 -> long");
+        assert!(
+            matches!(r.unqualified(), CType::Integer(IntegerKind::Long)),
+            "long + unsigned int on x86-64 -> long"
+        );
     }
 
     #[test]
     fn test_uac_long_plus_uint_i686() {
         let r = usual_arithmetic_conversions(&mk_long(), &mk_uint(), &i686());
-        assert!(matches!(r.unqualified(), CType::Integer(IntegerKind::UnsignedLong)),
-            "long + unsigned int on i686 -> unsigned long");
+        assert!(
+            matches!(r.unqualified(), CType::Integer(IntegerKind::UnsignedLong)),
+            "long + unsigned int on i686 -> unsigned long"
+        );
     }
 
     #[test]
@@ -1151,17 +1267,26 @@ mod tests {
     #[test]
     fn test_dap_float_to_double() {
         let r = default_argument_promotions(&mk_float(), &x86_64());
-        assert!(matches!(r.unqualified(), CType::Float(FloatKind::Double)), "float -> double");
+        assert!(
+            matches!(r.unqualified(), CType::Float(FloatKind::Double)),
+            "float -> double"
+        );
     }
 
     #[test]
     fn test_dap_char_to_int() {
-        assert!(is_int(&default_argument_promotions(&mk_char(), &x86_64())), "char -> int");
+        assert!(
+            is_int(&default_argument_promotions(&mk_char(), &x86_64())),
+            "char -> int"
+        );
     }
 
     #[test]
     fn test_dap_int_unchanged() {
-        assert!(is_int(&default_argument_promotions(&mk_int(), &x86_64())), "int stays int");
+        assert!(
+            is_int(&default_argument_promotions(&mk_int(), &x86_64())),
+            "int stays int"
+        );
     }
 
     #[test]
@@ -1183,8 +1308,10 @@ mod tests {
     fn test_array_decay_fixed() {
         let r = array_to_pointer_decay(&mk_int_array(10));
         match r.unqualified() {
-            CType::Pointer { pointee, .. } =>
-                assert!(matches!(pointee.unqualified(), CType::Integer(IntegerKind::Int))),
+            CType::Pointer { pointee, .. } => assert!(matches!(
+                pointee.unqualified(),
+                CType::Integer(IntegerKind::Int)
+            )),
             _ => panic!("Expected pointer from array decay"),
         }
     }
@@ -1193,8 +1320,10 @@ mod tests {
     fn test_array_decay_incomplete() {
         let r = array_to_pointer_decay(&mk_char_array_incomplete());
         match r.unqualified() {
-            CType::Pointer { pointee, .. } =>
-                assert!(matches!(pointee.unqualified(), CType::Integer(IntegerKind::Char))),
+            CType::Pointer { pointee, .. } => assert!(matches!(
+                pointee.unqualified(),
+                CType::Integer(IntegerKind::Char)
+            )),
             _ => panic!("Expected pointer from incomplete array decay"),
         }
     }
@@ -1203,8 +1332,13 @@ mod tests {
     fn test_array_decay_2d() {
         let r = array_to_pointer_decay(&mk_int_array_2d(2, 3));
         match r.unqualified() {
-            CType::Pointer { pointee, .. } =>
-                assert!(matches!(pointee.unqualified(), CType::Array { size: ArraySize::Fixed(3), .. })),
+            CType::Pointer { pointee, .. } => assert!(matches!(
+                pointee.unqualified(),
+                CType::Array {
+                    size: ArraySize::Fixed(3),
+                    ..
+                }
+            )),
             _ => panic!("Expected pointer to array from 2D array decay"),
         }
     }
@@ -1222,8 +1356,9 @@ mod tests {
     fn test_function_decay() {
         let r = function_to_pointer_decay(&mk_fn_int_to_int());
         match r.unqualified() {
-            CType::Pointer { pointee, .. } =>
-                assert!(matches!(pointee.as_ref(), CType::Function(_))),
+            CType::Pointer { pointee, .. } => {
+                assert!(matches!(pointee.as_ref(), CType::Function(_)))
+            }
             _ => panic!("Expected pointer to function"),
         }
     }
@@ -1305,7 +1440,10 @@ mod tests {
 
     #[test]
     fn test_qual_remove_const_fail() {
-        assert!(!qualification_conversion(&mk_const_int_ptr(), &mk_int_ptr()));
+        assert!(!qualification_conversion(
+            &mk_const_int_ptr(),
+            &mk_int_ptr()
+        ));
     }
 
     #[test]
@@ -1317,7 +1455,10 @@ mod tests {
     fn test_qual_non_pointer_add_const() {
         let to = CType::Qualified {
             base: Box::new(mk_int()),
-            qualifiers: TypeQualifiers { is_const: true, ..TypeQualifiers::default() },
+            qualifiers: TypeQualifiers {
+                is_const: true,
+                ..TypeQualifiers::default()
+            },
         };
         assert!(qualification_conversion(&mk_int(), &to));
     }
@@ -1436,7 +1577,12 @@ mod tests {
             base: crate::frontend::parser::ast::NumericBase::Decimal,
             span: dummy_span(),
         };
-        let result = insert_implicit_cast(expr, &mk_int(), &mk_float(), ImplicitCastKind::IntegerToFloat);
+        let result = insert_implicit_cast(
+            expr,
+            &mk_int(),
+            &mk_float(),
+            ImplicitCastKind::IntegerToFloat,
+        );
         assert!(matches!(result, Expression::Paren { .. }));
     }
 
@@ -1446,8 +1592,14 @@ mod tests {
 
     #[test]
     fn test_cast_kind_eq() {
-        assert_eq!(ImplicitCastKind::IntegerPromotion, ImplicitCastKind::IntegerPromotion);
-        assert_ne!(ImplicitCastKind::IntegerPromotion, ImplicitCastKind::FloatToInteger);
+        assert_eq!(
+            ImplicitCastKind::IntegerPromotion,
+            ImplicitCastKind::IntegerPromotion
+        );
+        assert_ne!(
+            ImplicitCastKind::IntegerPromotion,
+            ImplicitCastKind::FloatToInteger
+        );
     }
 
     #[test]
@@ -1461,7 +1613,9 @@ mod tests {
         };
         assert!(matches!(valid, ConversionResult::Valid { .. }));
 
-        let invalid = ConversionResult::Invalid { reason: "r".to_string() };
+        let invalid = ConversionResult::Invalid {
+            reason: "r".to_string(),
+        };
         assert!(matches!(invalid, ConversionResult::Invalid { .. }));
     }
 

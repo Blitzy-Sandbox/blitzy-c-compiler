@@ -463,10 +463,7 @@ impl DebugInfoGenerator {
     // -----------------------------------------------------------------------
 
     /// Builds the `info::CompileUnitInfo` structure from our public API type.
-    fn build_compile_unit_info(
-        &self,
-        cu_info: &CompilationUnitDebugInfo,
-    ) -> info::CompileUnitInfo {
+    fn build_compile_unit_info(&self, cu_info: &CompilationUnitDebugInfo) -> info::CompileUnitInfo {
         info::CompileUnitInfo {
             file_name: cu_info.source_file.clone(),
             comp_dir: cu_info.comp_dir.clone(),
@@ -538,10 +535,7 @@ impl DebugInfoGenerator {
     /// This scans all functions, parameters, variables, and return types to
     /// collect unique type references, then constructs the corresponding
     /// DWARF type DIEs.
-    fn build_type_dies(
-        &self,
-        cu_info: &CompilationUnitDebugInfo,
-    ) -> Vec<info::DebugInfoEntry> {
+    fn build_type_dies(&self, cu_info: &CompilationUnitDebugInfo) -> Vec<info::DebugInfoEntry> {
         let mut type_dies = Vec::new();
 
         // Collect all unique base types referenced in the CU.
@@ -549,8 +543,7 @@ impl DebugInfoGenerator {
         self.collect_base_types_from_cu(cu_info, &mut seen_base_types);
 
         for kind in &seen_base_types {
-            let (name, byte_size, encoding) =
-                base_type_dwarf_params(*kind, self.address_size);
+            let (name, byte_size, encoding) = base_type_dwarf_params(*kind, self.address_size);
             type_dies.push(info::build_base_type_die(name, byte_size, encoding));
         }
 
@@ -558,7 +551,11 @@ impl DebugInfoGenerator {
         // referenced in the CU, and emit DIEs for them.
         let mut seen_composite_keys: Vec<String> = Vec::new();
         let mut composite_refs: Vec<DebugTypeRef> = Vec::new();
-        self.collect_composite_types_from_cu(cu_info, &mut seen_composite_keys, &mut composite_refs);
+        self.collect_composite_types_from_cu(
+            cu_info,
+            &mut seen_composite_keys,
+            &mut composite_refs,
+        );
 
         for type_ref in &composite_refs {
             match type_ref {
@@ -575,8 +572,7 @@ impl DebugInfoGenerator {
                     // Find struct info from CU if available.
                     let members = self.find_struct_members(cu_info, name);
                     type_dies.push(info::build_structure_type_die(
-                        name,
-                        0, // byte_size placeholder
+                        name, 0, // byte_size placeholder
                         members,
                     ));
                 }
@@ -652,7 +648,10 @@ impl DebugInfoGenerator {
                     refs.push(type_ref.clone());
                 }
             }
-            DebugTypeRef::Function { return_type, param_types } => {
+            DebugTypeRef::Function {
+                return_type,
+                param_types,
+            } => {
                 self.collect_composite_from_type_ref(return_type, keys, refs);
                 for pt in param_types {
                     self.collect_composite_from_type_ref(pt, keys, refs);
@@ -672,13 +671,17 @@ impl DebugInfoGenerator {
         // Look for struct definitions that were passed through.
         for def in &cu_info.struct_defs {
             if def.name == struct_name {
-                return def.members.iter().map(|m| {
-                    info::MemberDebugInfo {
-                        name: m.name.clone(),
-                        type_offset: 0, // placeholder — correct offset requires full type table
-                        byte_offset: m.byte_offset as u32,
-                    }
-                }).collect();
+                return def
+                    .members
+                    .iter()
+                    .map(|m| {
+                        info::MemberDebugInfo {
+                            name: m.name.clone(),
+                            type_offset: 0, // placeholder — correct offset requires full type table
+                            byte_offset: m.byte_offset as u32,
+                        }
+                    })
+                    .collect();
             }
         }
         Vec::new()
@@ -798,9 +801,8 @@ impl DebugInfoGenerator {
                     ),
                     callee_saved_regs: func.frame_info.saved_registers.clone(),
                     prologue_size: estimate_prologue_size(self.architecture),
-                    epilogue_offset: code_size.saturating_sub(
-                        estimate_epilogue_size(self.architecture),
-                    ),
+                    epilogue_offset: code_size
+                        .saturating_sub(estimate_epilogue_size(self.architecture)),
                 }
             })
             .collect()
@@ -908,9 +910,11 @@ fn generate_location_lists(cu_info: &CompilationUnitDebugInfo, address_size: u8)
                     end_offset: var.scope_high_pc.saturating_sub(func.low_pc),
                     expression: Vec::new(), // Empty expression — placeholder for actual location
                 };
-                loc_bytes.extend_from_slice(
-                    &dwarf::serialize_location_list(&[entry], func.low_pc, address_size),
-                );
+                loc_bytes.extend_from_slice(&dwarf::serialize_location_list(
+                    &[entry],
+                    func.low_pc,
+                    address_size,
+                ));
             }
         }
     }
@@ -923,9 +927,7 @@ fn generate_location_lists(cu_info: &CompilationUnitDebugInfo, address_size: u8)
                 end_offset: var.scope_high_pc,
                 expression: Vec::new(),
             };
-            loc_bytes.extend_from_slice(
-                &dwarf::serialize_location_list(&[entry], 0, address_size),
-            );
+            loc_bytes.extend_from_slice(&dwarf::serialize_location_list(&[entry], 0, address_size));
         }
     }
 
@@ -986,10 +988,10 @@ fn is_frame_pointer_register(reg: u16, arch: Architecture) -> bool {
 /// is not available.
 fn estimate_prologue_size(arch: Architecture) -> u64 {
     match arch {
-        Architecture::X86_64 => 4,   // push rbp; mov rbp, rsp
-        Architecture::I686 => 3,     // push ebp; mov ebp, esp
-        Architecture::Aarch64 => 8,  // stp x29, x30, [sp, #-N]!; mov x29, sp
-        Architecture::Riscv64 => 8,  // addi sp, sp, -N; sd ra, offset(sp)
+        Architecture::X86_64 => 4,  // push rbp; mov rbp, rsp
+        Architecture::I686 => 3,    // push ebp; mov ebp, esp
+        Architecture::Aarch64 => 8, // stp x29, x30, [sp, #-N]!; mov x29, sp
+        Architecture::Riscv64 => 8, // addi sp, sp, -N; sd ra, offset(sp)
     }
 }
 
@@ -997,10 +999,10 @@ fn estimate_prologue_size(arch: Architecture) -> u64 {
 /// architecture.
 fn estimate_epilogue_size(arch: Architecture) -> u64 {
     match arch {
-        Architecture::X86_64 => 2,   // pop rbp; ret
-        Architecture::I686 => 2,     // pop ebp; ret
-        Architecture::Aarch64 => 8,  // ldp x29, x30, [sp], #N; ret
-        Architecture::Riscv64 => 8,  // ld ra, offset(sp); addi sp, sp, N; ret
+        Architecture::X86_64 => 2,  // pop rbp; ret
+        Architecture::I686 => 2,    // pop ebp; ret
+        Architecture::Aarch64 => 8, // ldp x29, x30, [sp], #N; ret
+        Architecture::Riscv64 => 8, // ld ra, offset(sp); addi sp, sp, N; ret
     }
 }
 
@@ -1122,18 +1124,30 @@ mod tests {
 
     #[test]
     fn test_min_instruction_length_x86() {
-        assert_eq!(min_instruction_length_for_architecture(&Architecture::X86_64), 1);
-        assert_eq!(min_instruction_length_for_architecture(&Architecture::I686), 1);
+        assert_eq!(
+            min_instruction_length_for_architecture(&Architecture::X86_64),
+            1
+        );
+        assert_eq!(
+            min_instruction_length_for_architecture(&Architecture::I686),
+            1
+        );
     }
 
     #[test]
     fn test_min_instruction_length_aarch64() {
-        assert_eq!(min_instruction_length_for_architecture(&Architecture::Aarch64), 4);
+        assert_eq!(
+            min_instruction_length_for_architecture(&Architecture::Aarch64),
+            4
+        );
     }
 
     #[test]
     fn test_min_instruction_length_riscv64() {
-        assert_eq!(min_instruction_length_for_architecture(&Architecture::Riscv64), 2);
+        assert_eq!(
+            min_instruction_length_for_architecture(&Architecture::Riscv64),
+            2
+        );
     }
 
     #[test]
@@ -1283,18 +1297,21 @@ mod tests {
         let sections = gen.generate(&cu);
 
         // .debug_info should be non-empty and start with a valid CU header.
-        assert!(!sections.debug_info.is_empty(), "debug_info should not be empty");
+        assert!(
+            !sections.debug_info.is_empty(),
+            "debug_info should not be empty"
+        );
         // DWARF version 4 is at bytes [4..6] of .debug_info (after 4-byte unit_length).
         if sections.debug_info.len() >= 6 {
-            let version = u16::from_le_bytes([
-                sections.debug_info[4],
-                sections.debug_info[5],
-            ]);
+            let version = u16::from_le_bytes([sections.debug_info[4], sections.debug_info[5]]);
             assert_eq!(version, 4, "DWARF version should be 4");
         }
 
         // .debug_abbrev should end with 0x00 null terminator.
-        assert!(!sections.debug_abbrev.is_empty(), "debug_abbrev should not be empty");
+        assert!(
+            !sections.debug_abbrev.is_empty(),
+            "debug_abbrev should not be empty"
+        );
         assert_eq!(
             *sections.debug_abbrev.last().unwrap(),
             0x00,
@@ -1302,7 +1319,10 @@ mod tests {
         );
 
         // .debug_str should contain the producer string.
-        assert!(!sections.debug_str.is_empty(), "debug_str should not be empty");
+        assert!(
+            !sections.debug_str.is_empty(),
+            "debug_str should not be empty"
+        );
         let str_content = String::from_utf8_lossy(&sections.debug_str);
         assert!(
             str_content.contains("bcc"),
@@ -1310,13 +1330,22 @@ mod tests {
         );
 
         // .debug_line should be non-empty.
-        assert!(!sections.debug_line.is_empty(), "debug_line should not be empty");
+        assert!(
+            !sections.debug_line.is_empty(),
+            "debug_line should not be empty"
+        );
 
         // .debug_aranges should be non-empty.
-        assert!(!sections.debug_aranges.is_empty(), "debug_aranges should not be empty");
+        assert!(
+            !sections.debug_aranges.is_empty(),
+            "debug_aranges should not be empty"
+        );
 
         // .debug_frame should be non-empty (at least CIE).
-        assert!(!sections.debug_frame.is_empty(), "debug_frame should not be empty");
+        assert!(
+            !sections.debug_frame.is_empty(),
+            "debug_frame should not be empty"
+        );
     }
 
     #[test]
@@ -1335,10 +1364,7 @@ mod tests {
 
         // DWARF version should be 4.
         if sections.debug_info.len() >= 6 {
-            let version = u16::from_le_bytes([
-                sections.debug_info[4],
-                sections.debug_info[5],
-            ]);
+            let version = u16::from_le_bytes([sections.debug_info[4], sections.debug_info[5]]);
             assert_eq!(version, 4);
         }
     }
@@ -1357,8 +1383,14 @@ mod tests {
         // .debug_info layout: [0..4] unit_length, [4..6] version,
         //                     [6..10] abbrev_offset, [10] address_size
         if sections_32.debug_info.len() > 10 && sections_64.debug_info.len() > 10 {
-            assert_eq!(sections_32.debug_info[10], 4, "i686 address size should be 4");
-            assert_eq!(sections_64.debug_info[10], 8, "x86-64 address size should be 8");
+            assert_eq!(
+                sections_32.debug_info[10], 4,
+                "i686 address size should be 4"
+            );
+            assert_eq!(
+                sections_64.debug_info[10], 8,
+                "x86-64 address size should be 8"
+            );
         }
 
         // .debug_aranges should differ in address field widths.

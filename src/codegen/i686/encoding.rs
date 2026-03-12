@@ -19,8 +19,8 @@
 
 use std::collections::HashMap;
 
-use crate::codegen::{CodeGenError, MachineInstr, MachineOperand, RelocationType};
 use crate::codegen::regalloc::PhysReg;
+use crate::codegen::{CodeGenError, MachineInstr, MachineOperand, RelocationType};
 
 // ===========================================================================
 // Register encoding constants (3-bit values for ModR/M and SIB fields)
@@ -411,21 +411,27 @@ fn encode_memory_operand_sib(
 fn extract_reg(op: &MachineOperand) -> Result<u8, CodeGenError> {
     match op {
         MachineOperand::Register(pr) => Ok(phys_reg_to_encoding(*pr)),
-        _ => Err(CodeGenError::EncodingError("expected register operand".into())),
+        _ => Err(CodeGenError::EncodingError(
+            "expected register operand".into(),
+        )),
     }
 }
 
 fn extract_imm(op: &MachineOperand) -> Result<i64, CodeGenError> {
     match op {
         MachineOperand::Immediate(v) => Ok(*v),
-        _ => Err(CodeGenError::EncodingError("expected immediate operand".into())),
+        _ => Err(CodeGenError::EncodingError(
+            "expected immediate operand".into(),
+        )),
     }
 }
 
 fn extract_mem(op: &MachineOperand) -> Result<(u8, i32), CodeGenError> {
     match op {
         MachineOperand::Memory { base, offset } => Ok((phys_reg_to_encoding(*base), *offset)),
-        _ => Err(CodeGenError::EncodingError("expected memory operand".into())),
+        _ => Err(CodeGenError::EncodingError(
+            "expected memory operand".into(),
+        )),
     }
 }
 
@@ -439,7 +445,9 @@ fn extract_label(op: &MachineOperand) -> Result<u32, CodeGenError> {
 fn extract_symbol(op: &MachineOperand) -> Result<&str, CodeGenError> {
     match op {
         MachineOperand::Symbol(name) => Ok(name.as_str()),
-        _ => Err(CodeGenError::EncodingError("expected symbol operand".into())),
+        _ => Err(CodeGenError::EncodingError(
+            "expected symbol operand".into(),
+        )),
     }
 }
 
@@ -453,7 +461,7 @@ fn extract_symbol(op: &MachineOperand) -> Result<&str, CodeGenError> {
 fn alu_params(op: I686Opcode) -> (u8, u8, u8) {
     match op {
         I686Opcode::Add => (0x00, 0, 0x05),
-        I686Opcode::Or  => (0x08, 1, 0x0D),
+        I686Opcode::Or => (0x08, 1, 0x0D),
         I686Opcode::Adc => (0x10, 2, 0x15),
         I686Opcode::Sbb => (0x18, 3, 0x1D),
         I686Opcode::And => (0x20, 4, 0x25),
@@ -473,7 +481,9 @@ fn encode_alu(
     let (base, ext, acc_imm) = alu_params(op);
 
     if operands.len() < 2 {
-        return Err(CodeGenError::EncodingError("ALU requires 2 operands".into()));
+        return Err(CodeGenError::EncodingError(
+            "ALU requires 2 operands".into(),
+        ));
     }
 
     match (&operands[0], &operands[1]) {
@@ -528,9 +538,9 @@ fn encode_alu(
             }
         }
         _ => {
-            return Err(CodeGenError::EncodingError(
-                format!("invalid ALU operand combination"),
-            ));
+            return Err(CodeGenError::EncodingError(format!(
+                "invalid ALU operand combination"
+            )));
         }
     }
     Ok(())
@@ -559,7 +569,9 @@ fn encode_shift(
     let ext = shift_extension(op);
 
     if operands.len() < 2 {
-        return Err(CodeGenError::EncodingError("shift requires 2 operands".into()));
+        return Err(CodeGenError::EncodingError(
+            "shift requires 2 operands".into(),
+        ));
     }
 
     let d = extract_reg(&operands[0])?;
@@ -584,7 +596,9 @@ fn encode_shift(
             buf.push(encode_modrm(0b11, ext, d));
         }
         _ => {
-            return Err(CodeGenError::EncodingError("invalid shift count operand".into()));
+            return Err(CodeGenError::EncodingError(
+                "invalid shift count operand".into(),
+            ));
         }
     }
     Ok(())
@@ -597,7 +611,9 @@ fn encode_double_shift(
     operands: &[MachineOperand],
 ) -> Result<(), CodeGenError> {
     if operands.len() < 3 {
-        return Err(CodeGenError::EncodingError("SHLD/SHRD requires 3 operands".into()));
+        return Err(CodeGenError::EncodingError(
+            "SHLD/SHRD requires 3 operands".into(),
+        ));
     }
     let d = extract_reg(&operands[0])?;
     let s = extract_reg(&operands[1])?;
@@ -623,7 +639,9 @@ fn encode_double_shift(
             buf.push(encode_modrm(0b11, s, d));
         }
         _ => {
-            return Err(CodeGenError::EncodingError("invalid SHLD/SHRD count operand".into()));
+            return Err(CodeGenError::EncodingError(
+                "invalid SHLD/SHRD count operand".into(),
+            ));
         }
     }
     Ok(())
@@ -634,12 +652,11 @@ fn encode_double_shift(
 // ===========================================================================
 
 /// Encode IMUL instruction (1, 2, or 3 operand forms).
-fn encode_imul(
-    buf: &mut Vec<u8>,
-    operands: &[MachineOperand],
-) -> Result<(), CodeGenError> {
+fn encode_imul(buf: &mut Vec<u8>, operands: &[MachineOperand]) -> Result<(), CodeGenError> {
     if operands.is_empty() {
-        return Err(CodeGenError::EncodingError("IMUL requires at least 1 operand".into()));
+        return Err(CodeGenError::EncodingError(
+            "IMUL requires at least 1 operand".into(),
+        ));
     }
 
     if operands.len() == 1 {
@@ -677,7 +694,9 @@ fn encode_imul(
                 }
             }
             _ => {
-                return Err(CodeGenError::EncodingError("invalid IMUL source operand".into()));
+                return Err(CodeGenError::EncodingError(
+                    "invalid IMUL source operand".into(),
+                ));
             }
         }
     } else {
@@ -698,7 +717,9 @@ fn encode_imul(
                 encode_memory_operand(buf, d, phys_reg_to_encoding(*base), *offset);
             }
             _ => {
-                return Err(CodeGenError::EncodingError("invalid IMUL source operand".into()));
+                return Err(CodeGenError::EncodingError(
+                    "invalid IMUL source operand".into(),
+                ));
             }
         }
         if fits_in_imm8(imm_val) {
@@ -717,7 +738,9 @@ fn encode_mov_full(
     operands: &[MachineOperand],
 ) -> Result<(), CodeGenError> {
     if operands.len() < 2 {
-        return Err(CodeGenError::EncodingError("MOV requires 2 operands".into()));
+        return Err(CodeGenError::EncodingError(
+            "MOV requires 2 operands".into(),
+        ));
     }
 
     match (&operands[0], &operands[1]) {
@@ -766,21 +789,21 @@ fn encode_mov_full(
             });
         }
         _ => {
-            return Err(CodeGenError::EncodingError(
-                format!("invalid MOV operand combination: dst={:?}, src={:?}", operands[0], operands[1])
-            ));
+            return Err(CodeGenError::EncodingError(format!(
+                "invalid MOV operand combination: dst={:?}, src={:?}",
+                operands[0], operands[1]
+            )));
         }
     }
     Ok(())
 }
 
 /// Encode 8-bit MOV.
-fn encode_mov8(
-    buf: &mut Vec<u8>,
-    operands: &[MachineOperand],
-) -> Result<(), CodeGenError> {
+fn encode_mov8(buf: &mut Vec<u8>, operands: &[MachineOperand]) -> Result<(), CodeGenError> {
     if operands.len() < 2 {
-        return Err(CodeGenError::EncodingError("MOV8 requires 2 operands".into()));
+        return Err(CodeGenError::EncodingError(
+            "MOV8 requires 2 operands".into(),
+        ));
     }
     match (&operands[0], &operands[1]) {
         (MachineOperand::Register(dst), MachineOperand::Register(src)) => {
@@ -800,7 +823,9 @@ fn encode_mov8(
             encode_memory_operand(buf, d, phys_reg_to_encoding(*base), *offset);
         }
         _ => {
-            return Err(CodeGenError::EncodingError("invalid MOV8 operand combination".into()));
+            return Err(CodeGenError::EncodingError(
+                "invalid MOV8 operand combination".into(),
+            ));
         }
     }
     Ok(())
@@ -813,13 +838,15 @@ fn encode_movx(
     operands: &[MachineOperand],
 ) -> Result<(), CodeGenError> {
     if operands.len() < 2 {
-        return Err(CodeGenError::EncodingError("MOVZX/MOVSX requires 2 operands".into()));
+        return Err(CodeGenError::EncodingError(
+            "MOVZX/MOVSX requires 2 operands".into(),
+        ));
     }
 
     let opcode2 = match op {
-        I686Opcode::Movzx8  => 0xB6u8,
+        I686Opcode::Movzx8 => 0xB6u8,
         I686Opcode::Movzx16 => 0xB7,
-        I686Opcode::Movsx8  => 0xBE,
+        I686Opcode::Movsx8 => 0xBE,
         I686Opcode::Movsx16 => 0xBF,
         _ => unreachable!(),
     };
@@ -837,19 +864,20 @@ fn encode_movx(
             encode_memory_operand(buf, d, phys_reg_to_encoding(*base), *offset);
         }
         _ => {
-            return Err(CodeGenError::EncodingError("invalid MOVZX/MOVSX source".into()));
+            return Err(CodeGenError::EncodingError(
+                "invalid MOVZX/MOVSX source".into(),
+            ));
         }
     }
     Ok(())
 }
 
 /// Encode LEA instruction.
-fn encode_lea(
-    buf: &mut Vec<u8>,
-    operands: &[MachineOperand],
-) -> Result<(), CodeGenError> {
+fn encode_lea(buf: &mut Vec<u8>, operands: &[MachineOperand]) -> Result<(), CodeGenError> {
     if operands.len() < 2 {
-        return Err(CodeGenError::EncodingError("LEA requires 2 operands".into()));
+        return Err(CodeGenError::EncodingError(
+            "LEA requires 2 operands".into(),
+        ));
     }
     let d = extract_reg(&operands[0])?;
     let (base_enc, disp) = extract_mem(&operands[1])?;
@@ -859,12 +887,11 @@ fn encode_lea(
 }
 
 /// Encode PUSH instruction.
-fn encode_push(
-    buf: &mut Vec<u8>,
-    operands: &[MachineOperand],
-) -> Result<(), CodeGenError> {
+fn encode_push(buf: &mut Vec<u8>, operands: &[MachineOperand]) -> Result<(), CodeGenError> {
     if operands.is_empty() {
-        return Err(CodeGenError::EncodingError("PUSH requires 1 operand".into()));
+        return Err(CodeGenError::EncodingError(
+            "PUSH requires 1 operand".into(),
+        ));
     }
     match &operands[0] {
         MachineOperand::Register(r) => {
@@ -892,10 +919,7 @@ fn encode_push(
 }
 
 /// Encode POP instruction.
-fn encode_pop(
-    buf: &mut Vec<u8>,
-    operands: &[MachineOperand],
-) -> Result<(), CodeGenError> {
+fn encode_pop(buf: &mut Vec<u8>, operands: &[MachineOperand]) -> Result<(), CodeGenError> {
     if operands.is_empty() {
         return Err(CodeGenError::EncodingError("POP requires 1 operand".into()));
     }
@@ -909,12 +933,11 @@ fn encode_pop(
 // ===========================================================================
 
 /// Encode TEST instruction.
-fn encode_test(
-    buf: &mut Vec<u8>,
-    operands: &[MachineOperand],
-) -> Result<(), CodeGenError> {
+fn encode_test(buf: &mut Vec<u8>, operands: &[MachineOperand]) -> Result<(), CodeGenError> {
     if operands.len() < 2 {
-        return Err(CodeGenError::EncodingError("TEST requires 2 operands".into()));
+        return Err(CodeGenError::EncodingError(
+            "TEST requires 2 operands".into(),
+        ));
     }
     match (&operands[0], &operands[1]) {
         (MachineOperand::Register(dst), MachineOperand::Register(src)) => {
@@ -941,7 +964,9 @@ fn encode_test(
             encode_memory_operand(buf, s, phys_reg_to_encoding(*base), *offset);
         }
         _ => {
-            return Err(CodeGenError::EncodingError("invalid TEST operand combination".into()));
+            return Err(CodeGenError::EncodingError(
+                "invalid TEST operand combination".into(),
+            ));
         }
     }
     Ok(())
@@ -972,12 +997,11 @@ fn encode_jmp(
 }
 
 /// Encode an indirect JMP through a register.
-fn encode_jmp_indirect(
-    buf: &mut Vec<u8>,
-    operands: &[MachineOperand],
-) -> Result<(), CodeGenError> {
+fn encode_jmp_indirect(buf: &mut Vec<u8>, operands: &[MachineOperand]) -> Result<(), CodeGenError> {
     if operands.is_empty() {
-        return Err(CodeGenError::EncodingError("JMP indirect requires 1 operand".into()));
+        return Err(CodeGenError::EncodingError(
+            "JMP indirect requires 1 operand".into(),
+        ));
     }
     let r = extract_reg(&operands[0])?;
     buf.push(0xFF);
@@ -992,7 +1016,9 @@ fn encode_jcc(
     fixups: &mut Vec<BranchFixup>,
 ) -> Result<(), CodeGenError> {
     if operands.len() < 2 {
-        return Err(CodeGenError::EncodingError("Jcc requires 2 operands".into()));
+        return Err(CodeGenError::EncodingError(
+            "Jcc requires 2 operands".into(),
+        ));
     }
     let cc = extract_imm(&operands[0])? as u8;
     let label = extract_label(&operands[1])?;
@@ -1016,7 +1042,9 @@ fn encode_call_full(
     fixups: &mut Vec<BranchFixup>,
 ) -> Result<(), CodeGenError> {
     if operands.is_empty() {
-        return Err(CodeGenError::EncodingError("CALL requires 1 operand".into()));
+        return Err(CodeGenError::EncodingError(
+            "CALL requires 1 operand".into(),
+        ));
     }
     match &operands[0] {
         MachineOperand::Symbol(name) => {
@@ -1052,7 +1080,9 @@ fn encode_call_indirect(
     operands: &[MachineOperand],
 ) -> Result<(), CodeGenError> {
     if operands.is_empty() {
-        return Err(CodeGenError::EncodingError("CALL indirect requires 1 operand".into()));
+        return Err(CodeGenError::EncodingError(
+            "CALL indirect requires 1 operand".into(),
+        ));
     }
     let r = extract_reg(&operands[0])?;
     buf.push(0xFF);
@@ -1061,12 +1091,11 @@ fn encode_call_indirect(
 }
 
 /// Encode SETcc (set byte on condition).
-fn encode_setcc(
-    buf: &mut Vec<u8>,
-    operands: &[MachineOperand],
-) -> Result<(), CodeGenError> {
+fn encode_setcc(buf: &mut Vec<u8>, operands: &[MachineOperand]) -> Result<(), CodeGenError> {
     if operands.len() < 2 {
-        return Err(CodeGenError::EncodingError("SETcc requires 2 operands".into()));
+        return Err(CodeGenError::EncodingError(
+            "SETcc requires 2 operands".into(),
+        ));
     }
     let cc = extract_imm(&operands[0])? as u8;
     let d = extract_reg(&operands[1])?;
@@ -1168,7 +1197,9 @@ fn encode_sse_op(
     operands: &[MachineOperand],
 ) -> Result<(), CodeGenError> {
     if operands.len() < 2 {
-        return Err(CodeGenError::EncodingError("SSE instruction requires 2 operands".into()));
+        return Err(CodeGenError::EncodingError(
+            "SSE instruction requires 2 operands".into(),
+        ));
     }
 
     if prefix != 0 {
@@ -1192,7 +1223,9 @@ fn encode_sse_op(
             encode_memory_operand(buf, s, phys_reg_to_encoding(*base), *offset);
         }
         _ => {
-            return Err(CodeGenError::EncodingError("invalid SSE operand combination".into()));
+            return Err(CodeGenError::EncodingError(
+                "invalid SSE operand combination".into(),
+            ));
         }
     }
     Ok(())
@@ -1201,16 +1234,16 @@ fn encode_sse_op(
 /// Returns (prefix, opcode2) for SSE instructions.
 fn sse_params(op: I686Opcode) -> (u8, u8) {
     match op {
-        I686Opcode::Addss    => (0xF3, 0x58),
-        I686Opcode::Addsd    => (0xF2, 0x58),
-        I686Opcode::Subss    => (0xF3, 0x5C),
-        I686Opcode::Subsd    => (0xF2, 0x5C),
-        I686Opcode::Mulss    => (0xF3, 0x59),
-        I686Opcode::Mulsd    => (0xF2, 0x59),
-        I686Opcode::Divss    => (0xF3, 0x5E),
-        I686Opcode::Divsd    => (0xF2, 0x5E),
-        I686Opcode::Ucomiss  => (0x00, 0x2E), // no prefix
-        I686Opcode::Ucomisd  => (0x66, 0x2E),
+        I686Opcode::Addss => (0xF3, 0x58),
+        I686Opcode::Addsd => (0xF2, 0x58),
+        I686Opcode::Subss => (0xF3, 0x5C),
+        I686Opcode::Subsd => (0xF2, 0x5C),
+        I686Opcode::Mulss => (0xF3, 0x59),
+        I686Opcode::Mulsd => (0xF2, 0x59),
+        I686Opcode::Divss => (0xF3, 0x5E),
+        I686Opcode::Divsd => (0xF2, 0x5E),
+        I686Opcode::Ucomiss => (0x00, 0x2E), // no prefix
+        I686Opcode::Ucomisd => (0x66, 0x2E),
         I686Opcode::Cvtsi2ss => (0xF3, 0x2A),
         I686Opcode::Cvtsi2sd => (0xF2, 0x2A),
         I686Opcode::Cvttss2si => (0xF3, 0x2C),
@@ -1222,12 +1255,11 @@ fn sse_params(op: I686Opcode) -> (u8, u8) {
 }
 
 /// Encode MOVSS instruction (has distinct load/store opcodes).
-fn encode_movss(
-    buf: &mut Vec<u8>,
-    operands: &[MachineOperand],
-) -> Result<(), CodeGenError> {
+fn encode_movss(buf: &mut Vec<u8>, operands: &[MachineOperand]) -> Result<(), CodeGenError> {
     if operands.len() < 2 {
-        return Err(CodeGenError::EncodingError("MOVSS requires 2 operands".into()));
+        return Err(CodeGenError::EncodingError(
+            "MOVSS requires 2 operands".into(),
+        ));
     }
     match (&operands[0], &operands[1]) {
         (MachineOperand::Register(dst), MachineOperand::Register(src)) => {
@@ -1256,19 +1288,20 @@ fn encode_movss(
             encode_memory_operand(buf, s, phys_reg_to_encoding(*base), *offset);
         }
         _ => {
-            return Err(CodeGenError::EncodingError("invalid MOVSS operand combination".into()));
+            return Err(CodeGenError::EncodingError(
+                "invalid MOVSS operand combination".into(),
+            ));
         }
     }
     Ok(())
 }
 
 /// Encode MOVSD instruction (has distinct load/store opcodes).
-fn encode_movsd(
-    buf: &mut Vec<u8>,
-    operands: &[MachineOperand],
-) -> Result<(), CodeGenError> {
+fn encode_movsd(buf: &mut Vec<u8>, operands: &[MachineOperand]) -> Result<(), CodeGenError> {
     if operands.len() < 2 {
-        return Err(CodeGenError::EncodingError("MOVSD requires 2 operands".into()));
+        return Err(CodeGenError::EncodingError(
+            "MOVSD requires 2 operands".into(),
+        ));
     }
     match (&operands[0], &operands[1]) {
         (MachineOperand::Register(dst), MachineOperand::Register(src)) => {
@@ -1297,7 +1330,9 @@ fn encode_movsd(
             encode_memory_operand(buf, s, phys_reg_to_encoding(*base), *offset);
         }
         _ => {
-            return Err(CodeGenError::EncodingError("invalid MOVSD operand combination".into()));
+            return Err(CodeGenError::EncodingError(
+                "invalid MOVSD operand combination".into(),
+            ));
         }
     }
     Ok(())
@@ -1316,9 +1351,14 @@ fn encode_single_instruction(
 ) -> Result<(), CodeGenError> {
     match op {
         // ----- ALU -----
-        I686Opcode::Add | I686Opcode::Sub | I686Opcode::And |
-        I686Opcode::Or  | I686Opcode::Xor | I686Opcode::Cmp |
-        I686Opcode::Adc | I686Opcode::Sbb => {
+        I686Opcode::Add
+        | I686Opcode::Sub
+        | I686Opcode::And
+        | I686Opcode::Or
+        | I686Opcode::Xor
+        | I686Opcode::Cmp
+        | I686Opcode::Adc
+        | I686Opcode::Sbb => {
             encode_alu(&mut output.code, op, operands)?;
         }
 
@@ -1373,8 +1413,7 @@ fn encode_single_instruction(
         I686Opcode::Mov8 => {
             encode_mov8(&mut output.code, operands)?;
         }
-        I686Opcode::Movzx8 | I686Opcode::Movzx16 |
-        I686Opcode::Movsx8 | I686Opcode::Movsx16 => {
+        I686Opcode::Movzx8 | I686Opcode::Movzx16 | I686Opcode::Movsx8 | I686Opcode::Movsx16 => {
             encode_movx(&mut output.code, op, operands)?;
         }
         I686Opcode::Lea => {
@@ -1436,14 +1475,22 @@ fn encode_single_instruction(
         }
 
         // ----- SSE arithmetic and conversion -----
-        I686Opcode::Addss  | I686Opcode::Addsd  |
-        I686Opcode::Subss  | I686Opcode::Subsd  |
-        I686Opcode::Mulss  | I686Opcode::Mulsd  |
-        I686Opcode::Divss  | I686Opcode::Divsd  |
-        I686Opcode::Ucomiss | I686Opcode::Ucomisd |
-        I686Opcode::Cvtsi2ss | I686Opcode::Cvtsi2sd |
-        I686Opcode::Cvttss2si | I686Opcode::Cvttsd2si |
-        I686Opcode::Cvtss2sd | I686Opcode::Cvtsd2ss => {
+        I686Opcode::Addss
+        | I686Opcode::Addsd
+        | I686Opcode::Subss
+        | I686Opcode::Subsd
+        | I686Opcode::Mulss
+        | I686Opcode::Mulsd
+        | I686Opcode::Divss
+        | I686Opcode::Divsd
+        | I686Opcode::Ucomiss
+        | I686Opcode::Ucomisd
+        | I686Opcode::Cvtsi2ss
+        | I686Opcode::Cvtsi2sd
+        | I686Opcode::Cvttss2si
+        | I686Opcode::Cvttsd2si
+        | I686Opcode::Cvtss2sd
+        | I686Opcode::Cvtsd2ss => {
             let (prefix, opcode2) = sse_params(op);
             encode_sse_op(&mut output.code, prefix, opcode2, operands)?;
         }
@@ -2164,7 +2211,10 @@ mod tests {
     fn test_opcode_from_u32() {
         assert_eq!(I686Opcode::from_u32(0), Some(I686Opcode::Label));
         assert_eq!(I686Opcode::from_u32(1), Some(I686Opcode::Add));
-        assert_eq!(I686Opcode::from_u32(I686Opcode::Ret as u32), Some(I686Opcode::Ret));
+        assert_eq!(
+            I686Opcode::from_u32(I686Opcode::Ret as u32),
+            Some(I686Opcode::Ret)
+        );
         assert_eq!(I686Opcode::from_u32(9999), None);
     }
 
@@ -2233,10 +2283,10 @@ mod tests {
     #[test]
     fn test_forward_branch_resolution() {
         let instrs = vec![
-            mi(I686Opcode::Jmp, vec![label(10)]),    // offset 0: E9 rel32
-            mi(I686Opcode::Nop, vec![]),              // offset 5: 90
-            mi(I686Opcode::Nop, vec![]),              // offset 6: 90
-            mi(I686Opcode::Label, vec![label(10)]),   // offset 7: label
+            mi(I686Opcode::Jmp, vec![label(10)]),   // offset 0: E9 rel32
+            mi(I686Opcode::Nop, vec![]),            // offset 5: 90
+            mi(I686Opcode::Nop, vec![]),            // offset 6: 90
+            mi(I686Opcode::Label, vec![label(10)]), // offset 7: label
         ];
         let out = encode_instructions(&instrs).expect("encoding failed");
         assert_eq!(out.code[0], 0xE9);
@@ -2248,9 +2298,9 @@ mod tests {
     #[test]
     fn test_backward_branch_resolution() {
         let instrs = vec![
-            mi(I686Opcode::Label, vec![label(20)]),   // offset 0: label
-            mi(I686Opcode::Nop, vec![]),              // offset 0: 90
-            mi(I686Opcode::Jmp, vec![label(20)]),     // offset 1: E9 rel32
+            mi(I686Opcode::Label, vec![label(20)]), // offset 0: label
+            mi(I686Opcode::Nop, vec![]),            // offset 0: 90
+            mi(I686Opcode::Jmp, vec![label(20)]),   // offset 1: E9 rel32
         ];
         let out = encode_instructions(&instrs).expect("encoding failed");
         assert_eq!(out.code[0], 0x90);
@@ -2298,11 +2348,11 @@ mod tests {
     fn test_sequence_encoding() {
         // push ebp; mov ebp, esp; sub esp, 16; ... ; pop ebp; ret
         let instrs = vec![
-            mi(I686Opcode::Push, vec![reg(5)]),            // push ebp
-            mi(I686Opcode::Mov, vec![reg(5), reg(4)]),     // mov ebp, esp
-            mi(I686Opcode::Sub, vec![reg(4), imm(16)]),    // sub esp, 16
-            mi(I686Opcode::Pop, vec![reg(5)]),             // pop ebp
-            mi(I686Opcode::Ret, vec![]),                   // ret
+            mi(I686Opcode::Push, vec![reg(5)]),         // push ebp
+            mi(I686Opcode::Mov, vec![reg(5), reg(4)]),  // mov ebp, esp
+            mi(I686Opcode::Sub, vec![reg(4), imm(16)]), // sub esp, 16
+            mi(I686Opcode::Pop, vec![reg(5)]),          // pop ebp
+            mi(I686Opcode::Ret, vec![]),                // ret
         ];
         let out = encode_instructions(&instrs).expect("encoding failed");
 

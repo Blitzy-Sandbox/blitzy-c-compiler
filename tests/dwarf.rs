@@ -501,13 +501,7 @@ fn abbrev_tag_has_attr(table: &[AbbrevEntry], tag: u64, attr: u64) -> bool {
 }
 
 /// Skip past a DWARF form value at `*pos` in the data buffer.
-fn skip_form_value(
-    form: u64,
-    address_size: u8,
-    is_dwarf64: bool,
-    data: &[u8],
-    pos: &mut usize,
-) {
+fn skip_form_value(form: u64, address_size: u8, is_dwarf64: bool, data: &[u8], pos: &mut usize) {
     match form {
         DW_FORM_ADDR => *pos += address_size as usize,
         DW_FORM_BLOCK1 => {
@@ -566,11 +560,7 @@ fn skip_form_value(
 }
 
 /// Walk DIEs in a `.debug_info` compilation unit and check if any has the target tag.
-fn debug_info_contains_tag(
-    debug_info: &[u8],
-    debug_abbrev: &[u8],
-    target_tag: u64,
-) -> bool {
+fn debug_info_contains_tag(debug_info: &[u8], debug_abbrev: &[u8], target_tag: u64) -> bool {
     if debug_info.is_empty() || debug_abbrev.is_empty() {
         return false;
     }
@@ -1016,9 +1006,7 @@ fn debug_sections_present_with_g_flag() {
 
     // .debug_aranges is optional but expected.
     if find_elf_section(&binary, ".debug_aranges").is_none() {
-        eprintln!(
-            "Note: .debug_aranges section not present (optional but recommended)"
-        );
+        eprintln!("Note: .debug_aranges section not present (optional but recommended)");
     }
 }
 
@@ -1039,8 +1027,7 @@ fn no_debug_sections_without_g_flag() {
 #[test]
 fn debug_info_version_4() {
     let binary = compile_with_debug(SIMPLE_MAIN, &[]);
-    let debug_info = get_section_data(&binary, ".debug_info")
-        .expect("Missing .debug_info section");
+    let debug_info = get_section_data(&binary, ".debug_info").expect("Missing .debug_info section");
 
     let header = parse_debug_info_header(debug_info);
     assert_eq!(
@@ -1059,10 +1046,9 @@ fn debug_info_version_4() {
 fn debug_info_compilation_unit() {
     let binary = compile_with_debug(SIMPLE_MAIN, &[]);
 
-    let debug_info = get_section_data(&binary, ".debug_info")
-        .expect("Missing .debug_info section");
-    let debug_abbrev = get_section_data(&binary, ".debug_abbrev")
-        .expect("Missing .debug_abbrev section");
+    let debug_info = get_section_data(&binary, ".debug_info").expect("Missing .debug_info section");
+    let debug_abbrev =
+        get_section_data(&binary, ".debug_abbrev").expect("Missing .debug_abbrev section");
 
     let header = parse_debug_info_header(debug_info);
     let abbrev_table = parse_abbrev_table_at(debug_abbrev, header.debug_abbrev_offset);
@@ -1109,10 +1095,9 @@ fn debug_info_compilation_unit() {
 fn debug_info_function() {
     let binary = compile_with_debug(FUNCTION_WITH_PARAMS, &[]);
 
-    let debug_info = get_section_data(&binary, ".debug_info")
-        .expect("Missing .debug_info section");
-    let debug_abbrev = get_section_data(&binary, ".debug_abbrev")
-        .expect("Missing .debug_abbrev section");
+    let debug_info = get_section_data(&binary, ".debug_info").expect("Missing .debug_info section");
+    let debug_abbrev =
+        get_section_data(&binary, ".debug_abbrev").expect("Missing .debug_abbrev section");
 
     let header = parse_debug_info_header(debug_info);
     let abbrev_table = parse_abbrev_table_at(debug_abbrev, header.debug_abbrev_offset);
@@ -1152,10 +1137,9 @@ fn debug_info_function() {
 fn debug_info_function_parameters() {
     let binary = compile_with_debug(FUNCTION_WITH_PARAMS, &[]);
 
-    let debug_abbrev = get_section_data(&binary, ".debug_abbrev")
-        .expect("Missing .debug_abbrev section");
-    let debug_info = get_section_data(&binary, ".debug_info")
-        .expect("Missing .debug_info section");
+    let debug_abbrev =
+        get_section_data(&binary, ".debug_abbrev").expect("Missing .debug_abbrev section");
+    let debug_info = get_section_data(&binary, ".debug_info").expect("Missing .debug_info section");
 
     let header = parse_debug_info_header(debug_info);
     let abbrev_table = parse_abbrev_table_at(debug_abbrev, header.debug_abbrev_offset);
@@ -1179,10 +1163,9 @@ fn debug_info_function_parameters() {
 fn debug_info_local_variables() {
     let binary = compile_with_debug(FUNCTION_WITH_LOCALS, &[]);
 
-    let debug_abbrev = get_section_data(&binary, ".debug_abbrev")
-        .expect("Missing .debug_abbrev section");
-    let debug_info = get_section_data(&binary, ".debug_info")
-        .expect("Missing .debug_info section");
+    let debug_abbrev =
+        get_section_data(&binary, ".debug_abbrev").expect("Missing .debug_abbrev section");
+    let debug_info = get_section_data(&binary, ".debug_info").expect("Missing .debug_info section");
 
     let header = parse_debug_info_header(debug_info);
     let abbrev_table = parse_abbrev_table_at(debug_abbrev, header.debug_abbrev_offset);
@@ -1220,10 +1203,9 @@ fn debug_info_local_variables() {
 fn debug_info_base_types() {
     let binary = compile_with_debug(TYPES_PROGRAM, &[]);
 
-    let debug_abbrev = get_section_data(&binary, ".debug_abbrev")
-        .expect("Missing .debug_abbrev section");
-    let debug_info = get_section_data(&binary, ".debug_info")
-        .expect("Missing .debug_info section");
+    let debug_abbrev =
+        get_section_data(&binary, ".debug_abbrev").expect("Missing .debug_abbrev section");
+    let debug_info = get_section_data(&binary, ".debug_info").expect("Missing .debug_info section");
 
     let header = parse_debug_info_header(debug_info);
     let abbrev_table = parse_abbrev_table_at(debug_abbrev, header.debug_abbrev_offset);
@@ -1262,10 +1244,9 @@ fn debug_info_base_types() {
 fn debug_info_pointer_type() {
     let binary = compile_with_debug(TYPES_PROGRAM, &[]);
 
-    let debug_abbrev = get_section_data(&binary, ".debug_abbrev")
-        .expect("Missing .debug_abbrev section");
-    let debug_info = get_section_data(&binary, ".debug_info")
-        .expect("Missing .debug_info section");
+    let debug_abbrev =
+        get_section_data(&binary, ".debug_abbrev").expect("Missing .debug_abbrev section");
+    let debug_info = get_section_data(&binary, ".debug_info").expect("Missing .debug_info section");
 
     let header = parse_debug_info_header(debug_info);
     let abbrev_table = parse_abbrev_table_at(debug_abbrev, header.debug_abbrev_offset);
@@ -1285,10 +1266,9 @@ fn debug_info_pointer_type() {
 fn debug_info_struct_type() {
     let binary = compile_with_debug(TYPES_PROGRAM, &[]);
 
-    let debug_abbrev = get_section_data(&binary, ".debug_abbrev")
-        .expect("Missing .debug_abbrev section");
-    let debug_info = get_section_data(&binary, ".debug_info")
-        .expect("Missing .debug_info section");
+    let debug_abbrev =
+        get_section_data(&binary, ".debug_abbrev").expect("Missing .debug_abbrev section");
+    let debug_info = get_section_data(&binary, ".debug_info").expect("Missing .debug_info section");
 
     let header = parse_debug_info_header(debug_info);
     let abbrev_table = parse_abbrev_table_at(debug_abbrev, header.debug_abbrev_offset);
@@ -1317,10 +1297,9 @@ fn debug_info_struct_type() {
 fn debug_info_array_type() {
     let binary = compile_with_debug(TYPES_PROGRAM, &[]);
 
-    let debug_abbrev = get_section_data(&binary, ".debug_abbrev")
-        .expect("Missing .debug_abbrev section");
-    let debug_info = get_section_data(&binary, ".debug_info")
-        .expect("Missing .debug_info section");
+    let debug_abbrev =
+        get_section_data(&binary, ".debug_abbrev").expect("Missing .debug_abbrev section");
+    let debug_info = get_section_data(&binary, ".debug_info").expect("Missing .debug_info section");
 
     let header = parse_debug_info_header(debug_info);
     let abbrev_table = parse_abbrev_table_at(debug_abbrev, header.debug_abbrev_offset);
@@ -1340,10 +1319,9 @@ fn debug_info_array_type() {
 fn debug_info_typedef() {
     let binary = compile_with_debug(TYPES_PROGRAM, &[]);
 
-    let debug_abbrev = get_section_data(&binary, ".debug_abbrev")
-        .expect("Missing .debug_abbrev section");
-    let debug_info = get_section_data(&binary, ".debug_info")
-        .expect("Missing .debug_info section");
+    let debug_abbrev =
+        get_section_data(&binary, ".debug_abbrev").expect("Missing .debug_abbrev section");
+    let debug_info = get_section_data(&binary, ".debug_info").expect("Missing .debug_info section");
 
     let header = parse_debug_info_header(debug_info);
     let abbrev_table = parse_abbrev_table_at(debug_abbrev, header.debug_abbrev_offset);
@@ -1375,11 +1353,9 @@ fn debug_info_typedef() {
 #[test]
 fn debug_line_program_present() {
     let binary = compile_with_debug(SIMPLE_MAIN, &[]);
-    let debug_line = get_section_data(&binary, ".debug_line")
-        .expect("Missing .debug_line section");
+    let debug_line = get_section_data(&binary, ".debug_line").expect("Missing .debug_line section");
 
-    let header = parse_line_header(debug_line)
-        .expect("Failed to parse .debug_line header");
+    let header = parse_line_header(debug_line).expect("Failed to parse .debug_line header");
 
     assert_eq!(
         header.version, 4,
@@ -1398,11 +1374,9 @@ fn debug_line_program_present() {
 #[test]
 fn debug_line_source_mapping() {
     let binary = compile_with_debug(MULTILINE_PROGRAM, &[]);
-    let debug_line = get_section_data(&binary, ".debug_line")
-        .expect("Missing .debug_line section");
+    let debug_line = get_section_data(&binary, ".debug_line").expect("Missing .debug_line section");
 
-    let header = parse_line_header(debug_line)
-        .expect("Failed to parse .debug_line header");
+    let header = parse_line_header(debug_line).expect("Failed to parse .debug_line header");
 
     // The line program should have substantial content for a multi-line, multi-function program.
     let min_expected = header.header_size + 20;
@@ -1417,8 +1391,7 @@ fn debug_line_source_mapping() {
 #[test]
 fn debug_line_file_table() {
     let binary = compile_with_debug(SIMPLE_MAIN, &[]);
-    let debug_line = get_section_data(&binary, ".debug_line")
-        .expect("Missing .debug_line section");
+    let debug_line = get_section_data(&binary, ".debug_line").expect("Missing .debug_line section");
 
     // The file table should contain a .c file extension somewhere in its data.
     let has_c_file = debug_line.windows(2).any(|w| w == b".c");
@@ -1432,11 +1405,9 @@ fn debug_line_file_table() {
 #[test]
 fn debug_line_multiple_functions() {
     let binary = compile_with_debug(MULTILINE_PROGRAM, &[]);
-    let debug_line = get_section_data(&binary, ".debug_line")
-        .expect("Missing .debug_line section");
+    let debug_line = get_section_data(&binary, ".debug_line").expect("Missing .debug_line section");
 
-    let header = parse_line_header(debug_line)
-        .expect("Failed to parse .debug_line header");
+    let header = parse_line_header(debug_line).expect("Failed to parse .debug_line header");
 
     // Calculate program body size (excluding header) — should be non-trivial
     // for a program with three functions (square, cube, main).
@@ -1461,8 +1432,8 @@ fn debug_line_multiple_functions() {
 #[test]
 fn debug_frame_present() {
     let binary = compile_with_debug(FRAME_PROGRAM, &[]);
-    let debug_frame = get_section_data(&binary, ".debug_frame")
-        .expect("Missing .debug_frame section");
+    let debug_frame =
+        get_section_data(&binary, ".debug_frame").expect("Missing .debug_frame section");
 
     assert!(!debug_frame.is_empty(), ".debug_frame section is empty");
     assert!(
@@ -1488,8 +1459,8 @@ fn debug_frame_present() {
 #[test]
 fn debug_frame_cfi() {
     let binary = compile_with_debug(FRAME_PROGRAM, &[]);
-    let debug_frame = get_section_data(&binary, ".debug_frame")
-        .expect("Missing .debug_frame section");
+    let debug_frame =
+        get_section_data(&binary, ".debug_frame").expect("Missing .debug_frame section");
 
     assert!(
         debug_frame.len() >= 20,
@@ -1541,10 +1512,7 @@ fn debug_frame_cfi() {
         }
     }
 
-    assert!(
-        cie_count >= 1,
-        "No CIE entries found in .debug_frame"
-    );
+    assert!(cie_count >= 1, "No CIE entries found in .debug_frame");
     assert!(
         fde_count >= 1,
         "No FDE entries found in .debug_frame ({} CIEs found)",
@@ -1562,11 +1530,7 @@ fn dwarf_x86_64() {
     let binary = compile_debug_for_target(SIMPLE_MAIN, common::TARGET_X86_64);
 
     // Verify ELF class is 64-bit.
-    assert_eq!(
-        binary[4],
-        common::ELFCLASS64,
-        "Expected ELF64 for x86-64"
-    );
+    assert_eq!(binary[4], common::ELFCLASS64, "Expected ELF64 for x86-64");
 
     // Verify DWARF sections are present.
     assert!(
@@ -1583,13 +1547,9 @@ fn dwarf_x86_64() {
     );
 
     // Verify DWARF header metadata.
-    let debug_info = get_section_data(&binary, ".debug_info")
-        .expect("Failed to read .debug_info");
+    let debug_info = get_section_data(&binary, ".debug_info").expect("Failed to read .debug_info");
     let header = parse_debug_info_header(debug_info);
-    assert_eq!(
-        header.version, 4,
-        "Expected DWARF v4 for x86-64"
-    );
+    assert_eq!(header.version, 4, "Expected DWARF v4 for x86-64");
     assert_eq!(
         header.address_size, 8,
         "Expected 8-byte addresses for x86-64, got {}",
@@ -1602,11 +1562,7 @@ fn dwarf_x86_64() {
 fn dwarf_i686() {
     let binary = compile_debug_for_target(SIMPLE_MAIN, common::TARGET_I686);
 
-    assert_eq!(
-        binary[4],
-        common::ELFCLASS32,
-        "Expected ELF32 for i686"
-    );
+    assert_eq!(binary[4], common::ELFCLASS32, "Expected ELF32 for i686");
 
     assert!(
         find_elf_section(&binary, ".debug_info").is_some(),
@@ -1621,8 +1577,7 @@ fn dwarf_i686() {
         "Missing .debug_line in i686 binary"
     );
 
-    let debug_info = get_section_data(&binary, ".debug_info")
-        .expect("Failed to read .debug_info");
+    let debug_info = get_section_data(&binary, ".debug_info").expect("Failed to read .debug_info");
     let header = parse_debug_info_header(debug_info);
     assert_eq!(header.version, 4, "Expected DWARF v4 for i686");
     assert_eq!(
@@ -1637,11 +1592,7 @@ fn dwarf_i686() {
 fn dwarf_aarch64() {
     let binary = compile_debug_for_target(SIMPLE_MAIN, common::TARGET_AARCH64);
 
-    assert_eq!(
-        binary[4],
-        common::ELFCLASS64,
-        "Expected ELF64 for AArch64"
-    );
+    assert_eq!(binary[4], common::ELFCLASS64, "Expected ELF64 for AArch64");
 
     assert!(
         find_elf_section(&binary, ".debug_info").is_some(),
@@ -1656,8 +1607,7 @@ fn dwarf_aarch64() {
         "Missing .debug_line in AArch64 binary"
     );
 
-    let debug_info = get_section_data(&binary, ".debug_info")
-        .expect("Failed to read .debug_info");
+    let debug_info = get_section_data(&binary, ".debug_info").expect("Failed to read .debug_info");
     let header = parse_debug_info_header(debug_info);
     assert_eq!(header.version, 4, "Expected DWARF v4 for AArch64");
     assert_eq!(
@@ -1691,8 +1641,7 @@ fn dwarf_riscv64() {
         "Missing .debug_line in RISC-V 64 binary"
     );
 
-    let debug_info = get_section_data(&binary, ".debug_info")
-        .expect("Failed to read .debug_info");
+    let debug_info = get_section_data(&binary, ".debug_info").expect("Failed to read .debug_info");
     let header = parse_debug_info_header(debug_info);
     assert_eq!(header.version, 4, "Expected DWARF v4 for RISC-V 64");
     assert_eq!(
@@ -1752,8 +1701,8 @@ fn debug_with_optimization_levels() {
             opt_level
         );
 
-        let debug_info = get_section_data(&binary, ".debug_info")
-            .expect("Missing .debug_info data");
+        let debug_info =
+            get_section_data(&binary, ".debug_info").expect("Missing .debug_info data");
         let header = parse_debug_info_header(debug_info);
         assert_eq!(
             header.version, 4,
@@ -1767,16 +1716,14 @@ fn debug_with_optimization_levels() {
 #[test]
 fn debug_str_section_content() {
     let binary = compile_with_debug(TYPES_PROGRAM, &[]);
-    let debug_str = get_section_data(&binary, ".debug_str")
-        .expect("Missing .debug_str section");
+    let debug_str = get_section_data(&binary, ".debug_str").expect("Missing .debug_str section");
 
     assert!(!debug_str.is_empty(), ".debug_str section is empty");
 
     // Check that .debug_str contains at least some recognizable strings.
     let content = String::from_utf8_lossy(debug_str);
-    let has_types = content.contains("int")
-        || content.contains("char")
-        || content.contains("Point");
+    let has_types =
+        content.contains("int") || content.contains("char") || content.contains("Point");
     assert!(
         has_types,
         ".debug_str has no recognizable type names. Sample: {:?}",
@@ -1788,8 +1735,8 @@ fn debug_str_section_content() {
 #[test]
 fn debug_abbrev_structure() {
     let binary = compile_with_debug(SIMPLE_MAIN, &[]);
-    let debug_abbrev = get_section_data(&binary, ".debug_abbrev")
-        .expect("Missing .debug_abbrev section");
+    let debug_abbrev =
+        get_section_data(&binary, ".debug_abbrev").expect("Missing .debug_abbrev section");
 
     assert!(!debug_abbrev.is_empty(), ".debug_abbrev is empty");
 
@@ -1816,10 +1763,9 @@ fn debug_abbrev_structure() {
 #[test]
 fn debug_info_die_walk_tags() {
     let binary = compile_with_debug(TYPES_PROGRAM, &[]);
-    let debug_info = get_section_data(&binary, ".debug_info")
-        .expect("Missing .debug_info section");
-    let debug_abbrev = get_section_data(&binary, ".debug_abbrev")
-        .expect("Missing .debug_abbrev section");
+    let debug_info = get_section_data(&binary, ".debug_info").expect("Missing .debug_info section");
+    let debug_abbrev =
+        get_section_data(&binary, ".debug_abbrev").expect("Missing .debug_abbrev section");
 
     assert!(
         debug_info_contains_tag(debug_info, debug_abbrev, DW_TAG_compile_unit),
@@ -1854,31 +1800,65 @@ fn debug_binary_elf_validity() {
 fn debug_multiarch_elf_arch_verification() {
     // x86-64: verify EM_X86_64 (already done in debug_binary_elf_validity,
     // but we also verify across architectures with explicit CompileResult binding).
-    let result_x86: common::CompileResult = common::compile_source(SIMPLE_MAIN, &["-g", "--target", common::TARGET_X86_64]);
+    let result_x86: common::CompileResult =
+        common::compile_source(SIMPLE_MAIN, &["-g", "--target", common::TARGET_X86_64]);
     assert!(result_x86.success, "x86-64 compilation failed");
-    assert!(result_x86.exit_status.success(), "Expected exit status 0 for x86-64");
+    assert!(
+        result_x86.exit_status.success(),
+        "Expected exit status 0 for x86-64"
+    );
     let path_x86 = result_x86.output_path.as_ref().expect("No x86-64 output");
     common::verify_elf_arch(path_x86, common::EM_X86_64);
 
     // i686: verify EM_386
-    let result_i686: common::CompileResult = common::compile_source(SIMPLE_MAIN, &["-g", "--target", common::TARGET_I686]);
-    assert!(result_i686.success, "i686 compilation failed: {}", result_i686.stderr);
-    assert!(result_i686.exit_status.success(), "Expected exit status 0 for i686");
+    let result_i686: common::CompileResult =
+        common::compile_source(SIMPLE_MAIN, &["-g", "--target", common::TARGET_I686]);
+    assert!(
+        result_i686.success,
+        "i686 compilation failed: {}",
+        result_i686.stderr
+    );
+    assert!(
+        result_i686.exit_status.success(),
+        "Expected exit status 0 for i686"
+    );
     let path_i686 = result_i686.output_path.as_ref().expect("No i686 output");
     common::verify_elf_arch(path_i686, common::EM_386);
 
     // AArch64: verify EM_AARCH64
-    let result_aarch64: common::CompileResult = common::compile_source(SIMPLE_MAIN, &["-g", "--target", common::TARGET_AARCH64]);
-    assert!(result_aarch64.success, "AArch64 compilation failed: {}", result_aarch64.stderr);
-    assert!(result_aarch64.exit_status.success(), "Expected exit status 0 for AArch64");
-    let path_aarch64 = result_aarch64.output_path.as_ref().expect("No AArch64 output");
+    let result_aarch64: common::CompileResult =
+        common::compile_source(SIMPLE_MAIN, &["-g", "--target", common::TARGET_AARCH64]);
+    assert!(
+        result_aarch64.success,
+        "AArch64 compilation failed: {}",
+        result_aarch64.stderr
+    );
+    assert!(
+        result_aarch64.exit_status.success(),
+        "Expected exit status 0 for AArch64"
+    );
+    let path_aarch64 = result_aarch64
+        .output_path
+        .as_ref()
+        .expect("No AArch64 output");
     common::verify_elf_arch(path_aarch64, common::EM_AARCH64);
 
     // RISC-V 64: verify EM_RISCV
-    let result_riscv: common::CompileResult = common::compile_source(SIMPLE_MAIN, &["-g", "--target", common::TARGET_RISCV64]);
-    assert!(result_riscv.success, "RISC-V 64 compilation failed: {}", result_riscv.stderr);
-    assert!(result_riscv.exit_status.success(), "Expected exit status 0 for RISC-V 64");
-    let path_riscv = result_riscv.output_path.as_ref().expect("No RISC-V 64 output");
+    let result_riscv: common::CompileResult =
+        common::compile_source(SIMPLE_MAIN, &["-g", "--target", common::TARGET_RISCV64]);
+    assert!(
+        result_riscv.success,
+        "RISC-V 64 compilation failed: {}",
+        result_riscv.stderr
+    );
+    assert!(
+        result_riscv.exit_status.success(),
+        "Expected exit status 0 for RISC-V 64"
+    );
+    let path_riscv = result_riscv
+        .output_path
+        .as_ref()
+        .expect("No RISC-V 64 output");
     common::verify_elf_arch(path_riscv, common::EM_RISCV);
 }
 
@@ -1902,8 +1882,16 @@ fn debug_manual_compile_workflow() {
         .status()
         .expect("Failed to execute bcc");
 
-    assert!(status.success(), "bcc compilation failed with status: {:?}", status);
-    assert!(out_path.exists(), "Output binary not created at {:?}", out_path);
+    assert!(
+        status.success(),
+        "bcc compilation failed with status: {:?}",
+        status
+    );
+    assert!(
+        out_path.exists(),
+        "Output binary not created at {:?}",
+        out_path
+    );
 
     // Verify the produced binary contains debug sections.
     let binary = fs::read(&out_path).expect("Failed to read output binary");

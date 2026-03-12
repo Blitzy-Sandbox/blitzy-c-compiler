@@ -79,9 +79,7 @@ pub mod gcc_extensions;
 // Re-exports — key AST types for downstream module convenience
 // ===========================================================================
 
-pub use ast::{
-    Declaration, Expression, FunctionDef, Statement, TranslationUnit, TypeSpecifier,
-};
+pub use ast::{Declaration, Expression, FunctionDef, Statement, TranslationUnit, TypeSpecifier};
 
 // ===========================================================================
 // Imports
@@ -683,10 +681,7 @@ impl<'a> Parser<'a> {
                     // Check for declaration starters at statement level:
                     // type specifiers, storage class keywords, or any keyword
                     // that could begin a declaration.
-                    if kind.is_type_specifier()
-                        || kind.is_storage_class()
-                        || kind.is_keyword()
-                    {
+                    if kind.is_type_specifier() || kind.is_storage_class() || kind.is_keyword() {
                         return;
                     }
                     self.advance();
@@ -945,7 +940,11 @@ mod tests {
 
     /// Creates an identifier token with the given InternId.
     fn make_ident_token(id: InternId) -> Token {
-        Token::new(TokenKind::Identifier, dummy_span(), TokenValue::Identifier(id))
+        Token::new(
+            TokenKind::Identifier,
+            dummy_span(),
+            TokenValue::Identifier(id),
+        )
     }
 
     /// Creates a token stream with the given tokens plus an EOF sentinel.
@@ -1187,10 +1186,10 @@ mod tests {
     #[test]
     fn test_synchronize_stops_at_semicolon() {
         let tokens = make_tokens(&[
-            TokenKind::Int,    // skip
-            TokenKind::Star,   // skip
+            TokenKind::Int,       // skip
+            TokenKind::Star,      // skip
             TokenKind::Semicolon, // sync point
-            TokenKind::Float,  // should be current after sync
+            TokenKind::Float,     // should be current after sync
         ]);
         let interner = Interner::new();
         let mut diag = DiagnosticEmitter::new();
@@ -1375,8 +1374,14 @@ mod tests {
             line: 1,
             column: 11,
         };
-        let span1 = SourceSpan { start: loc1, end: loc1 };
-        let span2 = SourceSpan { start: loc2, end: loc2 };
+        let span1 = SourceSpan {
+            start: loc1,
+            end: loc1,
+        };
+        let span2 = SourceSpan {
+            start: loc2,
+            end: loc2,
+        };
 
         let tok1 = Token::new(TokenKind::Int, span1, TokenValue::None);
         let tok2 = Token::new(TokenKind::Semicolon, span2, TokenValue::None);

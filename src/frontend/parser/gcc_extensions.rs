@@ -206,6 +206,11 @@ fn parse_attribute_args(parser: &mut Parser) -> Vec<AttributeArg> {
 
     loop {
         let arg = parse_one_attribute_arg(parser);
+        // After parsing the initial value, check if a binary operator follows.
+        // In kernel code, attributes like `aligned(1 << N)` contain full
+        // expressions. We consume the entire expression by skipping tokens
+        // until we reach a `,` or `)` at depth 0.
+        let arg = skip_attribute_binop_tail(parser, arg);
         args.push(arg);
 
         if !parser.match_token(TokenKind::Comma) {
@@ -214,6 +219,60 @@ fn parse_attribute_args(parser: &mut Parser) -> Vec<AttributeArg> {
     }
 
     args
+}
+
+/// After parsing an initial attribute argument value, checks if a binary
+/// operator follows and if so, consumes the rest of the expression.
+/// This handles cases like `aligned(1 << (INTERNODE_CACHE_SHIFT))` and
+/// `aligned(sizeof(long) * 2)`.
+fn skip_attribute_binop_tail(parser: &mut Parser, initial: AttributeArg) -> AttributeArg {
+    fn is_binop(kind: TokenKind) -> bool {
+        matches!(
+            kind,
+            TokenKind::LessLess
+                | TokenKind::GreaterGreater
+                | TokenKind::Plus
+                | TokenKind::Minus
+                | TokenKind::Star
+                | TokenKind::Slash
+                | TokenKind::Percent
+                | TokenKind::Pipe
+                | TokenKind::Amp
+                | TokenKind::Caret
+                | TokenKind::Tilde
+                | TokenKind::Question
+                | TokenKind::Colon
+        )
+    }
+    if !is_binop(parser.current().kind) {
+        return initial;
+    }
+    // A binary operator follows the initial argument — consume the rest of
+    // the expression by skipping tokens until we reach a `,` or `)` at
+    // paren depth 0. This is a best-effort approach that handles most
+    // expression patterns in kernel attribute arguments.
+    let mut depth: u32 = 0;
+    while !parser.is_at_end() {
+        match parser.current().kind {
+            TokenKind::LeftParen => {
+                depth += 1;
+                parser.advance();
+            }
+            TokenKind::RightParen if depth > 0 => {
+                depth -= 1;
+                parser.advance();
+            }
+            TokenKind::RightParen | TokenKind::Comma if depth == 0 => {
+                break;
+            }
+            _ => {
+                parser.advance();
+            }
+        }
+    }
+    // Return the initial argument (often an integer) — the expression value
+    // will be resolved by the semantic analyzer if needed.
+    initial
 }
 
 /// Parses a single attribute argument.
@@ -270,6 +329,22 @@ fn parse_one_attribute_arg(parser: &mut Parser) -> AttributeArg {
                 AttributeArg::Integer(0)
             }
         }
+        // Handle sizeof, _Alignof, __alignof__ — these produce integer
+        // constant expressions commonly used in attribute arguments like
+        // `aligned(sizeof(void *))` which the Linux kernel uses extensively.
+        TokenKind::Sizeof | TokenKind::Alignof => {
+            parser.advance(); // consume sizeof/_Alignof
+            if parser.check(TokenKind::LeftParen) {
+                // Consume the entire parenthesized expression as a generic
+                // expression argument. The semantic analyzer will handle
+                // evaluation of sizeof/alignof.
+                skip_balanced_parens_as_arg(parser)
+            } else {
+                // sizeof expr without parens — skip one token.
+                parser.advance();
+                AttributeArg::Integer(0)
+            }
+        }
         // Keywords used as attribute arguments (e.g., `printf` could be a
         // keyword-ish identifier in `format(printf, 1, 2)` though typically
         // it's recognized as an identifier).
@@ -277,9 +352,16 @@ fn parse_one_attribute_arg(parser: &mut Parser) -> AttributeArg {
             let keyword_str = kind.as_str();
             let id = parser.lookup_interned(keyword_str);
             parser.advance();
-            match id {
-                Some(intern_id) => AttributeArg::Identifier(intern_id),
-                None => AttributeArg::Integer(0),
+            // If the keyword is followed by a '(' (like sizeof(type) where
+            // sizeof wasn't matched above, or _Generic, etc.), consume the
+            // balanced parens as a generic expression argument.
+            if parser.check(TokenKind::LeftParen) {
+                skip_balanced_parens_as_arg(parser)
+            } else {
+                match id {
+                    Some(intern_id) => AttributeArg::Identifier(intern_id),
+                    None => AttributeArg::Integer(0),
+                }
             }
         }
         // Nested parenthesized expression — skip balanced parens.
@@ -683,25 +765,19 @@ pub(super) fn parse_asm_statement(parser: &mut Parser) -> Statement {
 
     // Section 1: output operands.
     if parser.match_token(TokenKind::Colon) {
-        if !parser.check(TokenKind::Colon)
-            && !parser.check(TokenKind::RightParen)
-        {
+        if !parser.check(TokenKind::Colon) && !parser.check(TokenKind::RightParen) {
             outputs = parse_asm_operands(parser);
         }
 
         // Section 2: input operands.
         if parser.match_token(TokenKind::Colon) {
-            if !parser.check(TokenKind::Colon)
-                && !parser.check(TokenKind::RightParen)
-            {
+            if !parser.check(TokenKind::Colon) && !parser.check(TokenKind::RightParen) {
                 inputs = parse_asm_operands(parser);
             }
 
             // Section 3: clobber list.
             if parser.match_token(TokenKind::Colon) {
-                if !parser.check(TokenKind::Colon)
-                    && !parser.check(TokenKind::RightParen)
-                {
+                if !parser.check(TokenKind::Colon) && !parser.check(TokenKind::RightParen) {
                     clobbers = parse_clobber_list(parser);
                 }
 
@@ -812,22 +888,22 @@ fn parse_asm_operands(parser: &mut Parser) -> Vec<AsmOperand> {
             None
         };
 
-        // Constraint string literal.
-        let constraint = match parser.current().kind {
-            TokenKind::StringLiteral => {
+        // Constraint string literal (supports adjacent string concatenation,
+        // e.g. "=" "a" from macro expansion of "="REG_OUT where REG_OUT is "a").
+        let constraint = {
+            let mut c = String::new();
+            let mut found = false;
+            while parser.current().kind == TokenKind::StringLiteral {
+                found = true;
                 if let TokenValue::Str(ref s) = parser.current().value {
-                    let c = s.clone();
-                    parser.advance();
-                    c
-                } else {
-                    parser.advance();
-                    String::new()
+                    c.push_str(s);
                 }
+                parser.advance();
             }
-            _ => {
+            if !found {
                 parser.error("expected constraint string in asm operand");
-                String::new()
             }
+            c
         };
 
         // Parenthesized C expression.

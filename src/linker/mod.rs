@@ -21,13 +21,13 @@
 // Submodule declarations
 // ============================================================================
 
-pub mod elf;
 pub mod archive;
+pub mod dynamic;
+pub mod elf;
 pub mod relocations;
+pub mod script;
 pub mod sections;
 pub mod symbols;
-pub mod dynamic;
-pub mod script;
 
 // ============================================================================
 // Standard library imports
@@ -39,9 +39,11 @@ use std::path::PathBuf;
 // Internal crate imports
 // ============================================================================
 
-use crate::codegen::{self, ObjectCode, Relocation, Section as CodegenSection, Symbol as CodegenSymbol};
-use crate::driver::target::{Architecture, TargetConfig};
+use crate::codegen::{
+    self, ObjectCode, Relocation, Section as CodegenSection, Symbol as CodegenSymbol,
+};
 use crate::common::diagnostics::DiagnosticEmitter;
+use crate::driver::target::{Architecture, TargetConfig};
 
 // ============================================================================
 // OutputMode — the three linking modes
@@ -550,10 +552,7 @@ fn codegen_section_to_input(
 /// The `is_definition` flag is propagated directly — it is the authoritative
 /// source for distinguishing defined symbols from undefined references,
 /// independent of section_index value.
-fn codegen_symbol_to_linker(
-    sym: &CodegenSymbol,
-    object_index: usize,
-) -> symbols::Symbol {
+fn codegen_symbol_to_linker(sym: &CodegenSymbol, object_index: usize) -> symbols::Symbol {
     let binding = match sym.binding {
         codegen::SymbolBinding::Local => symbols::SymbolBinding::Local,
         codegen::SymbolBinding::Global => symbols::SymbolBinding::Global,
@@ -567,6 +566,7 @@ fn codegen_symbol_to_linker(
     };
     let visibility = match sym.visibility {
         codegen::SymbolVisibility::Default => symbols::SymbolVisibility::Default,
+        codegen::SymbolVisibility::Internal => symbols::SymbolVisibility::Internal,
         codegen::SymbolVisibility::Hidden => symbols::SymbolVisibility::Hidden,
         codegen::SymbolVisibility::Protected => symbols::SymbolVisibility::Protected,
     };
@@ -607,9 +607,7 @@ fn reloc_type_to_elf(rt: &codegen::RelocationType) -> u32 {
         codegen::RelocationType::Aarch64_ADR_PREL_PG_HI21 => {
             relocations::R_AARCH64_ADR_PREL_PG_HI21
         }
-        codegen::RelocationType::Aarch64_ADD_ABS_LO12_NC => {
-            relocations::R_AARCH64_ADD_ABS_LO12_NC
-        }
+        codegen::RelocationType::Aarch64_ADD_ABS_LO12_NC => relocations::R_AARCH64_ADD_ABS_LO12_NC,
         codegen::RelocationType::Riscv_64 => relocations::R_RISCV_64,
         codegen::RelocationType::Riscv_32 => relocations::R_RISCV_32,
         codegen::RelocationType::Riscv_Branch => relocations::R_RISCV_BRANCH,
@@ -742,11 +740,12 @@ fn link_relocatable(
         // For SHT_NOBITS (.bss) sections, the merged data is empty but
         // mem_size tracks the actual virtual size. Set data to a zero-filled
         // vector so the ELF writer's data.len() reports the correct sh_size.
-        let section_data = if sec.section_type == elf::SHT_NOBITS && sec.data.is_empty() && sec.mem_size > 0 {
-            vec![0u8; sec.mem_size as usize]
-        } else {
-            sec.data.clone()
-        };
+        let section_data =
+            if sec.section_type == elf::SHT_NOBITS && sec.data.is_empty() && sec.mem_size > 0 {
+                vec![0u8; sec.mem_size as usize]
+            } else {
+                sec.data.clone()
+            };
         writer.add_section(elf::OutputSection {
             name: sec.name.clone(),
             data: section_data,
@@ -774,9 +773,9 @@ fn link_relocatable(
     let sym_name_to_idx: std::collections::HashMap<String, u32> = {
         let mut map = std::collections::HashMap::new();
         let mut idx: u32 = 1; // 0 is null symbol
-        // CRITICAL: Must mirror generate_symtab order exactly.
-        // generate_symtab emits: [null, locals (insertion order), globals (alphabetically sorted)]
-        // First pass: locals in insertion order
+                              // CRITICAL: Must mirror generate_symtab order exactly.
+                              // generate_symtab emits: [null, locals (insertion order), globals (alphabetically sorted)]
+                              // First pass: locals in insertion order
         for (_obj_idx, obj) in input.objects.iter().enumerate() {
             for s in &obj.symbols {
                 if s.binding == codegen::SymbolBinding::Local && !s.name.is_empty() {
@@ -848,8 +847,12 @@ fn link_relocatable(
 
                     let elf_reloc_type = reloc_type_to_elf(&reloc.reloc_type);
 
-                    let entry = relocs_by_section.entry(rela_name.clone()).or_insert_with(Vec::new);
-                    rela_section_targets.entry(rela_name).or_insert(elf_sec_idx as usize);
+                    let entry = relocs_by_section
+                        .entry(rela_name.clone())
+                        .or_insert_with(Vec::new);
+                    rela_section_targets
+                        .entry(rela_name)
+                        .or_insert(elf_sec_idx as usize);
 
                     if is_64bit {
                         elf::write_u64_le(entry, adjusted_offset);
@@ -891,8 +894,8 @@ fn link_relocatable(
                 sh_addr: 0,
                 sh_addralign: if is_64bit { 8 } else { 4 },
                 sh_entsize: rela_entsize,
-                sh_link: symtab_section_idx as u32,  // points to .symtab
-                sh_info: target_elf_idx as u32,       // section being relocated
+                sh_link: symtab_section_idx as u32, // points to .symtab
+                sh_info: target_elf_idx as u32,     // section being relocated
             },
             file_offset: None,
         });
@@ -1029,42 +1032,106 @@ const BUILTIN_PRINTF_X86_64: [u8; 1516] = [
 ];
 const BUILTIN_PUTS_OFFSET_X86_64: u64 = 0x598;
 
+/// Builtin printf/puts for i686 (32-bit x86).
+/// printf: writes the format string directly via write(2) syscall (int 0x80).
+/// puts: writes the string + newline via write(2) syscall.
+/// No format specifier handling — intended for simple string output.
+const BUILTIN_PRINTF_I686: [u8; 106] = [
+    // printf (offset 0x00, size 37 = 0x25):
+    0x55, 0x89, 0xe5, 0x56, 0x53, 0x8b, 0x75, 0x08, 0x31, 0xd2, 0x80, 0x3c, 0x16, 0x00, 0x74, 0x03,
+    0x42, 0xeb, 0xf7, 0xb8, 0x04, 0x00, 0x00, 0x00, 0xbb, 0x01, 0x00, 0x00, 0x00, 0x89, 0xf1, 0xcd,
+    0x80, 0x5b, 0x5e, 0x5d, 0xc3, // puts (offset 0x25, size 69):
+    0x55, 0x89, 0xe5, 0x56, 0x53, 0x83, 0xec, 0x04, 0x8b, 0x75, 0x08, 0x31, 0xd2, 0x80, 0x3c, 0x16,
+    0x00, 0x74, 0x03, 0x42, 0xeb, 0xf7, 0xb8, 0x04, 0x00, 0x00, 0x00, 0xbb, 0x01, 0x00, 0x00, 0x00,
+    0x89, 0xf1, 0xcd, 0x80, 0xc6, 0x45, 0xf4, 0x0a, 0x8d, 0x4d, 0xf4, 0xba, 0x01, 0x00, 0x00, 0x00,
+    0xb8, 0x04, 0x00, 0x00, 0x00, 0xbb, 0x01, 0x00, 0x00, 0x00, 0xcd, 0x80, 0x31, 0xc0, 0x83, 0xc4,
+    0x04, 0x5b, 0x5e, 0x5d, 0xc3,
+];
+const BUILTIN_PUTS_OFFSET_I686: u64 = 0x25;
+
+/// Builtin printf/puts for AArch64.
+/// printf: writes the format string directly via write(2) syscall (svc #0, NR=64).
+/// puts: writes the string + newline via write(2) syscall.
+/// Both properly save/restore callee-saved register x19 per AAPCS64.
+const BUILTIN_PRINTF_AARCH64: [u8; 160] = [
+    // printf (offset 0x00, size 64 = 0x40):
+    0xfd, 0x7b, 0xbd, 0xa9, 0xfd, 0x03, 0x00, 0x91, 0xf3, 0x0b, 0x00, 0xf9, 0xf3, 0x03, 0x00, 0xaa,
+    0xe2, 0x03, 0x1f, 0xaa, 0x03, 0x68, 0x62, 0x38, 0x63, 0x00, 0x00, 0x34, 0x42, 0x04, 0x00, 0x91,
+    0xfd, 0xff, 0xff, 0x17, 0x20, 0x00, 0x80, 0xd2, 0xe1, 0x03, 0x13, 0xaa, 0x08, 0x08, 0x80, 0xd2,
+    0x01, 0x00, 0x00, 0xd4, 0xf3, 0x0b, 0x40, 0xf9, 0xfd, 0x7b, 0xc3, 0xa8, 0xc0, 0x03, 0x5f, 0xd6,
+    // puts (offset 0x40, size 96):
+    0xfd, 0x7b, 0xbd, 0xa9, 0xfd, 0x03, 0x00, 0x91, 0xf3, 0x0b, 0x00, 0xf9, 0xf3, 0x03, 0x00, 0xaa,
+    0xe2, 0x03, 0x1f, 0xaa, 0x03, 0x68, 0x62, 0x38, 0x63, 0x00, 0x00, 0x34, 0x42, 0x04, 0x00, 0x91,
+    0xfd, 0xff, 0xff, 0x17, 0x20, 0x00, 0x80, 0xd2, 0xe1, 0x03, 0x13, 0xaa, 0x08, 0x08, 0x80, 0xd2,
+    0x01, 0x00, 0x00, 0xd4, 0x43, 0x01, 0x80, 0x52, 0xe3, 0x83, 0x00, 0x39, 0x20, 0x00, 0x80, 0xd2,
+    0xe1, 0x83, 0x00, 0x91, 0x22, 0x00, 0x80, 0xd2, 0x08, 0x08, 0x80, 0xd2, 0x01, 0x00, 0x00, 0xd4,
+    0x00, 0x00, 0x80, 0xd2, 0xf3, 0x0b, 0x40, 0xf9, 0xfd, 0x7b, 0xc3, 0xa8, 0xc0, 0x03, 0x5f, 0xd6,
+];
+const BUILTIN_PUTS_OFFSET_AARCH64: u64 = 0x40;
+
+/// Builtin printf/puts for RISC-V 64.
+/// printf: writes the format string directly via write(2) syscall (ecall, NR=64).
+/// puts: writes the string + newline via write(2) syscall.
+const BUILTIN_PRINTF_RISCV64: [u8; 176] = [
+    // printf (offset 0x00, size 72 = 0x48):
+    0x13, 0x01, 0x01, 0xfe, 0x23, 0x3c, 0x11, 0x00, 0x23, 0x38, 0x81, 0x00, 0x13, 0x04, 0x05, 0x00,
+    0x13, 0x06, 0x00, 0x00, 0xb3, 0x02, 0xc5, 0x00, 0x03, 0xc3, 0x02, 0x00, 0x63, 0x06, 0x03, 0x00,
+    0x13, 0x06, 0x16, 0x00, 0x6f, 0xf0, 0x1f, 0xff, 0x13, 0x05, 0x10, 0x00, 0x93, 0x05, 0x04, 0x00,
+    0x93, 0x08, 0x00, 0x04, 0x73, 0x00, 0x00, 0x00, 0x83, 0x30, 0x81, 0x01, 0x03, 0x34, 0x01, 0x01,
+    0x13, 0x01, 0x01, 0x02, 0x67, 0x80, 0x00, 0x00, // puts (offset 0x48, size 104):
+    0x13, 0x01, 0x01, 0xfd, 0x23, 0x34, 0x11, 0x02, 0x23, 0x30, 0x81, 0x02, 0x13, 0x04, 0x05, 0x00,
+    0x13, 0x06, 0x00, 0x00, 0xb3, 0x02, 0xc5, 0x00, 0x03, 0xc3, 0x02, 0x00, 0x63, 0x06, 0x03, 0x00,
+    0x13, 0x06, 0x16, 0x00, 0x6f, 0xf0, 0x1f, 0xff, 0x13, 0x05, 0x10, 0x00, 0x93, 0x05, 0x04, 0x00,
+    0x93, 0x08, 0x00, 0x04, 0x73, 0x00, 0x00, 0x00, 0x93, 0x02, 0xa0, 0x00, 0x23, 0x00, 0x51, 0x00,
+    0x13, 0x05, 0x10, 0x00, 0x93, 0x05, 0x01, 0x00, 0x13, 0x06, 0x10, 0x00, 0x93, 0x08, 0x00, 0x04,
+    0x73, 0x00, 0x00, 0x00, 0x13, 0x05, 0x00, 0x00, 0x83, 0x30, 0x81, 0x02, 0x03, 0x34, 0x01, 0x02,
+    0x13, 0x01, 0x01, 0x03, 0x67, 0x80, 0x00, 0x00,
+];
+const BUILTIN_PUTS_OFFSET_RISCV64: u64 = 0x48;
+
 /// Generate a builtin printf/puts implementation for the given architecture.
 /// Returns (code_bytes, relocations, symbols) like generate_builtin_start.
+///
+/// These are minimal write(2)-based implementations that output the format
+/// string directly without processing format specifiers. This enables
+/// standalone executables (no -lc) to call printf/puts for simple string
+/// output such as `printf("Hello, World!\n")`.
 fn generate_builtin_printf(
     arch: crate::driver::target::Architecture,
 ) -> Option<(Vec<u8>, Vec<codegen::Relocation>, Vec<codegen::Symbol>)> {
     use crate::driver::target::Architecture;
-    match arch {
-        Architecture::X86_64 => {
-            let code = BUILTIN_PRINTF_X86_64.to_vec();
-            let total_size = code.len() as u64;
-            let syms = vec![
-                codegen::Symbol {
-                    name: String::from("printf"),
-                    offset: 0,
-                    size: BUILTIN_PUTS_OFFSET_X86_64,
-                    binding: codegen::SymbolBinding::Global,
-                    symbol_type: codegen::SymbolType::Function,
-                    section_index: 0,
-                    visibility: codegen::SymbolVisibility::Default,
-                    is_definition: true,
-                },
-                codegen::Symbol {
-                    name: String::from("puts"),
-                    offset: BUILTIN_PUTS_OFFSET_X86_64,
-                    size: total_size - BUILTIN_PUTS_OFFSET_X86_64,
-                    binding: codegen::SymbolBinding::Global,
-                    symbol_type: codegen::SymbolType::Function,
-                    section_index: 0,
-                    visibility: codegen::SymbolVisibility::Default,
-                    is_definition: true,
-                },
-            ];
-            Some((code, Vec::new(), syms))
-        }
-        _ => None,
-    }
+
+    let (code, puts_offset): (Vec<u8>, u64) = match arch {
+        Architecture::X86_64 => (BUILTIN_PRINTF_X86_64.to_vec(), BUILTIN_PUTS_OFFSET_X86_64),
+        Architecture::I686 => (BUILTIN_PRINTF_I686.to_vec(), BUILTIN_PUTS_OFFSET_I686),
+        Architecture::Aarch64 => (BUILTIN_PRINTF_AARCH64.to_vec(), BUILTIN_PUTS_OFFSET_AARCH64),
+        Architecture::Riscv64 => (BUILTIN_PRINTF_RISCV64.to_vec(), BUILTIN_PUTS_OFFSET_RISCV64),
+    };
+
+    let total_size = code.len() as u64;
+    let syms = vec![
+        codegen::Symbol {
+            name: String::from("printf"),
+            offset: 0,
+            size: puts_offset,
+            binding: codegen::SymbolBinding::Global,
+            symbol_type: codegen::SymbolType::Function,
+            section_index: 0,
+            visibility: codegen::SymbolVisibility::Default,
+            is_definition: true,
+        },
+        codegen::Symbol {
+            name: String::from("puts"),
+            offset: puts_offset,
+            size: total_size - puts_offset,
+            binding: codegen::SymbolBinding::Global,
+            symbol_type: codegen::SymbolType::Function,
+            section_index: 0,
+            visibility: codegen::SymbolVisibility::Default,
+            is_definition: true,
+        },
+    ];
+    Some((code, Vec::new(), syms))
 }
 
 /// `crtn.o`) with a compact stub that calls `main` and exits via syscall,
@@ -1073,11 +1140,7 @@ fn generate_builtin_printf(
 /// Returns `(text_bytes, relocations, symbols)`.
 fn generate_builtin_start(
     arch: crate::driver::target::Architecture,
-) -> (
-    Vec<u8>,
-    Vec<codegen::Relocation>,
-    Vec<codegen::Symbol>,
-) {
+) -> (Vec<u8>, Vec<codegen::Relocation>, Vec<codegen::Symbol>) {
     use crate::driver::target::Architecture;
 
     match arch {
@@ -1093,18 +1156,18 @@ fn generate_builtin_start(
             //   syscall                ; 0f 05
             //   hlt                    ; f4
             let code: Vec<u8> = vec![
-                0x31, 0xED,                         // xor ebp, ebp
-                0x48, 0x8B, 0x3C, 0x24,             // mov rdi, [rsp]
-                0x48, 0x8D, 0x74, 0x24, 0x08,       // lea rsi, [rsp+8]
-                0x48, 0x83, 0xE4, 0xF0,             // and rsp, -16
-                0xE8, 0x00, 0x00, 0x00, 0x00,       // call rel32 (patched)
-                0x89, 0xC7,                         // mov edi, eax
-                0xB8, 0x3C, 0x00, 0x00, 0x00,       // mov eax, 60
-                0x0F, 0x05,                         // syscall
-                0xF4,                               // hlt
+                0x31, 0xED, // xor ebp, ebp
+                0x48, 0x8B, 0x3C, 0x24, // mov rdi, [rsp]
+                0x48, 0x8D, 0x74, 0x24, 0x08, // lea rsi, [rsp+8]
+                0x48, 0x83, 0xE4, 0xF0, // and rsp, -16
+                0xE8, 0x00, 0x00, 0x00, 0x00, // call rel32 (patched)
+                0x89, 0xC7, // mov edi, eax
+                0xB8, 0x3C, 0x00, 0x00, 0x00, // mov eax, 60
+                0x0F, 0x05, // syscall
+                0xF4, // hlt
             ];
             let relocs = vec![codegen::Relocation {
-                offset: 16,  // offset of the rel32 in `call main`
+                offset: 16, // offset of the rel32 in `call main`
                 symbol: String::from("main"),
                 reloc_type: codegen::RelocationType::X86_64_PLT32,
                 addend: -4,
@@ -1136,17 +1199,17 @@ fn generate_builtin_start(
             //   int  0x80              ; cd 80
             //   hlt                    ; f4
             let code: Vec<u8> = vec![
-                0x31, 0xED,                         // xor ebp, ebp
-                0x8B, 0x0C, 0x24,                   // mov ecx, [esp]
-                0x8D, 0x54, 0x24, 0x04,             // lea edx, [esp+4]
-                0x83, 0xE4, 0xF0,                   // and esp, -16
-                0x52,                               // push edx
-                0x51,                               // push ecx
-                0xE8, 0x00, 0x00, 0x00, 0x00,       // call rel32
-                0x89, 0xC3,                         // mov ebx, eax
-                0xB8, 0x01, 0x00, 0x00, 0x00,       // mov eax, 1
-                0xCD, 0x80,                         // int 0x80
-                0xF4,                               // hlt
+                0x31, 0xED, // xor ebp, ebp
+                0x8B, 0x0C, 0x24, // mov ecx, [esp]
+                0x8D, 0x54, 0x24, 0x04, // lea edx, [esp+4]
+                0x83, 0xE4, 0xF0, // and esp, -16
+                0x52, // push edx
+                0x51, // push ecx
+                0xE8, 0x00, 0x00, 0x00, 0x00, // call rel32
+                0x89, 0xC3, // mov ebx, eax
+                0xB8, 0x01, 0x00, 0x00, 0x00, // mov eax, 1
+                0xCD, 0x80, // int 0x80
+                0xF4, // hlt
             ];
             let relocs = vec![codegen::Relocation {
                 offset: 15,
@@ -1271,10 +1334,9 @@ fn link_static_executable(
     //     while still using our lightweight built-in `_start` stub (which
     //     doesn't depend on libc's `__libc_start_main`).
     let has_main = input.objects.iter().any(|obj| {
-        obj.symbols.iter().any(|s| {
-            s.name == "main"
-                && s.binding == codegen::SymbolBinding::Global
-        })
+        obj.symbols
+            .iter()
+            .any(|s| s.name == "main" && s.binding == codegen::SymbolBinding::Global)
     });
     let use_full_system_crt = !config.libraries.is_empty();
     let use_partial_crt = !use_full_system_crt && has_main;
@@ -1290,10 +1352,18 @@ fn link_static_executable(
                 }
                 c
             }
-            Err(_) => CrtObjects { crt1: None, crti: None, crtn: None },
+            Err(_) => CrtObjects {
+                crt1: None,
+                crti: None,
+                crtn: None,
+            },
         }
     } else {
-        CrtObjects { crt1: None, crti: None, crtn: None }
+        CrtObjects {
+            crt1: None,
+            crti: None,
+            crtn: None,
+        }
     };
 
     // Step 2: Resolve libraries specified via -l flags.
@@ -1476,13 +1546,14 @@ fn link_static_executable(
         if needs_printf {
             if let Some((text, _relocs, syms)) = generate_builtin_printf(config.target.arch) {
                 let idx = object_count;
+                let text_len = text.len() as u64;
                 all_sections.push(sections::InputSection {
                     name: String::from(".text"),
                     data: text,
                     section_type: elf::SHT_PROGBITS,
                     flags: elf::SHF_ALLOC | elf::SHF_EXECINSTR,
                     alignment: 16,
-                    mem_size: BUILTIN_PRINTF_X86_64.len() as u64,
+                    mem_size: text_len,
                     object_index: idx,
                     original_index: 0,
                 });
@@ -1560,7 +1631,11 @@ fn link_static_executable(
 
     // Step 9: Compute section addresses and file offsets.
     let base_address = script::default_base_address(&config.target);
-    let class = if is_64bit { elf::ELFCLASS64 } else { elf::ELFCLASS32 };
+    let class = if is_64bit {
+        elf::ELFCLASS64
+    } else {
+        elf::ELFCLASS32
+    };
     let ehdr_sz = elf::ehdr_size(class) as u64;
     let phdr_sz = elf::phdr_size(class) as u64;
 
@@ -1573,12 +1648,18 @@ fn link_static_executable(
     let mut has_ro = false;
     let mut has_rw = false;
     for sec in &merged {
-        if sec.flags & elf::SHF_ALLOC == 0 { continue; }
+        if sec.flags & elf::SHF_ALLOC == 0 {
+            continue;
+        }
         let is_exec = sec.flags & elf::SHF_EXECINSTR != 0;
         let is_write = sec.flags & elf::SHF_WRITE != 0;
-        if is_exec { has_rx = true; }
-        else if is_write { has_rw = true; }
-        else { has_ro = true; }
+        if is_exec {
+            has_rx = true;
+        } else if is_write {
+            has_rw = true;
+        } else {
+            has_ro = true;
+        }
     }
     let phdr_count: u64 = (has_rx as u64) + (has_ro as u64) + (has_rw as u64) + 1; // +1 for GNU_STACK
     let header_size = ehdr_sz + phdr_count * phdr_sz;
@@ -1612,10 +1693,7 @@ fn link_static_executable(
                 (mapping.object_index, mapping.original_index),
                 (merged_idx, mapping.output_offset),
             );
-            merged_index_map.insert(
-                (mapping.object_index, mapping.original_index),
-                merged_idx,
-            );
+            merged_index_map.insert((mapping.object_index, mapping.original_index), merged_idx);
         }
     }
 
@@ -1740,15 +1818,8 @@ fn link_static_executable(
             // Prefer same-object local symbol, then any symbol by name.
             let sym_idx = resolved_vec
                 .iter()
-                .position(|rs| {
-                    rs.name == reloc.symbol
-                        && rs.source_object == Some(global_obj_idx)
-                })
-                .or_else(|| {
-                    resolved_vec
-                        .iter()
-                        .position(|rs| rs.name == reloc.symbol)
-                })
+                .position(|rs| rs.name == reloc.symbol && rs.source_object == Some(global_obj_idx))
+                .or_else(|| resolved_vec.iter().position(|rs| rs.name == reloc.symbol))
                 .unwrap_or(0) as u32;
 
             // Map the codegen section index to the merged section index and
@@ -1930,7 +2001,11 @@ fn link_shared_library(
 
     // Step 7: Compute layout. Shared libraries use base address 0 (PIE).
     let base_address: u64 = 0;
-    let class = if is_64bit { elf::ELFCLASS64 } else { elf::ELFCLASS32 };
+    let class = if is_64bit {
+        elf::ELFCLASS64
+    } else {
+        elf::ELFCLASS32
+    };
     let ehdr_sz = elf::ehdr_size(class) as u64;
     let phdr_sz = elf::phdr_size(class) as u64;
     // Count actual segments for shared libraries (same logic as executable + PT_DYNAMIC).
@@ -1938,12 +2013,18 @@ fn link_shared_library(
     let mut has_ro_so = false;
     let mut has_rw_so = false;
     for sec in &merged {
-        if sec.flags & elf::SHF_ALLOC == 0 { continue; }
+        if sec.flags & elf::SHF_ALLOC == 0 {
+            continue;
+        }
         let is_exec = sec.flags & elf::SHF_EXECINSTR != 0;
         let is_write = sec.flags & elf::SHF_WRITE != 0;
-        if is_exec { has_rx_so = true; }
-        else if is_write { has_rw_so = true; }
-        else { has_ro_so = true; }
+        if is_exec {
+            has_rx_so = true;
+        } else if is_write {
+            has_rw_so = true;
+        } else {
+            has_ro_so = true;
+        }
     }
     let phdr_count_so: u64 = (has_rx_so as u64) + (has_ro_so as u64) + (has_rw_so as u64) + 2; // +1 GNU_STACK, +1 PT_DYNAMIC
     let header_size = ehdr_sz + phdr_count_so * phdr_sz;
@@ -1970,10 +2051,7 @@ fn link_shared_library(
                 (mapping.object_index, mapping.original_index),
                 (merged_idx, mapping.output_offset),
             );
-            merged_index_map.insert(
-                (mapping.object_index, mapping.original_index),
-                merged_idx,
-            );
+            merged_index_map.insert((mapping.object_index, mapping.original_index), merged_idx);
         }
     }
 
@@ -2149,12 +2227,7 @@ fn link_shared_library(
 
         // Recompute layout so the new sections get valid virtual addresses
         // and file offsets.
-        let _relayout = sections::compute_layout(
-            &mut merged,
-            base_address,
-            header_size,
-            is_64bit,
-        );
+        let _relayout = sections::compute_layout(&mut merged, base_address, header_size, is_64bit);
     }
 
     // Step 11: Emit the final ELF shared object.
@@ -2200,10 +2273,18 @@ fn build_elf_output(
         // Set sh_entsize for structured sections that require it.
         let entsize = match sec.section_type {
             elf::SHT_DYNSYM => {
-                if is_64bit { 24 } else { 16 }
+                if is_64bit {
+                    24
+                } else {
+                    16
+                }
             }
             elf::SHT_DYNAMIC => {
-                if is_64bit { 16 } else { 8 }
+                if is_64bit {
+                    16
+                } else {
+                    8
+                }
             }
             elf::SHT_HASH => 4,
             _ => 0,
@@ -2211,11 +2292,12 @@ fn build_elf_output(
         // For SHT_NOBITS (.bss) sections, the merged data is empty but
         // mem_size tracks the actual virtual size. Set data to a zero-filled
         // vector so the ELF writer's data.len() reports the correct sh_size.
-        let section_data = if sec.section_type == elf::SHT_NOBITS && sec.data.is_empty() && sec.mem_size > 0 {
-            vec![0u8; sec.mem_size as usize]
-        } else {
-            sec.data.clone()
-        };
+        let section_data =
+            if sec.section_type == elf::SHT_NOBITS && sec.data.is_empty() && sec.mem_size > 0 {
+                vec![0u8; sec.mem_size as usize]
+            } else {
+                sec.data.clone()
+            };
         writer.add_section(elf::OutputSection {
             name: sec.name.clone(),
             data: section_data,
@@ -2566,10 +2648,7 @@ mod tests {
             format!("{:?}", OutputMode::StaticExecutable),
             "StaticExecutable"
         );
-        assert_eq!(
-            format!("{:?}", OutputMode::SharedLibrary),
-            "SharedLibrary"
-        );
+        assert_eq!(format!("{:?}", OutputMode::SharedLibrary), "SharedLibrary");
     }
 
     #[test]
@@ -2646,10 +2725,7 @@ mod tests {
     #[test]
     fn test_linker_error_display_unsupported_relocation() {
         let err = LinkerError::UnsupportedRelocation(String::from("R_UNKNOWN_42"));
-        assert_eq!(
-            format!("{}", err),
-            "unsupported relocation: R_UNKNOWN_42"
-        );
+        assert_eq!(format!("{}", err), "unsupported relocation: R_UNKNOWN_42");
     }
 
     #[test]
@@ -2687,9 +2763,7 @@ mod tests {
         let target = TargetConfig::x86_64();
         let config = LinkerConfig::new(target);
         let paths = build_crt_search_paths(&config);
-        assert!(paths
-            .iter()
-            .any(|p| p.to_str().unwrap().contains("x86_64")));
+        assert!(paths.iter().any(|p| p.to_str().unwrap().contains("x86_64")));
     }
 
     #[test]
@@ -2697,11 +2771,9 @@ mod tests {
         let target = TargetConfig::i686();
         let config = LinkerConfig::new(target);
         let paths = build_crt_search_paths(&config);
-        assert!(paths
-            .iter()
-            .any(|p| p.to_str().unwrap().contains("i386")
-                || p.to_str().unwrap().contains("lib32")
-                || p.to_str().unwrap().contains("i686")));
+        assert!(paths.iter().any(|p| p.to_str().unwrap().contains("i386")
+            || p.to_str().unwrap().contains("lib32")
+            || p.to_str().unwrap().contains("i686")));
     }
 
     #[test]
@@ -2750,7 +2822,9 @@ mod tests {
     fn test_library_name_resolution_not_found() {
         let target = TargetConfig::x86_64();
         let mut config = LinkerConfig::new(target);
-        config.libraries.push(String::from("nonexistent_lib_xyz_123"));
+        config
+            .libraries
+            .push(String::from("nonexistent_lib_xyz_123"));
         config.force_static = true;
         let libs = resolve_libraries(&config).unwrap();
         // Library not found is silently skipped (consistent with ld behavior).

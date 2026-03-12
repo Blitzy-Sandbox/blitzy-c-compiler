@@ -57,8 +57,8 @@
 //! This module contains zero `unsafe` blocks. All operations use safe Rust.
 
 use super::ast::{
-    AssignmentOp, BinaryOp, CharPrefix, Expression, FloatSuffix, GenericAssociation,
-    Initializer, IntSuffix, NumericBase, StringPrefix, UnaryOp,
+    AssignmentOp, BinaryOp, CharPrefix, Expression, FloatSuffix, GenericAssociation, Initializer,
+    IntSuffix, NumericBase, StringPrefix, UnaryOp,
 };
 use super::gcc_extensions;
 use super::types;
@@ -144,7 +144,10 @@ fn token_to_binary_op(kind: TokenKind) -> BinaryOp {
         TokenKind::Greater => BinaryOp::Greater,
         TokenKind::LessEqual => BinaryOp::LessEqual,
         TokenKind::GreaterEqual => BinaryOp::GreaterEqual,
-        _ => unreachable!("token_to_binary_op called with non-binary operator: {:?}", kind),
+        _ => unreachable!(
+            "token_to_binary_op called with non-binary operator: {:?}",
+            kind
+        ),
     }
 }
 
@@ -267,8 +270,18 @@ fn parse_conditional_expression(parser: &mut Parser<'_>) -> Expression {
         return condition;
     }
 
-    // Parse the "then" branch as a full expression (includes comma operator).
-    let then_expr = parse_expression(parser);
+    // GCC extension: `x ?: y` is shorthand for `x ? x : y`.
+    // If `:` follows immediately after `?`, the then-expression is
+    // the condition itself. This avoids double-evaluation in GCC
+    // semantics (the condition is evaluated once and used as both the
+    // test and the true-branch value).
+    let then_expr = if parser.check(TokenKind::Colon) {
+        // Omitted middle operand — reuse condition.
+        condition.clone()
+    } else {
+        // Parse the "then" branch as a full expression (includes comma operator).
+        parse_expression(parser)
+    };
 
     // Expect `:`.
     if parser.expect(TokenKind::Colon).is_err() {
@@ -535,9 +548,7 @@ fn parse_cast_expression(parser: &mut Parser<'_>) -> Expression {
         //   typedef struct list { int len; } list;
         //   struct list *list;
         //   if ((list = malloc(...)) == NULL)  // NOT a cast, it's assignment
-        if is_type_start_token(parser, parser.peek())
-            && !is_typedef_var_use(parser)
-        {
+        if is_type_start_token(parser, parser.peek()) && !is_typedef_var_use(parser) {
             let start = parser.current_span();
             parser.advance(); // Consume `(`
 
@@ -655,7 +666,10 @@ fn parse_alignof(parser: &mut Parser<'_>) -> Expression {
 ///
 /// Checks for type specifier keywords, type qualifier keywords, and typedef
 /// names (identifiers that were previously declared as typedef names).
-pub(super) fn is_type_start_token(parser: &Parser<'_>, token: &crate::frontend::lexer::token::Token) -> bool {
+pub(super) fn is_type_start_token(
+    parser: &Parser<'_>,
+    token: &crate::frontend::lexer::token::Token,
+) -> bool {
     let kind = token.kind;
 
     // Type specifier keywords (int, void, struct, union, enum, etc.)
@@ -997,8 +1011,12 @@ fn parse_primary_expression(parser: &mut Parser<'_>) -> Expression {
         kind if is_regular_builtin(kind) => {
             // Parse as a regular identifier + function call.
             // The builtin keyword is used as if it were an identifier name.
+            // We intern the keyword string so the sema layer can look up
+            // the builtin by name (e.g. "__builtin_memcpy").
             let kw_str = kind.as_str();
-            let name = parser.lookup_interned(kw_str).unwrap_or(InternId::from_raw(0));
+            let name = parser
+                .lookup_interned(kw_str)
+                .unwrap_or(InternId::from_raw(0));
             parser.advance();
             let span = parser.span_from(start);
             Expression::Identifier { name, span }
@@ -1007,7 +1025,9 @@ fn parse_primary_expression(parser: &mut Parser<'_>) -> Expression {
         // __builtin_va_list used as a type — treat as identifier in expr context
         TokenKind::BuiltinVaList => {
             let kw_str = parser.current().kind.as_str();
-            let name = parser.lookup_interned(kw_str).unwrap_or(InternId::from_raw(0));
+            let name = parser
+                .lookup_interned(kw_str)
+                .unwrap_or(InternId::from_raw(0));
             parser.advance();
             let span = parser.span_from(start);
             Expression::Identifier { name, span }
@@ -1122,7 +1142,13 @@ fn parse_paren_expression(parser: &mut Parser<'_>) -> Expression {
         after_ext.kind.is_type_specifier()
             || after_ext.kind.is_type_qualifier()
             || after_ext.kind.is_storage_class()
-            || matches!(after_ext.kind, TokenKind::Inline | TokenKind::Noreturn | TokenKind::GccAttribute | TokenKind::BuiltinVaList)
+            || matches!(
+                after_ext.kind,
+                TokenKind::Inline
+                    | TokenKind::Noreturn
+                    | TokenKind::GccAttribute
+                    | TokenKind::BuiltinVaList
+            )
             || (after_ext.kind == TokenKind::Identifier && {
                 if let super::super::lexer::token::TokenValue::Identifier(id) = after_ext.value {
                     parser.is_typedef_name(id)
@@ -1567,9 +1593,7 @@ fn convert_int_suffix(token_suffix: crate::frontend::lexer::token::IntSuffix) ->
 }
 
 /// Converts a token-level `FloatSuffix` to the AST-level `FloatSuffix`.
-fn convert_float_suffix(
-    token_suffix: crate::frontend::lexer::token::FloatSuffix,
-) -> FloatSuffix {
+fn convert_float_suffix(token_suffix: crate::frontend::lexer::token::FloatSuffix) -> FloatSuffix {
     use crate::frontend::lexer::token::FloatSuffix as FS;
     match token_suffix {
         FS::None => FloatSuffix::None,
@@ -1579,9 +1603,7 @@ fn convert_float_suffix(
 }
 
 /// Converts a token-level `NumericBase` to the AST-level `NumericBase`.
-fn convert_numeric_base(
-    token_base: crate::frontend::lexer::token::NumericBase,
-) -> NumericBase {
+fn convert_numeric_base(token_base: crate::frontend::lexer::token::NumericBase) -> NumericBase {
     use crate::frontend::lexer::token::NumericBase as NB;
     match token_base {
         NB::Decimal => NumericBase::Decimal,
@@ -1642,7 +1664,12 @@ fn recover_to_bracket_close(parser: &mut Parser<'_>) {
             // Use match_any to check for statement boundary stop-tokens.
             // match_any consumes the token if it matches, which is
             // acceptable here since we are discarding tokens during recovery.
-            _ if parser.match_any(&[TokenKind::Semicolon, TokenKind::RightBrace]).is_some() => return,
+            _ if parser
+                .match_any(&[TokenKind::Semicolon, TokenKind::RightBrace])
+                .is_some() =>
+            {
+                return
+            }
             _ => {
                 parser.advance();
             }
@@ -1681,7 +1708,11 @@ mod tests {
     /// Creates an identifier token.
     fn tok_id(interner: &mut Interner, name: &str) -> Token {
         let id = interner.intern(name);
-        Token::new(TokenKind::Identifier, dummy_span(), TokenValue::Identifier(id))
+        Token::new(
+            TokenKind::Identifier,
+            dummy_span(),
+            TokenValue::Identifier(id),
+        )
     }
 
     /// Creates an integer literal token.
@@ -1759,14 +1790,34 @@ mod tests {
     #[test]
     fn test_add_mul_precedence() {
         // 1 + 2 * 3 → Binary(Add, 1, Binary(Mul, 2, 3))
-        let tokens = vec![tok_int(1), tok(TokenKind::Plus), tok_int(2),
-                          tok(TokenKind::Star), tok_int(3), tok_eof()];
+        let tokens = vec![
+            tok_int(1),
+            tok(TokenKind::Plus),
+            tok_int(2),
+            tok(TokenKind::Star),
+            tok_int(3),
+            tok_eof(),
+        ];
         let (expr, _) = parse_tokens(tokens);
 
         match expr {
-            Expression::Binary { op: BinaryOp::Add, ref left, ref right, .. } => {
-                assert!(matches!(**left, Expression::IntegerLiteral { value: 1, .. }));
-                assert!(matches!(**right, Expression::Binary { op: BinaryOp::Mul, .. }));
+            Expression::Binary {
+                op: BinaryOp::Add,
+                ref left,
+                ref right,
+                ..
+            } => {
+                assert!(matches!(
+                    **left,
+                    Expression::IntegerLiteral { value: 1, .. }
+                ));
+                assert!(matches!(
+                    **right,
+                    Expression::Binary {
+                        op: BinaryOp::Mul,
+                        ..
+                    }
+                ));
             }
             _ => panic!("expected Binary(Add, ...), got {:?}", expr),
         }
@@ -1775,14 +1826,34 @@ mod tests {
     #[test]
     fn test_mul_add_precedence() {
         // 1 * 2 + 3 → Binary(Add, Binary(Mul, 1, 2), 3)
-        let tokens = vec![tok_int(1), tok(TokenKind::Star), tok_int(2),
-                          tok(TokenKind::Plus), tok_int(3), tok_eof()];
+        let tokens = vec![
+            tok_int(1),
+            tok(TokenKind::Star),
+            tok_int(2),
+            tok(TokenKind::Plus),
+            tok_int(3),
+            tok_eof(),
+        ];
         let (expr, _) = parse_tokens(tokens);
 
         match expr {
-            Expression::Binary { op: BinaryOp::Add, ref left, ref right, .. } => {
-                assert!(matches!(**left, Expression::Binary { op: BinaryOp::Mul, .. }));
-                assert!(matches!(**right, Expression::IntegerLiteral { value: 3, .. }));
+            Expression::Binary {
+                op: BinaryOp::Add,
+                ref left,
+                ref right,
+                ..
+            } => {
+                assert!(matches!(
+                    **left,
+                    Expression::Binary {
+                        op: BinaryOp::Mul,
+                        ..
+                    }
+                ));
+                assert!(matches!(
+                    **right,
+                    Expression::IntegerLiteral { value: 3, .. }
+                ));
             }
             _ => panic!("expected Binary(Add, Binary(Mul, ...), 3), got {:?}", expr),
         }
@@ -1793,15 +1864,28 @@ mod tests {
         // a || b && c → Binary(Or, a, Binary(And, b, c))
         let mut interner = Interner::new();
         let tokens = vec![
-            tok_id(&mut interner, "a"), tok(TokenKind::PipePipe),
-            tok_id(&mut interner, "b"), tok(TokenKind::AmpAmp),
-            tok_id(&mut interner, "c"), tok_eof(),
+            tok_id(&mut interner, "a"),
+            tok(TokenKind::PipePipe),
+            tok_id(&mut interner, "b"),
+            tok(TokenKind::AmpAmp),
+            tok_id(&mut interner, "c"),
+            tok_eof(),
         ];
         let (expr, _) = parse_with_interner(tokens, &interner);
 
         match expr {
-            Expression::Binary { op: BinaryOp::LogicalOr, ref right, .. } => {
-                assert!(matches!(**right, Expression::Binary { op: BinaryOp::LogicalAnd, .. }));
+            Expression::Binary {
+                op: BinaryOp::LogicalOr,
+                ref right,
+                ..
+            } => {
+                assert!(matches!(
+                    **right,
+                    Expression::Binary {
+                        op: BinaryOp::LogicalAnd,
+                        ..
+                    }
+                ));
             }
             _ => panic!("expected Binary(LogicalOr, ..., Binary(LogicalAnd, ...))"),
         }
@@ -1816,14 +1900,20 @@ mod tests {
         // x = 5
         let mut interner = Interner::new();
         let tokens = vec![
-            tok_id(&mut interner, "x"), tok(TokenKind::Equal),
-            tok_int(5), tok_eof(),
+            tok_id(&mut interner, "x"),
+            tok(TokenKind::Equal),
+            tok_int(5),
+            tok_eof(),
         ];
         let (expr, _) = parse_with_interner(tokens, &interner);
 
-        assert!(matches!(expr, Expression::Assignment {
-            op: AssignmentOp::Assign, ..
-        }));
+        assert!(matches!(
+            expr,
+            Expression::Assignment {
+                op: AssignmentOp::Assign,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -1831,14 +1921,20 @@ mod tests {
         // x += 1
         let mut interner = Interner::new();
         let tokens = vec![
-            tok_id(&mut interner, "x"), tok(TokenKind::PlusEqual),
-            tok_int(1), tok_eof(),
+            tok_id(&mut interner, "x"),
+            tok(TokenKind::PlusEqual),
+            tok_int(1),
+            tok_eof(),
         ];
         let (expr, _) = parse_with_interner(tokens, &interner);
 
-        assert!(matches!(expr, Expression::Assignment {
-            op: AssignmentOp::AddAssign, ..
-        }));
+        assert!(matches!(
+            expr,
+            Expression::Assignment {
+                op: AssignmentOp::AddAssign,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -1846,17 +1942,28 @@ mod tests {
         // a = b = c → Assignment(=, a, Assignment(=, b, c))
         let mut interner = Interner::new();
         let tokens = vec![
-            tok_id(&mut interner, "a"), tok(TokenKind::Equal),
-            tok_id(&mut interner, "b"), tok(TokenKind::Equal),
-            tok_id(&mut interner, "c"), tok_eof(),
+            tok_id(&mut interner, "a"),
+            tok(TokenKind::Equal),
+            tok_id(&mut interner, "b"),
+            tok(TokenKind::Equal),
+            tok_id(&mut interner, "c"),
+            tok_eof(),
         ];
         let (expr, _) = parse_with_interner(tokens, &interner);
 
         match expr {
-            Expression::Assignment { op: AssignmentOp::Assign, ref value, .. } => {
-                assert!(matches!(**value, Expression::Assignment {
-                    op: AssignmentOp::Assign, ..
-                }));
+            Expression::Assignment {
+                op: AssignmentOp::Assign,
+                ref value,
+                ..
+            } => {
+                assert!(matches!(
+                    **value,
+                    Expression::Assignment {
+                        op: AssignmentOp::Assign,
+                        ..
+                    }
+                ));
             }
             _ => panic!("expected nested assignment"),
         }
@@ -1871,9 +1978,12 @@ mod tests {
         // a ? b : c
         let mut interner = Interner::new();
         let tokens = vec![
-            tok_id(&mut interner, "a"), tok(TokenKind::Question),
-            tok_id(&mut interner, "b"), tok(TokenKind::Colon),
-            tok_id(&mut interner, "c"), tok_eof(),
+            tok_id(&mut interner, "a"),
+            tok(TokenKind::Question),
+            tok_id(&mut interner, "b"),
+            tok(TokenKind::Colon),
+            tok_id(&mut interner, "c"),
+            tok_eof(),
         ];
         let (expr, _) = parse_with_interner(tokens, &interner);
 
@@ -1888,13 +1998,14 @@ mod tests {
     fn test_unary_prefix() {
         // -x
         let mut interner = Interner::new();
-        let tokens = vec![
-            tok(TokenKind::Minus), tok_id(&mut interner, "x"), tok_eof(),
-        ];
+        let tokens = vec![tok(TokenKind::Minus), tok_id(&mut interner, "x"), tok_eof()];
         let (expr, _) = parse_with_interner(tokens, &interner);
 
         match expr {
-            Expression::UnaryPrefix { op: UnaryOp::Negate, .. } => {}
+            Expression::UnaryPrefix {
+                op: UnaryOp::Negate,
+                ..
+            } => {}
             _ => panic!("expected UnaryPrefix(Negate, ...)"),
         }
     }
@@ -1904,23 +2015,32 @@ mod tests {
         // -(-x) → Negate(Negate(x))
         let mut interner = Interner::new();
         let tokens = vec![
-            tok(TokenKind::Minus), tok(TokenKind::LeftParen),
-            tok(TokenKind::Minus), tok_id(&mut interner, "x"),
-            tok(TokenKind::RightParen), tok_eof(),
+            tok(TokenKind::Minus),
+            tok(TokenKind::LeftParen),
+            tok(TokenKind::Minus),
+            tok_id(&mut interner, "x"),
+            tok(TokenKind::RightParen),
+            tok_eof(),
         ];
         let (expr, _) = parse_with_interner(tokens, &interner);
 
         match expr {
-            Expression::UnaryPrefix { op: UnaryOp::Negate, ref operand, .. } => {
-                match **operand {
-                    Expression::Paren { ref inner, .. } => {
-                        assert!(matches!(**inner, Expression::UnaryPrefix {
-                            op: UnaryOp::Negate, ..
-                        }));
-                    }
-                    _ => panic!("expected Paren wrapping negation"),
+            Expression::UnaryPrefix {
+                op: UnaryOp::Negate,
+                ref operand,
+                ..
+            } => match **operand {
+                Expression::Paren { ref inner, .. } => {
+                    assert!(matches!(
+                        **inner,
+                        Expression::UnaryPrefix {
+                            op: UnaryOp::Negate,
+                            ..
+                        }
+                    ));
                 }
-            }
+                _ => panic!("expected Paren wrapping negation"),
+            },
             _ => panic!("expected UnaryPrefix(Negate, ...)"),
         }
     }
@@ -1930,13 +2050,19 @@ mod tests {
         // ++x
         let mut interner = Interner::new();
         let tokens = vec![
-            tok(TokenKind::PlusPlus), tok_id(&mut interner, "x"), tok_eof(),
+            tok(TokenKind::PlusPlus),
+            tok_id(&mut interner, "x"),
+            tok_eof(),
         ];
         let (expr, _) = parse_with_interner(tokens, &interner);
 
-        assert!(matches!(expr, Expression::UnaryPrefix {
-            op: UnaryOp::PreIncrement, ..
-        }));
+        assert!(matches!(
+            expr,
+            Expression::UnaryPrefix {
+                op: UnaryOp::PreIncrement,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -1944,16 +2070,26 @@ mod tests {
         // *&x → Deref(AddressOf(x))
         let mut interner = Interner::new();
         let tokens = vec![
-            tok(TokenKind::Star), tok(TokenKind::Amp),
-            tok_id(&mut interner, "x"), tok_eof(),
+            tok(TokenKind::Star),
+            tok(TokenKind::Amp),
+            tok_id(&mut interner, "x"),
+            tok_eof(),
         ];
         let (expr, _) = parse_with_interner(tokens, &interner);
 
         match expr {
-            Expression::UnaryPrefix { op: UnaryOp::Dereference, ref operand, .. } => {
-                assert!(matches!(**operand, Expression::UnaryPrefix {
-                    op: UnaryOp::AddressOf, ..
-                }));
+            Expression::UnaryPrefix {
+                op: UnaryOp::Dereference,
+                ref operand,
+                ..
+            } => {
+                assert!(matches!(
+                    **operand,
+                    Expression::UnaryPrefix {
+                        op: UnaryOp::AddressOf,
+                        ..
+                    }
+                ));
             }
             _ => panic!("expected Deref(AddressOf(x))"),
         }
@@ -1968,7 +2104,9 @@ mod tests {
         // x++
         let mut interner = Interner::new();
         let tokens = vec![
-            tok_id(&mut interner, "x"), tok(TokenKind::PlusPlus), tok_eof(),
+            tok_id(&mut interner, "x"),
+            tok(TokenKind::PlusPlus),
+            tok_eof(),
         ];
         let (expr, _) = parse_with_interner(tokens, &interner);
 
@@ -1980,10 +2118,15 @@ mod tests {
         // f(1, 2, 3)
         let mut interner = Interner::new();
         let tokens = vec![
-            tok_id(&mut interner, "f"), tok(TokenKind::LeftParen),
-            tok_int(1), tok(TokenKind::Comma),
-            tok_int(2), tok(TokenKind::Comma),
-            tok_int(3), tok(TokenKind::RightParen), tok_eof(),
+            tok_id(&mut interner, "f"),
+            tok(TokenKind::LeftParen),
+            tok_int(1),
+            tok(TokenKind::Comma),
+            tok_int(2),
+            tok(TokenKind::Comma),
+            tok_int(3),
+            tok(TokenKind::RightParen),
+            tok_eof(),
         ];
         let (expr, _) = parse_with_interner(tokens, &interner);
 
@@ -2000,8 +2143,10 @@ mod tests {
         // f()
         let mut interner = Interner::new();
         let tokens = vec![
-            tok_id(&mut interner, "f"), tok(TokenKind::LeftParen),
-            tok(TokenKind::RightParen), tok_eof(),
+            tok_id(&mut interner, "f"),
+            tok(TokenKind::LeftParen),
+            tok(TokenKind::RightParen),
+            tok_eof(),
         ];
         let (expr, _) = parse_with_interner(tokens, &interner);
 
@@ -2018,8 +2163,11 @@ mod tests {
         // a[i]
         let mut interner = Interner::new();
         let tokens = vec![
-            tok_id(&mut interner, "a"), tok(TokenKind::LeftBracket),
-            tok_id(&mut interner, "i"), tok(TokenKind::RightBracket), tok_eof(),
+            tok_id(&mut interner, "a"),
+            tok(TokenKind::LeftBracket),
+            tok_id(&mut interner, "i"),
+            tok(TokenKind::RightBracket),
+            tok_eof(),
         ];
         let (expr, _) = parse_with_interner(tokens, &interner);
 
@@ -2031,8 +2179,10 @@ mod tests {
         // s.x
         let mut interner = Interner::new();
         let tokens = vec![
-            tok_id(&mut interner, "s"), tok(TokenKind::Dot),
-            tok_id(&mut interner, "x"), tok_eof(),
+            tok_id(&mut interner, "s"),
+            tok(TokenKind::Dot),
+            tok_id(&mut interner, "x"),
+            tok_eof(),
         ];
         let (expr, _) = parse_with_interner(tokens, &interner);
 
@@ -2044,8 +2194,10 @@ mod tests {
         // p->y
         let mut interner = Interner::new();
         let tokens = vec![
-            tok_id(&mut interner, "p"), tok(TokenKind::Arrow),
-            tok_id(&mut interner, "y"), tok_eof(),
+            tok_id(&mut interner, "p"),
+            tok(TokenKind::Arrow),
+            tok_id(&mut interner, "y"),
+            tok_eof(),
         ];
         let (expr, _) = parse_with_interner(tokens, &interner);
 
@@ -2059,7 +2211,8 @@ mod tests {
         let tokens = vec![
             tok_id(&mut interner, "f"),
             tok(TokenKind::LeftParen),
-            tok_id(&mut interner, "a"), tok(TokenKind::Comma),
+            tok_id(&mut interner, "a"),
+            tok(TokenKind::Comma),
             tok_id(&mut interner, "b"),
             tok(TokenKind::RightParen),
             tok(TokenKind::LeftBracket),
@@ -2072,14 +2225,12 @@ mod tests {
         let (expr, _) = parse_with_interner(tokens, &interner);
 
         match expr {
-            Expression::MemberAccess { ref object, .. } => {
-                match **object {
-                    Expression::Subscript { ref array, .. } => {
-                        assert!(matches!(**array, Expression::Call { .. }));
-                    }
-                    _ => panic!("expected Subscript inside MemberAccess"),
+            Expression::MemberAccess { ref object, .. } => match **object {
+                Expression::Subscript { ref array, .. } => {
+                    assert!(matches!(**array, Expression::Call { .. }));
                 }
-            }
+                _ => panic!("expected Subscript inside MemberAccess"),
+            },
             _ => panic!("expected MemberAccess at top level"),
         }
     }
@@ -2113,9 +2264,7 @@ mod tests {
     #[test]
     fn test_string_concatenation() {
         // "hello" " " "world" → single string "hello world"
-        let tokens = vec![
-            tok_str("hello"), tok_str(" "), tok_str("world"), tok_eof(),
-        ];
+        let tokens = vec![tok_str("hello"), tok_str(" "), tok_str("world"), tok_eof()];
         let (expr, _) = parse_tokens(tokens);
 
         match expr {
@@ -2147,9 +2296,12 @@ mod tests {
     fn test_comma_expression() {
         // 1, 2, 3 → Comma { exprs: [1, 2, 3] }
         let tokens = vec![
-            tok_int(1), tok(TokenKind::Comma),
-            tok_int(2), tok(TokenKind::Comma),
-            tok_int(3), tok_eof(),
+            tok_int(1),
+            tok(TokenKind::Comma),
+            tok_int(2),
+            tok(TokenKind::Comma),
+            tok_int(3),
+            tok_eof(),
         ];
         let (expr, _) = parse_tokens(tokens);
 
@@ -2178,14 +2330,19 @@ mod tests {
     fn test_parenthesized_expression() {
         // (42)
         let tokens = vec![
-            tok(TokenKind::LeftParen), tok_int(42),
-            tok(TokenKind::RightParen), tok_eof(),
+            tok(TokenKind::LeftParen),
+            tok_int(42),
+            tok(TokenKind::RightParen),
+            tok_eof(),
         ];
         let (expr, _) = parse_tokens(tokens);
 
         match expr {
             Expression::Paren { ref inner, .. } => {
-                assert!(matches!(**inner, Expression::IntegerLiteral { value: 42, .. }));
+                assert!(matches!(
+                    **inner,
+                    Expression::IntegerLiteral { value: 42, .. }
+                ));
             }
             _ => panic!("expected Paren expression"),
         }
@@ -2200,24 +2357,38 @@ mod tests {
         // a | b ^ c & d → Binary(|, a, Binary(^, b, Binary(&, c, d)))
         let mut interner = Interner::new();
         let tokens = vec![
-            tok_id(&mut interner, "a"), tok(TokenKind::Pipe),
-            tok_id(&mut interner, "b"), tok(TokenKind::Caret),
-            tok_id(&mut interner, "c"), tok(TokenKind::Amp),
-            tok_id(&mut interner, "d"), tok_eof(),
+            tok_id(&mut interner, "a"),
+            tok(TokenKind::Pipe),
+            tok_id(&mut interner, "b"),
+            tok(TokenKind::Caret),
+            tok_id(&mut interner, "c"),
+            tok(TokenKind::Amp),
+            tok_id(&mut interner, "d"),
+            tok_eof(),
         ];
         let (expr, _) = parse_with_interner(tokens, &interner);
 
         match expr {
-            Expression::Binary { op: BinaryOp::BitwiseOr, ref right, .. } => {
-                match **right {
-                    Expression::Binary { op: BinaryOp::BitwiseXor, ref right, .. } => {
-                        assert!(matches!(**right, Expression::Binary {
-                            op: BinaryOp::BitwiseAnd, ..
-                        }));
-                    }
-                    _ => panic!("expected BitwiseXor"),
+            Expression::Binary {
+                op: BinaryOp::BitwiseOr,
+                ref right,
+                ..
+            } => match **right {
+                Expression::Binary {
+                    op: BinaryOp::BitwiseXor,
+                    ref right,
+                    ..
+                } => {
+                    assert!(matches!(
+                        **right,
+                        Expression::Binary {
+                            op: BinaryOp::BitwiseAnd,
+                            ..
+                        }
+                    ));
                 }
-            }
+                _ => panic!("expected BitwiseXor"),
+            },
             _ => panic!("expected BitwiseOr at top level"),
         }
     }
@@ -2227,15 +2398,28 @@ mod tests {
         // a + b << c → Binary(<<, Binary(+, a, b), c)
         let mut interner = Interner::new();
         let tokens = vec![
-            tok_id(&mut interner, "a"), tok(TokenKind::Plus),
-            tok_id(&mut interner, "b"), tok(TokenKind::LessLess),
-            tok_id(&mut interner, "c"), tok_eof(),
+            tok_id(&mut interner, "a"),
+            tok(TokenKind::Plus),
+            tok_id(&mut interner, "b"),
+            tok(TokenKind::LessLess),
+            tok_id(&mut interner, "c"),
+            tok_eof(),
         ];
         let (expr, _) = parse_with_interner(tokens, &interner);
 
         match expr {
-            Expression::Binary { op: BinaryOp::ShiftLeft, ref left, .. } => {
-                assert!(matches!(**left, Expression::Binary { op: BinaryOp::Add, .. }));
+            Expression::Binary {
+                op: BinaryOp::ShiftLeft,
+                ref left,
+                ..
+            } => {
+                assert!(matches!(
+                    **left,
+                    Expression::Binary {
+                        op: BinaryOp::Add,
+                        ..
+                    }
+                ));
             }
             _ => panic!("expected ShiftLeft at top level"),
         }
@@ -2246,15 +2430,28 @@ mod tests {
         // a == b < c → Binary(==, a, Binary(<, b, c))
         let mut interner = Interner::new();
         let tokens = vec![
-            tok_id(&mut interner, "a"), tok(TokenKind::EqualEqual),
-            tok_id(&mut interner, "b"), tok(TokenKind::Less),
-            tok_id(&mut interner, "c"), tok_eof(),
+            tok_id(&mut interner, "a"),
+            tok(TokenKind::EqualEqual),
+            tok_id(&mut interner, "b"),
+            tok(TokenKind::Less),
+            tok_id(&mut interner, "c"),
+            tok_eof(),
         ];
         let (expr, _) = parse_with_interner(tokens, &interner);
 
         match expr {
-            Expression::Binary { op: BinaryOp::Equal, ref right, .. } => {
-                assert!(matches!(**right, Expression::Binary { op: BinaryOp::Less, .. }));
+            Expression::Binary {
+                op: BinaryOp::Equal,
+                ref right,
+                ..
+            } => {
+                assert!(matches!(
+                    **right,
+                    Expression::Binary {
+                        op: BinaryOp::Less,
+                        ..
+                    }
+                ));
             }
             _ => panic!("expected Equal at top level"),
         }
@@ -2269,13 +2466,19 @@ mod tests {
         // x <<= 2
         let mut interner = Interner::new();
         let tokens = vec![
-            tok_id(&mut interner, "x"), tok(TokenKind::LessLessEqual),
-            tok_int(2), tok_eof(),
+            tok_id(&mut interner, "x"),
+            tok(TokenKind::LessLessEqual),
+            tok_int(2),
+            tok_eof(),
         ];
         let (expr, _) = parse_with_interner(tokens, &interner);
 
-        assert!(matches!(expr, Expression::Assignment {
-            op: AssignmentOp::ShlAssign, ..
-        }));
+        assert!(matches!(
+            expr,
+            Expression::Assignment {
+                op: AssignmentOp::ShlAssign,
+                ..
+            }
+        ));
     }
 }

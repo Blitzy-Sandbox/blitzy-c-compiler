@@ -65,9 +65,7 @@ use crate::common::source_map::{FileId, SourceLocation, SourceMap};
 
 // Submodule type imports for internal use
 use self::conditional::ConditionalStack;
-use self::directives::{
-    parse_directive, process_directive, DirectiveAction, PreprocessorContext,
-};
+use self::directives::{parse_directive, process_directive, DirectiveAction, PreprocessorContext};
 use self::include::{IncludeError, IncludeResolver};
 use self::macros::{MacroDefinition, MacroKind, MacroTable, MacroToken};
 
@@ -122,6 +120,11 @@ pub struct PreprocessorOptions {
     /// System header search paths (e.g., `/usr/include`, cross-compilation
     /// sysroot paths). Searched last in the include resolution order.
     pub system_include_dirs: Vec<PathBuf>,
+
+    /// Files to force-include before the main source (`-include` flag).
+    /// Each file is preprocessed as if `#include "file"` appeared at line 0
+    /// of the source, in the order listed.
+    pub force_includes: Vec<PathBuf>,
 }
 
 impl PreprocessorOptions {
@@ -133,6 +136,7 @@ impl PreprocessorOptions {
             undefines: Vec::new(),
             bundled_header_path: None,
             system_include_dirs: Vec::new(),
+            force_includes: Vec::new(),
         }
     }
 }
@@ -196,6 +200,9 @@ pub struct Preprocessor {
 
     /// Current include nesting depth, tracked to enforce [`MAX_INCLUDE_DEPTH`].
     include_depth: usize,
+
+    /// Files to force-include before the main source (`-include` flag).
+    force_includes: Vec<PathBuf>,
 }
 
 impl Preprocessor {
@@ -267,6 +274,7 @@ impl Preprocessor {
             macro_table.undefine(name);
         }
 
+        let force_includes = options.force_includes.clone();
         Preprocessor {
             macro_table,
             conditional_stack,
@@ -274,6 +282,7 @@ impl Preprocessor {
             options,
             file_content_cache: HashMap::new(),
             include_depth: 0,
+            force_includes,
         }
     }
 
@@ -323,6 +332,30 @@ impl Preprocessor {
             std::mem::replace(diagnostics, DiagnosticEmitter::new()),
         );
 
+        // Process force-included files first (emulating -include flag behavior).
+        // Each force-include is processed as if `#include "file"` appeared at
+        // line 0 of the source, in the order listed. We process them directly
+        // through the preprocessor to establish their macro definitions and
+        // type declarations before the main source.
+        let mut force_include_prefix = String::new();
+        for fi_path in &self.force_includes {
+            let fi_include = format!("#include \"{}\"\n", fi_path.display());
+            match Self::process_source_impl(
+                &fi_include,
+                file_path,
+                &mut ctx,
+                &mut self.file_content_cache,
+                &mut self.include_depth,
+            ) {
+                Ok(text) => {
+                    force_include_prefix.push_str(&text);
+                }
+                Err(()) => {
+                    // Continue processing other force-includes even on error
+                }
+            }
+        }
+
         let result = Self::process_source_impl(
             source,
             file_path,
@@ -330,6 +363,14 @@ impl Preprocessor {
             &mut self.file_content_cache,
             &mut self.include_depth,
         );
+        // Prepend force-include output to the result
+        let result = result.map(|text| {
+            if force_include_prefix.is_empty() {
+                text
+            } else {
+                format!("{}{}", force_include_prefix, text)
+            }
+        });
 
         // Restore all fields from the context back to their owners.
         self.macro_table = ctx.macro_table;
@@ -465,13 +506,9 @@ impl Preprocessor {
                         }
                         DirectiveAction::IncludeFile(path) => {
                             // Recursively process the included file.
-                            if let Err(()) = Self::handle_include(
-                                &path,
-                                ctx,
-                                output,
-                                cache,
-                                include_depth,
-                            ) {
+                            if let Err(()) =
+                                Self::handle_include(&path, ctx, output, cache, include_depth)
+                            {
                                 had_error = true;
                             }
                             output.push('\n');
@@ -496,10 +533,8 @@ impl Preprocessor {
                 let trimmed = line.trim_start();
                 if trimmed.starts_with('#') && ctx.conditional_stack.is_active() {
                     // Active block with unknown directive — warn.
-                    ctx.diagnostics.warning(
-                        location,
-                        "unknown preprocessing directive".to_string(),
-                    );
+                    ctx.diagnostics
+                        .warning(location, "unknown preprocessing directive".to_string());
                     output.push('\n');
                 } else if ctx.conditional_stack.is_active() {
                     // Regular source line in an active block — expand macros.
@@ -509,20 +544,20 @@ impl Preprocessor {
                     // processing so macros expand while still defined (before
                     // any subsequent #undef removes them).
                     let remaining_slice = &lines[line_idx..];
-                    let merge_count = Self::needs_multiline_expansion(
-                        line, remaining_slice, &ctx.macro_table,
-                    );
+                    let merge_count =
+                        Self::needs_multiline_expansion(line, remaining_slice, &ctx.macro_table);
                     if let Some(extra) = merge_count {
                         if extra > 0 {
                             // Merge lines line_idx..line_idx+extra into one.
                             let mut merged = String::new();
                             for j in 0..=extra {
-                                if j > 0 { merged.push(' '); }
+                                if j > 0 {
+                                    merged.push(' ');
+                                }
                                 merged.push_str(lines[line_idx + j].trim());
                             }
                             let mut guard = HashSet::new();
-                            let expanded =
-                                ctx.macro_table.expand_line(&merged, &mut guard);
+                            let expanded = ctx.macro_table.expand_line(&merged, &mut guard);
                             output.push_str(&expanded);
                             output.push('\n');
                             // Emit blank newlines for consumed continuation lines.
@@ -535,8 +570,7 @@ impl Preprocessor {
                     }
                     // Single-line expansion (normal path).
                     let mut expansion_guard = HashSet::new();
-                    let expanded =
-                        ctx.macro_table.expand_line(line, &mut expansion_guard);
+                    let expanded = ctx.macro_table.expand_line(line, &mut expansion_guard);
                     output.push_str(&expanded);
                     output.push('\n');
                 } else {
@@ -607,10 +641,8 @@ impl Preprocessor {
                 return Ok(());
             }
             Err(e) => {
-                ctx.diagnostics.error(
-                    SourceLocation::dummy(),
-                    format!("{}", e),
-                );
+                ctx.diagnostics
+                    .error(SourceLocation::dummy(), format!("{}", e));
                 return Err(());
             }
         }
@@ -639,9 +671,7 @@ impl Preprocessor {
         };
 
         // Register the file in the source map.
-        let file_id = ctx
-            .source_map
-            .add_file(path.to_path_buf(), content.clone());
+        let file_id = ctx.source_map.add_file(path.to_path_buf(), content.clone());
         ctx.diagnostics
             .register_file(file_id, &path.display().to_string());
 
@@ -651,9 +681,7 @@ impl Preprocessor {
 
         // Increment include depth and recursively process.
         *include_depth += 1;
-        let result = Self::process_lines(
-            &lines, ctx, file_id, path, output, cache, include_depth,
-        );
+        let result = Self::process_lines(&lines, ctx, file_id, path, output, cache, include_depth);
         *include_depth -= 1;
 
         // Pop from include stack regardless of result.
@@ -750,6 +778,11 @@ impl Preprocessor {
         // Dynamic macros — initial values, updated per-line.
         define_simple(macro_table, "__FILE__", "\"\"");
         define_simple(macro_table, "__LINE__", "0");
+        // __COUNTER__ is a GCC extension that expands to a unique integer
+        // on each use. The expansion logic in macros.rs handles incrementing.
+        // We register it here with a placeholder value; the actual expansion
+        // overrides this in MacroTable::expand_identifier.
+        define_simple(macro_table, "__COUNTER__", "0");
 
         // Date and time macros — computed once at preprocessor construction.
         let (date_str, time_str) = Self::compute_date_time();
@@ -767,7 +800,11 @@ impl Preprocessor {
                 .unwrap_or_else(|_| vec![MacroToken::Text(body.to_string())]);
             let def = MacroDefinition {
                 name: name.to_string(),
-                kind: MacroKind::FunctionLike { params, is_variadic: false },
+                kind: MacroKind::FunctionLike {
+                    params,
+                    is_variadic: false,
+                    named_variadic: false,
+                },
                 replacement,
                 is_builtin: true,
                 location: None,
@@ -777,148 +814,230 @@ impl Preprocessor {
 
         // __builtin_expect(expr, expected) -> (expr)
         // Branch prediction hint — semantically a no-op, returns expr unchanged.
-        define_fn(macro_table, "__builtin_expect",
-            vec!["expr".into(), "val".into()], "(expr)");
+        define_fn(
+            macro_table,
+            "__builtin_expect",
+            vec!["expr".into(), "val".into()],
+            "(expr)",
+        );
 
         // __builtin_expect_with_probability(expr, expected, prob) -> (expr)
-        define_fn(macro_table, "__builtin_expect_with_probability",
-            vec!["expr".into(), "val".into(), "prob".into()], "(expr)");
+        define_fn(
+            macro_table,
+            "__builtin_expect_with_probability",
+            vec!["expr".into(), "val".into(), "prob".into()],
+            "(expr)",
+        );
 
         // __builtin_constant_p(expr) -> 0
         // Compile-time constant check — conservatively returns false (0).
-        define_fn(macro_table, "__builtin_constant_p",
-            vec!["expr".into()], "0");
+        define_fn(
+            macro_table,
+            "__builtin_constant_p",
+            vec!["expr".into()],
+            "0",
+        );
 
         // __builtin_types_compatible_p(type1, type2) -> 0
         // Type compatibility check — conservatively returns false.
-        define_fn(macro_table, "__builtin_types_compatible_p",
-            vec!["t1".into(), "t2".into()], "0");
+        define_fn(
+            macro_table,
+            "__builtin_types_compatible_p",
+            vec!["t1".into(), "t2".into()],
+            "0",
+        );
 
         // __builtin_choose_expr(const_expr, expr1, expr2) -> expr2
         // Since __builtin_constant_p returns 0, conditions are typically false.
-        define_fn(macro_table, "__builtin_choose_expr",
-            vec!["c".into(), "e1".into(), "e2".into()], "(e2)");
+        define_fn(
+            macro_table,
+            "__builtin_choose_expr",
+            vec!["c".into(), "e1".into(), "e2".into()],
+            "(e2)",
+        );
 
         // __builtin_unreachable() -> (void)0
         // Marks unreachable code — we treat it as a no-op.
-        define_fn(macro_table, "__builtin_unreachable",
-            vec![], "((void)0)");
+        define_fn(macro_table, "__builtin_unreachable", vec![], "((void)0)");
 
         // __builtin_trap() -> (void)0
-        define_fn(macro_table, "__builtin_trap",
-            vec![], "((void)0)");
+        define_fn(macro_table, "__builtin_trap", vec![], "((void)0)");
 
         // Byte-swap builtins — expand to identity for compilation; actual byte
         // swapping would require backend intrinsic support.
-        define_fn(macro_table, "__builtin_bswap16",
-            vec!["x".into()], "(x)");
-        define_fn(macro_table, "__builtin_bswap32",
-            vec!["x".into()], "(x)");
-        define_fn(macro_table, "__builtin_bswap64",
-            vec!["x".into()], "(x)");
+        define_fn(macro_table, "__builtin_bswap16", vec!["x".into()], "(x)");
+        define_fn(macro_table, "__builtin_bswap32", vec!["x".into()], "(x)");
+        define_fn(macro_table, "__builtin_bswap64", vec!["x".into()], "(x)");
 
         // Count leading/trailing zeros — return conservative values for compilation.
-        define_fn(macro_table, "__builtin_clz",
-            vec!["x".into()], "0");
-        define_fn(macro_table, "__builtin_clzl",
-            vec!["x".into()], "0");
-        define_fn(macro_table, "__builtin_ctz",
-            vec!["x".into()], "0");
-        define_fn(macro_table, "__builtin_ctzl",
-            vec!["x".into()], "0");
-        define_fn(macro_table, "__builtin_clzll",
-            vec!["x".into()], "0");
-        define_fn(macro_table, "__builtin_ctzll",
-            vec!["x".into()], "0");
-        define_fn(macro_table, "__builtin_popcount",
-            vec!["x".into()], "0");
-        define_fn(macro_table, "__builtin_popcountl",
-            vec!["x".into()], "0");
-        define_fn(macro_table, "__builtin_popcountll",
-            vec!["x".into()], "0");
+        define_fn(macro_table, "__builtin_clz", vec!["x".into()], "0");
+        define_fn(macro_table, "__builtin_clzl", vec!["x".into()], "0");
+        define_fn(macro_table, "__builtin_ctz", vec!["x".into()], "0");
+        define_fn(macro_table, "__builtin_ctzl", vec!["x".into()], "0");
+        define_fn(macro_table, "__builtin_clzll", vec!["x".into()], "0");
+        define_fn(macro_table, "__builtin_ctzll", vec!["x".into()], "0");
+        define_fn(macro_table, "__builtin_popcount", vec!["x".into()], "0");
+        define_fn(macro_table, "__builtin_popcountl", vec!["x".into()], "0");
+        define_fn(macro_table, "__builtin_popcountll", vec!["x".into()], "0");
 
         // __builtin_offsetof(type, member) — cannot easily macro-ify,
         // but for header compilation we return 0 as placeholder.
-        define_fn(macro_table, "__builtin_offsetof",
-            vec!["t".into(), "m".into()], "0");
+        define_fn(
+            macro_table,
+            "__builtin_offsetof",
+            vec!["t".into(), "m".into()],
+            "0",
+        );
 
         // __builtin_object_size(ptr, type) -> (size_t)-1 (unknown)
-        define_fn(macro_table, "__builtin_object_size",
-            vec!["p".into(), "t".into()], "((unsigned long)-1)");
+        define_fn(
+            macro_table,
+            "__builtin_object_size",
+            vec!["p".into(), "t".into()],
+            "((unsigned long)-1)",
+        );
 
-        // Memory/string builtins — pass through to library functions.
-        define_fn(macro_table, "__builtin_memcpy",
-            vec!["d".into(), "s".into(), "n".into()], "memcpy(d, s, n)");
-        define_fn(macro_table, "__builtin_memset",
-            vec!["d".into(), "v".into(), "n".into()], "memset(d, v, n)");
-        define_fn(macro_table, "__builtin_memmove",
-            vec!["d".into(), "s".into(), "n".into()], "memmove(d, s, n)");
-        define_fn(macro_table, "__builtin_strlen",
-            vec!["s".into()], "strlen(s)");
-        define_fn(macro_table, "__builtin_strcmp",
-            vec!["a".into(), "b".into()], "strcmp(a, b)");
-        define_fn(macro_table, "__builtin_strcpy",
-            vec!["d".into(), "s".into()], "strcpy(d, s)");
+        // Memory/string builtins — keep as macros that expand to the
+        // same __builtin_* identifier so the preprocessor token stays in
+        // the expansion and the sema can handle them via the implicit
+        // builtin declaration path.  The expansion uses the same name so
+        // the lexer produces an Identifier token (macros bypass keyword
+        // lookup for the replacement text).
+        define_fn(
+            macro_table,
+            "__builtin_memcpy",
+            vec!["d".into(), "s".into(), "n".into()],
+            "memcpy(d, s, n)",
+        );
+        define_fn(
+            macro_table,
+            "__builtin_memset",
+            vec!["d".into(), "v".into(), "n".into()],
+            "memset(d, v, n)",
+        );
+        define_fn(
+            macro_table,
+            "__builtin_memmove",
+            vec!["d".into(), "s".into(), "n".into()],
+            "memmove(d, s, n)",
+        );
+        define_fn(
+            macro_table,
+            "__builtin_strlen",
+            vec!["s".into()],
+            "strlen(s)",
+        );
+        define_fn(
+            macro_table,
+            "__builtin_strcmp",
+            vec!["a".into(), "b".into()],
+            "strcmp(a, b)",
+        );
+        define_fn(
+            macro_table,
+            "__builtin_strcpy",
+            vec!["d".into(), "s".into()],
+            "strcpy(d, s)",
+        );
+        define_fn(
+            macro_table,
+            "__builtin_memcmp",
+            vec!["a".into(), "b".into(), "n".into()],
+            "memcmp(a, b, n)",
+        );
 
         // Atomic/fence builtins — stubs for compilation.
-        define_fn(macro_table, "__builtin_ia32_lfence",
-            vec![], "((void)0)");
-        define_fn(macro_table, "__builtin_ia32_mfence",
-            vec![], "((void)0)");
-        define_fn(macro_table, "__builtin_ia32_sfence",
-            vec![], "((void)0)");
+        define_fn(macro_table, "__builtin_ia32_lfence", vec![], "((void)0)");
+        define_fn(macro_table, "__builtin_ia32_mfence", vec![], "((void)0)");
+        define_fn(macro_table, "__builtin_ia32_sfence", vec![], "((void)0)");
 
         // Math classification builtins
-        define_fn(macro_table, "__builtin_huge_val",
-            vec![], "(1.0e308)");
-        define_fn(macro_table, "__builtin_huge_valf",
-            vec![], "(1.0e38f)");
-        define_fn(macro_table, "__builtin_inf",
-            vec![], "(1.0e308)");
-        define_fn(macro_table, "__builtin_inff",
-            vec![], "(1.0e38f)");
-        define_fn(macro_table, "__builtin_nan",
-            vec!["s".into()], "(0.0/0.0)");
-        define_fn(macro_table, "__builtin_nanf",
-            vec!["s".into()], "(0.0f/0.0f)");
-        define_fn(macro_table, "__builtin_isnan",
-            vec!["x".into()], "((x) != (x))");
-        define_fn(macro_table, "__builtin_isinf",
-            vec!["x".into()], "0");
-        define_fn(macro_table, "__builtin_isfinite",
-            vec!["x".into()], "1");
-        define_fn(macro_table, "__builtin_isinf_sign",
-            vec!["x".into()], "0");
-        define_fn(macro_table, "__builtin_fpclassify",
-            vec!["a".into(), "b".into(), "c".into(), "d".into(), "e".into(), "x".into()], "(d)");
-        define_fn(macro_table, "__builtin_signbit",
-            vec!["x".into()], "0");
-        define_fn(macro_table, "__builtin_signbitf",
-            vec!["x".into()], "0");
-        define_fn(macro_table, "__builtin_signbitl",
-            vec!["x".into()], "0");
+        define_fn(macro_table, "__builtin_huge_val", vec![], "(1.0e308)");
+        define_fn(macro_table, "__builtin_huge_valf", vec![], "(1.0e38f)");
+        define_fn(macro_table, "__builtin_inf", vec![], "(1.0e308)");
+        define_fn(macro_table, "__builtin_inff", vec![], "(1.0e38f)");
+        define_fn(macro_table, "__builtin_nan", vec!["s".into()], "(0.0/0.0)");
+        define_fn(
+            macro_table,
+            "__builtin_nanf",
+            vec!["s".into()],
+            "(0.0f/0.0f)",
+        );
+        define_fn(
+            macro_table,
+            "__builtin_isnan",
+            vec!["x".into()],
+            "((x) != (x))",
+        );
+        define_fn(macro_table, "__builtin_isinf", vec!["x".into()], "0");
+        define_fn(macro_table, "__builtin_isfinite", vec!["x".into()], "1");
+        define_fn(macro_table, "__builtin_isinf_sign", vec!["x".into()], "0");
+        define_fn(
+            macro_table,
+            "__builtin_fpclassify",
+            vec![
+                "a".into(),
+                "b".into(),
+                "c".into(),
+                "d".into(),
+                "e".into(),
+                "x".into(),
+            ],
+            "(d)",
+        );
+        define_fn(macro_table, "__builtin_signbit", vec!["x".into()], "0");
+        define_fn(macro_table, "__builtin_signbitf", vec!["x".into()], "0");
+        define_fn(macro_table, "__builtin_signbitl", vec!["x".into()], "0");
 
         // Frame/return address builtins
-        define_fn(macro_table, "__builtin_frame_address",
-            vec!["level".into()], "((void*)0)");
-        define_fn(macro_table, "__builtin_return_address",
-            vec!["level".into()], "((void*)0)");
+        define_fn(
+            macro_table,
+            "__builtin_frame_address",
+            vec!["level".into()],
+            "((void*)0)",
+        );
+        define_fn(
+            macro_table,
+            "__builtin_return_address",
+            vec!["level".into()],
+            "((void*)0)",
+        );
 
         // __builtin_assume_aligned(ptr, align) -> ptr
-        define_fn(macro_table, "__builtin_assume_aligned",
-            vec!["p".into(), "a".into()], "(p)");
+        define_fn(
+            macro_table,
+            "__builtin_assume_aligned",
+            vec!["p".into(), "a".into()],
+            "(p)",
+        );
 
         // Overflow checking builtins (GCC 5+)
-        define_fn(macro_table, "__builtin_add_overflow",
-            vec!["a".into(), "b".into(), "res".into()], "(*(res) = (a) + (b), 0)");
-        define_fn(macro_table, "__builtin_sub_overflow",
-            vec!["a".into(), "b".into(), "res".into()], "(*(res) = (a) - (b), 0)");
-        define_fn(macro_table, "__builtin_mul_overflow",
-            vec!["a".into(), "b".into(), "res".into()], "(*(res) = (a) * (b), 0)");
+        define_fn(
+            macro_table,
+            "__builtin_add_overflow",
+            vec!["a".into(), "b".into(), "res".into()],
+            "(*(res) = (a) + (b), 0)",
+        );
+        define_fn(
+            macro_table,
+            "__builtin_sub_overflow",
+            vec!["a".into(), "b".into(), "res".into()],
+            "(*(res) = (a) - (b), 0)",
+        );
+        define_fn(
+            macro_table,
+            "__builtin_mul_overflow",
+            vec!["a".into(), "b".into(), "res".into()],
+            "(*(res) = (a) * (b), 0)",
+        );
 
         // Prefetch — a no-op hint.
-        define_fn(macro_table, "__builtin_prefetch",
-            vec!["addr".into()], "((void)0)");
+        define_fn(
+            macro_table,
+            "__builtin_prefetch",
+            vec!["addr".into()],
+            "((void)0)",
+        );
     }
 
     /// Computes the `__DATE__` and `__TIME__` strings from the current system time.
@@ -972,8 +1091,7 @@ impl Preprocessor {
         let day = days + 1;
 
         let month_names = [
-            "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-            "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+            "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
         ];
 
         let date_str = format!("{} {:2} {}", month_names[month], day, year);
@@ -992,11 +1110,7 @@ impl Preprocessor {
     // =======================================================================
 
     /// Updates `__FILE__` and `__LINE__` macros to reflect the current position.
-    fn update_dynamic_macros(
-        ctx: &mut PreprocessorContext,
-        file_path: &Path,
-        line_num: u32,
-    ) {
+    fn update_dynamic_macros(ctx: &mut PreprocessorContext, file_path: &Path, line_num: u32) {
         let file_display = file_path
             .file_name()
             .and_then(|n| n.to_str())
@@ -1050,12 +1164,16 @@ impl Preprocessor {
             let line = lines[i];
             // Quick check: does this line contain an unexpanded function-like
             // macro with an unbalanced '(' ?
-            if let Some(merged_count) = Self::needs_multiline_expansion(line, &lines[i..], macro_table) {
+            if let Some(merged_count) =
+                Self::needs_multiline_expansion(line, &lines[i..], macro_table)
+            {
                 if merged_count > 0 {
                     // Merge lines i..i+merged_count into one, expand, emit.
                     let mut merged = String::new();
                     for j in 0..=merged_count {
-                        if j > 0 { merged.push(' '); }
+                        if j > 0 {
+                            merged.push(' ');
+                        }
                         merged.push_str(lines[i + j].trim());
                     }
                     let mut guard = HashSet::new();
@@ -1071,7 +1189,9 @@ impl Preprocessor {
                 }
             }
             result.push_str(line);
-            if i + 1 < total { result.push('\n'); }
+            if i + 1 < total {
+                result.push('\n');
+            }
             i += 1;
         }
         result
@@ -1083,7 +1203,11 @@ impl Preprocessor {
     ///
     /// Returns `Some(0)` if no merging is needed, `Some(n)` if n additional
     /// lines should be merged, or `None` if no function-like macro is found.
-    fn needs_multiline_expansion(line: &str, remaining: &[&str], macro_table: &MacroTable) -> Option<usize> {
+    fn needs_multiline_expansion(
+        line: &str,
+        remaining: &[&str],
+        macro_table: &MacroTable,
+    ) -> Option<usize> {
         // Scan the line for identifiers that are function-like macros.
         let bytes = line.as_bytes();
         let len = bytes.len();
@@ -1097,11 +1221,15 @@ impl Preprocessor {
                     let quote = bytes[pos];
                     pos += 1;
                     while pos < len && bytes[pos] != quote {
-                        if bytes[pos] == b'\\' { pos += 1; }
+                        if bytes[pos] == b'\\' {
+                            pos += 1;
+                        }
                         pos += 1;
                     }
-                    if pos < len { pos += 1; }
-                }  else {
+                    if pos < len {
+                        pos += 1;
+                    }
+                } else {
                     pos += 1;
                 }
                 continue;
@@ -1120,7 +1248,9 @@ impl Preprocessor {
 
             // Look for '(' after optional whitespace — including across line boundaries.
             let mut p = pos;
-            while p < len && bytes[p].is_ascii_whitespace() { p += 1; }
+            while p < len && bytes[p].is_ascii_whitespace() {
+                p += 1;
+            }
             if p < len && bytes[p] != b'(' {
                 // Non-paren character on same line — not a macro call.
                 continue;
@@ -1167,11 +1297,17 @@ impl Preprocessor {
                     while scan < mb.len() {
                         let b = mb[scan];
                         if in_str {
-                            if b == b'\\' { scan += 1; }
-                            else if b == b'"' { in_str = false; }
+                            if b == b'\\' {
+                                scan += 1;
+                            } else if b == b'"' {
+                                in_str = false;
+                            }
                         } else if in_chr {
-                            if b == b'\\' { scan += 1; }
-                            else if b == b'\'' { in_chr = false; }
+                            if b == b'\\' {
+                                scan += 1;
+                            } else if b == b'\'' {
+                                in_chr = false;
+                            }
                         } else {
                             match b {
                                 b'"' => in_str = true,
@@ -1179,14 +1315,19 @@ impl Preprocessor {
                                 b'(' => depth += 1,
                                 b')' => {
                                     depth -= 1;
-                                    if depth == 0 { balanced = true; break; }
+                                    if depth == 0 {
+                                        balanced = true;
+                                        break;
+                                    }
                                 }
                                 _ => {}
                             }
                         }
                         scan += 1;
                     }
-                    if balanced { return Some(extra); }
+                    if balanced {
+                        return Some(extra);
+                    }
                     extra += 1;
                 }
                 // Could not balance — skip.
@@ -1202,11 +1343,17 @@ impl Preprocessor {
             while scan < len {
                 let b = bytes[scan];
                 if in_string {
-                    if b == b'\\' { scan += 1; }
-                    else if b == b'"' { in_string = false; }
+                    if b == b'\\' {
+                        scan += 1;
+                    } else if b == b'"' {
+                        in_string = false;
+                    }
                 } else if in_char {
-                    if b == b'\\' { scan += 1; }
-                    else if b == b'\'' { in_char = false; }
+                    if b == b'\\' {
+                        scan += 1;
+                    } else if b == b'\'' {
+                        in_char = false;
+                    }
                 } else {
                     match b {
                         b'"' => in_string = true,
@@ -1214,7 +1361,9 @@ impl Preprocessor {
                         b'(' => depth += 1,
                         b')' => {
                             depth -= 1;
-                            if depth == 0 { return Some(0); }
+                            if depth == 0 {
+                                return Some(0);
+                            }
                         }
                         _ => {}
                     }
@@ -1229,11 +1378,15 @@ impl Preprocessor {
                     let next_line = remaining[extra].as_bytes();
                     for &b in next_line {
                         if in_string {
-                            if b == b'\\' { /* skip next handled by byte iter */ }
-                            else if b == b'"' { in_string = false; }
+                            if b == b'\\' { /* skip next handled by byte iter */
+                            } else if b == b'"' {
+                                in_string = false;
+                            }
                         } else if in_char {
-                            if b == b'\\' { }
-                            else if b == b'\'' { in_char = false; }
+                            if b == b'\\' {
+                            } else if b == b'\'' {
+                                in_char = false;
+                            }
                         } else {
                             match b {
                                 b'"' => in_string = true,
@@ -1305,8 +1458,10 @@ impl Preprocessor {
         while i < len {
             if bytes[i] == b'\\' && i + 1 < len && bytes[i + 1] == b'\n' {
                 i += 2;
-            } else if bytes[i] == b'\\' && i + 2 < len
-                && bytes[i + 1] == b'\r' && bytes[i + 2] == b'\n'
+            } else if bytes[i] == b'\\'
+                && i + 2 < len
+                && bytes[i + 1] == b'\r'
+                && bytes[i + 2] == b'\n'
             {
                 i += 3;
             } else {
@@ -1519,9 +1674,8 @@ mod tests {
 
     #[test]
     fn test_define_option_with_value() {
-        let (mut pp, mut sm, mut diag) = make_preprocessor_with_defines(vec![
-            ("FOO".to_string(), Some("42".to_string())),
-        ]);
+        let (mut pp, mut sm, mut diag) =
+            make_preprocessor_with_defines(vec![("FOO".to_string(), Some("42".to_string()))]);
         let source = "int x = FOO;\n";
         let result = preprocess(&mut pp, source, &mut sm, &mut diag);
         assert!(result.is_ok());
@@ -1530,9 +1684,8 @@ mod tests {
 
     #[test]
     fn test_define_option_without_value() {
-        let (mut pp, mut sm, mut diag) = make_preprocessor_with_defines(vec![
-            ("BAR".to_string(), None),
-        ]);
+        let (mut pp, mut sm, mut diag) =
+            make_preprocessor_with_defines(vec![("BAR".to_string(), None)]);
         let source = "int x = BAR;\n";
         let result = preprocess(&mut pp, source, &mut sm, &mut diag);
         assert!(result.is_ok());
@@ -1553,10 +1706,8 @@ mod tests {
 
     #[test]
     fn test_undefine_predefined_macro() {
-        let (mut pp, mut sm, mut diag) = make_preprocessor_with_undefines(
-            vec![],
-            vec!["__GNUC__".to_string()],
-        );
+        let (mut pp, mut sm, mut diag) =
+            make_preprocessor_with_undefines(vec![], vec!["__GNUC__".to_string()]);
         let source = "int x = __GNUC__;\n";
         let result = preprocess(&mut pp, source, &mut sm, &mut diag);
         assert!(result.is_ok());
@@ -1674,7 +1825,11 @@ mod tests {
             &mut source_map,
             &mut diagnostics,
         );
-        assert!(result.is_ok(), "Include failed: errors={}", diagnostics.error_count());
+        assert!(
+            result.is_ok(),
+            "Include failed: errors={}",
+            diagnostics.error_count()
+        );
         let output = result.unwrap();
         assert!(output.contains("from_header"));
         assert!(output.contains("from_main"));

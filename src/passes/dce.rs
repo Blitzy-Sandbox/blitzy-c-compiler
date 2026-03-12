@@ -182,7 +182,11 @@ impl DcePass {
     fn terminator_targets(term: &Terminator) -> Vec<BlockId> {
         match term {
             Terminator::Branch { target } => vec![*target],
-            Terminator::CondBranch { true_block, false_block, .. } => {
+            Terminator::CondBranch {
+                true_block,
+                false_block,
+                ..
+            } => {
                 vec![*true_block, *false_block]
             }
             Terminator::Switch { default, cases, .. } => {
@@ -432,9 +436,7 @@ mod tests {
     use super::*;
     use crate::ir::builder::Function;
     use crate::ir::cfg::{BasicBlock, PhiNode, Terminator};
-    use crate::ir::instructions::{
-        BlockId, Callee, Constant, Instruction, Value,
-    };
+    use crate::ir::instructions::{BlockId, Callee, Constant, Instruction, Value};
     use crate::ir::types::IrType;
 
     // -----------------------------------------------------------------------
@@ -451,8 +453,11 @@ mod tests {
             blocks,
             entry_block: entry,
             is_definition: true,
-is_static: false,
-is_weak: false,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         }
     }
 
@@ -485,11 +490,7 @@ is_weak: false,
     #[test]
     fn test_single_entry_block_nothing_removed() {
         // Single block function — entry is the only block, nothing to remove.
-        let blocks = vec![make_block(
-            0,
-            "entry",
-            Terminator::Return { value: None },
-        )];
+        let blocks = vec![make_block(0, "entry", Terminator::Return { value: None })];
         let mut func = make_function(blocks, BlockId(0));
 
         let mut pass = DcePass::new();
@@ -738,7 +739,11 @@ is_weak: false,
                     ty: IrType::I64,
                 },
             });
-            block.instructions.push(Instruction::Store { value: v_val, ptr: v_ptr, store_ty: None });
+            block.instructions.push(Instruction::Store {
+                value: v_val,
+                ptr: v_ptr,
+                store_ty: None,
+            });
             block
         }];
 
@@ -851,11 +856,7 @@ is_weak: false,
 
         let mut blocks = vec![
             {
-                let mut block = make_block(
-                    0,
-                    "entry",
-                    Terminator::Branch { target: BlockId(2) },
-                );
+                let mut block = make_block(0, "entry", Terminator::Branch { target: BlockId(2) });
                 block.instructions.push(Instruction::Const {
                     result: v_left,
                     value: Constant::Integer {
@@ -866,11 +867,7 @@ is_weak: false,
                 block
             },
             {
-                let mut block = make_block(
-                    1,
-                    "other",
-                    Terminator::Branch { target: BlockId(2) },
-                );
+                let mut block = make_block(1, "other", Terminator::Branch { target: BlockId(2) });
                 block.instructions.push(Instruction::Const {
                     result: v_right,
                     value: Constant::Integer {
@@ -881,18 +878,11 @@ is_weak: false,
                 block
             },
             {
-                let mut block = make_block(
-                    2,
-                    "merge",
-                    Terminator::Return { value: None },
-                );
+                let mut block = make_block(2, "merge", Terminator::Return { value: None });
                 block.phi_nodes.push(PhiNode {
                     result: v_phi,
                     ty: IrType::I32,
-                    incoming: vec![
-                        (v_left, BlockId(0)),
-                        (v_right, BlockId(1)),
-                    ],
+                    incoming: vec![(v_left, BlockId(0)), (v_right, BlockId(1))],
                 });
                 block
             },
@@ -939,11 +929,7 @@ is_weak: false,
                 block
             },
             {
-                let mut block = make_block(
-                    1,
-                    "left",
-                    Terminator::Branch { target: BlockId(3) },
-                );
+                let mut block = make_block(1, "left", Terminator::Branch { target: BlockId(3) });
                 block.instructions.push(Instruction::Const {
                     result: v_left,
                     value: Constant::Integer {
@@ -954,11 +940,7 @@ is_weak: false,
                 block
             },
             {
-                let mut block = make_block(
-                    2,
-                    "right",
-                    Terminator::Branch { target: BlockId(3) },
-                );
+                let mut block = make_block(2, "right", Terminator::Branch { target: BlockId(3) });
                 block.instructions.push(Instruction::Const {
                     result: v_right,
                     value: Constant::Integer {
@@ -969,20 +951,11 @@ is_weak: false,
                 block
             },
             {
-                let mut block = make_block(
-                    3,
-                    "merge",
-                    Terminator::Return {
-                        value: Some(v_phi),
-                    },
-                );
+                let mut block = make_block(3, "merge", Terminator::Return { value: Some(v_phi) });
                 block.phi_nodes.push(PhiNode {
                     result: v_phi,
                     ty: IrType::I32,
-                    incoming: vec![
-                        (v_left, BlockId(1)),
-                        (v_right, BlockId(2)),
-                    ],
+                    incoming: vec![(v_left, BlockId(1)), (v_right, BlockId(2))],
                 });
                 block
             },
@@ -1013,13 +986,7 @@ is_weak: false,
         let v_a = Value(0);
 
         let mut blocks = vec![{
-            let mut block = make_block(
-                0,
-                "entry",
-                Terminator::Return {
-                    value: Some(v_a),
-                },
-            );
+            let mut block = make_block(0, "entry", Terminator::Return { value: Some(v_a) });
             block.instructions.push(Instruction::Const {
                 result: v_a,
                 value: Constant::Integer {
@@ -1056,11 +1023,7 @@ is_weak: false,
 
         let mut blocks = vec![
             {
-                let mut block = make_block(
-                    0,
-                    "entry",
-                    Terminator::Branch { target: BlockId(2) },
-                );
+                let mut block = make_block(0, "entry", Terminator::Branch { target: BlockId(2) });
                 block.instructions.push(Instruction::Const {
                     result: v_from_entry,
                     value: Constant::Integer {
@@ -1072,11 +1035,7 @@ is_weak: false,
             },
             {
                 // Dead block — unreachable from entry.
-                let mut block = make_block(
-                    1,
-                    "dead",
-                    Terminator::Branch { target: BlockId(2) },
-                );
+                let mut block = make_block(1, "dead", Terminator::Branch { target: BlockId(2) });
                 block.instructions.push(Instruction::Const {
                     result: v_from_dead,
                     value: Constant::Integer {
@@ -1087,20 +1046,11 @@ is_weak: false,
                 block
             },
             {
-                let mut block = make_block(
-                    2,
-                    "merge",
-                    Terminator::Return {
-                        value: Some(v_phi),
-                    },
-                );
+                let mut block = make_block(2, "merge", Terminator::Return { value: Some(v_phi) });
                 block.phi_nodes.push(PhiNode {
                     result: v_phi,
                     ty: IrType::I32,
-                    incoming: vec![
-                        (v_from_entry, BlockId(0)),
-                        (v_from_dead, BlockId(1)),
-                    ],
+                    incoming: vec![(v_from_entry, BlockId(0)), (v_from_dead, BlockId(1))],
                 });
                 block
             },
@@ -1169,7 +1119,11 @@ is_weak: false,
                     ty: IrType::I64,
                 },
             });
-            block.instructions.push(Instruction::Store { value: v_store_val, ptr: v_store_ptr, store_ty: None });
+            block.instructions.push(Instruction::Store {
+                value: v_store_val,
+                ptr: v_store_ptr,
+                store_ty: None,
+            });
             block
         }];
 
@@ -1203,8 +1157,11 @@ is_weak: false,
             blocks: vec![],
             entry_block: BlockId(0),
             is_definition: true,
-is_static: false,
-is_weak: false,
+            is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         };
 
         let mut pass = DcePass::new();
@@ -1264,7 +1221,11 @@ is_weak: false,
                     ty: IrType::I64,
                 },
             });
-            block.instructions.push(Instruction::Store { value: v_a, ptr: v_ptr, store_ty: None });
+            block.instructions.push(Instruction::Store {
+                value: v_a,
+                ptr: v_ptr,
+                store_ty: None,
+            });
             block
         }];
 

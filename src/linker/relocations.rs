@@ -477,7 +477,9 @@ fn apply_x86_64_relocation(
                 check_overflow(value, 32, true, reloc.reloc_type)?;
                 write_i32_le(section_data, reloc, value as i32)?;
             } else {
-                let value = (ctx.got_address as i64).wrapping_add(a).wrapping_sub(p as i64);
+                let value = (ctx.got_address as i64)
+                    .wrapping_add(a)
+                    .wrapping_sub(p as i64);
                 check_overflow(value, 32, true, reloc.reloc_type)?;
                 write_i32_le(section_data, reloc, value as i32)?;
             }
@@ -565,10 +567,7 @@ fn apply_x86_64_relocation(
         }
 
         _ => {
-            return Err(RelocationError::UnsupportedType(
-                reloc.reloc_type,
-                "x86-64",
-            ));
+            return Err(RelocationError::UnsupportedType(reloc.reloc_type, "x86-64"));
         }
     }
     Ok(())
@@ -623,15 +622,17 @@ fn apply_i686_relocation(
 
         R_386_GOTOFF => {
             // S + A - GOT (offset from GOT base)
-            let value =
-                (s as i64).wrapping_add(a).wrapping_sub(ctx.got_address as i64) as u32;
+            let value = (s as i64)
+                .wrapping_add(a)
+                .wrapping_sub(ctx.got_address as i64) as u32;
             write_u32_le(section_data, reloc, value)?;
         }
 
         R_386_GOTPC => {
             // GOT + A - P (PC-relative GOT address)
-            let value =
-                (ctx.got_address as i64).wrapping_add(a).wrapping_sub(p as i64) as u32;
+            let value = (ctx.got_address as i64)
+                .wrapping_add(a)
+                .wrapping_sub(p as i64) as u32;
             write_u32_le(section_data, reloc, value)?;
         }
 
@@ -639,16 +640,14 @@ fn apply_i686_relocation(
             // Relaxable GOT-relative relocation: in a static executable,
             // resolve as S + A - GOT (same as GOT32/GOTOFF) since there
             // is no GOT indirection in fully-resolved static links.
-            let value =
-                (s as i64).wrapping_add(a).wrapping_sub(ctx.got_address as i64) as u32;
+            let value = (s as i64)
+                .wrapping_add(a)
+                .wrapping_sub(ctx.got_address as i64) as u32;
             write_u32_le(section_data, reloc, value)?;
         }
 
         _ => {
-            return Err(RelocationError::UnsupportedType(
-                reloc.reloc_type,
-                "i686",
-            ));
+            return Err(RelocationError::UnsupportedType(reloc.reloc_type, "i686"));
         }
     }
     Ok(())
@@ -761,7 +760,13 @@ fn apply_aarch64_relocation(
             let byte_off = ((s as i64).wrapping_add(a) & 0xFFF) as u32;
             let mask = 0xFFF << 10;
             let encoded = (byte_off & 0xFFF) << 10;
-            patch_instruction_bits(section_data, reloc.section_index, reloc.offset, encoded, mask)?;
+            patch_instruction_bits(
+                section_data,
+                reloc.section_index,
+                reloc.offset,
+                encoded,
+                mask,
+            )?;
         }
 
         R_AARCH64_LDST16_ABS_LO12_NC => {
@@ -770,7 +775,13 @@ fn apply_aarch64_relocation(
             let scaled = byte_off >> 1;
             let mask = 0xFFF << 10;
             let encoded = (scaled & 0xFFF) << 10;
-            patch_instruction_bits(section_data, reloc.section_index, reloc.offset, encoded, mask)?;
+            patch_instruction_bits(
+                section_data,
+                reloc.section_index,
+                reloc.offset,
+                encoded,
+                mask,
+            )?;
         }
 
         R_AARCH64_LDST32_ABS_LO12_NC => {
@@ -779,7 +790,13 @@ fn apply_aarch64_relocation(
             let scaled = byte_off >> 2;
             let mask = 0xFFF << 10;
             let encoded = (scaled & 0xFFF) << 10;
-            patch_instruction_bits(section_data, reloc.section_index, reloc.offset, encoded, mask)?;
+            patch_instruction_bits(
+                section_data,
+                reloc.section_index,
+                reloc.offset,
+                encoded,
+                mask,
+            )?;
         }
 
         R_AARCH64_ADR_GOT_PAGE => {
@@ -794,7 +811,13 @@ fn apply_aarch64_relocation(
             let immhi = (imm21 >> 2) & 0x7_FFFF;
             let mask: u32 = (0x7_FFFF << 5) | (3 << 29);
             let encoded = (immhi << 5) | (immlo << 29);
-            patch_instruction_bits(section_data, reloc.section_index, reloc.offset, encoded, mask)?;
+            patch_instruction_bits(
+                section_data,
+                reloc.section_index,
+                reloc.offset,
+                encoded,
+                mask,
+            )?;
         }
 
         R_AARCH64_LD64_GOT_LO12_NC => {
@@ -804,7 +827,13 @@ fn apply_aarch64_relocation(
             let scaled = byte_off >> 3;
             let mask = 0xFFF << 10;
             let encoded = (scaled & 0xFFF) << 10;
-            patch_instruction_bits(section_data, reloc.section_index, reloc.offset, encoded, mask)?;
+            patch_instruction_bits(
+                section_data,
+                reloc.section_index,
+                reloc.offset,
+                encoded,
+                mask,
+            )?;
         }
 
         R_AARCH64_GLOB_DAT | R_AARCH64_JUMP_SLOT => {
@@ -892,12 +921,7 @@ fn apply_riscv64_relocation(
             let hi = ((offset.wrapping_add(0x800)) >> 12) & 0xFFFFF;
             let lo = offset & 0xFFF;
             // Patch AUIPC at reloc.offset (U-type)
-            patch_riscv_u_immediate(
-                section_data,
-                reloc.section_index,
-                reloc.offset,
-                hi as u32,
-            )?;
+            patch_riscv_u_immediate(section_data, reloc.section_index, reloc.offset, hi as u32)?;
             // Patch JALR at reloc.offset + 4 (I-type)
             patch_riscv_i_immediate(
                 section_data,
@@ -911,12 +935,7 @@ fn apply_riscv64_relocation(
             // S + A - P (upper 20 bits for AUIPC, PC-relative)
             let offset = (s as i64).wrapping_add(a).wrapping_sub(p as i64) as i32;
             let hi = ((offset.wrapping_add(0x800)) >> 12) & 0xFFFFF;
-            patch_riscv_u_immediate(
-                section_data,
-                reloc.section_index,
-                reloc.offset,
-                hi as u32,
-            )?;
+            patch_riscv_u_immediate(section_data, reloc.section_index, reloc.offset, hi as u32)?;
         }
 
         R_RISCV_PCREL_LO12_I => {
@@ -932,12 +951,7 @@ fn apply_riscv64_relocation(
             let p_auipc = p.wrapping_sub(4);
             let offset = (s as i64).wrapping_add(a).wrapping_sub(p_auipc as i64) as i32;
             let lo = offset & 0xFFF;
-            patch_riscv_i_immediate(
-                section_data,
-                reloc.section_index,
-                reloc.offset,
-                lo as u32,
-            )?;
+            patch_riscv_i_immediate(section_data, reloc.section_index, reloc.offset, lo as u32)?;
         }
 
         R_RISCV_PCREL_LO12_S => {
@@ -946,48 +960,28 @@ fn apply_riscv64_relocation(
             let p_auipc = p.wrapping_sub(4);
             let offset = (s as i64).wrapping_add(a).wrapping_sub(p_auipc as i64) as i32;
             let lo = offset & 0xFFF;
-            patch_riscv_s_immediate(
-                section_data,
-                reloc.section_index,
-                reloc.offset,
-                lo as u32,
-            )?;
+            patch_riscv_s_immediate(section_data, reloc.section_index, reloc.offset, lo as u32)?;
         }
 
         R_RISCV_HI20 => {
             // S + A (upper 20 bits for LUI, absolute)
             let value = (s as i64).wrapping_add(a) as i32;
             let hi = ((value.wrapping_add(0x800)) >> 12) & 0xFFFFF;
-            patch_riscv_u_immediate(
-                section_data,
-                reloc.section_index,
-                reloc.offset,
-                hi as u32,
-            )?;
+            patch_riscv_u_immediate(section_data, reloc.section_index, reloc.offset, hi as u32)?;
         }
 
         R_RISCV_LO12_I => {
             // S + A (lower 12 bits, I-type, absolute)
             let value = (s as i64).wrapping_add(a) as i32;
             let lo = value & 0xFFF;
-            patch_riscv_i_immediate(
-                section_data,
-                reloc.section_index,
-                reloc.offset,
-                lo as u32,
-            )?;
+            patch_riscv_i_immediate(section_data, reloc.section_index, reloc.offset, lo as u32)?;
         }
 
         R_RISCV_LO12_S => {
             // S + A (lower 12 bits, S-type, absolute)
             let value = (s as i64).wrapping_add(a) as i32;
             let lo = value & 0xFFF;
-            patch_riscv_s_immediate(
-                section_data,
-                reloc.section_index,
-                reloc.offset,
-                lo as u32,
-            )?;
+            patch_riscv_s_immediate(section_data, reloc.section_index, reloc.offset, lo as u32)?;
         }
 
         R_RISCV_RELAX => {
@@ -1850,7 +1844,11 @@ mod tests {
         };
         let err = apply_relocations(&mut sections, &[reloc], &ctx).unwrap_err();
         match err {
-            RelocationError::OffsetOutOfBounds { section: 0, offset: 0, size: 8 } => {}
+            RelocationError::OffsetOutOfBounds {
+                section: 0,
+                offset: 0,
+                size: 8,
+            } => {}
             _ => panic!("expected OffsetOutOfBounds, got {:?}", err),
         }
     }
@@ -1979,9 +1977,7 @@ mod tests {
 
     #[test]
     fn test_relocation_error_is_std_error() {
-        let err: Box<dyn std::error::Error> = Box::new(
-            RelocationError::SymbolNotFound(0),
-        );
+        let err: Box<dyn std::error::Error> = Box::new(RelocationError::SymbolNotFound(0));
         let _ = format!("{}", err);
     }
 

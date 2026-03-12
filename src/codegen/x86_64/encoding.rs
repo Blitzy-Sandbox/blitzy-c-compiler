@@ -28,10 +28,10 @@
 
 use std::collections::HashMap;
 
-use crate::codegen::{CodeGenError, MachineInstr, MachineOperand, Relocation, RelocationType};
 use crate::codegen::regalloc::PhysReg;
 use crate::codegen::x86_64::abi::{is_xmm_reg, xmm_encoding};
 use crate::codegen::x86_64::isel::{opcodes, CondCode};
+use crate::codegen::{CodeGenError, MachineInstr, MachineOperand, Relocation, RelocationType};
 
 // =========================================================================
 // Public Helper Functions — Register Encoding
@@ -100,21 +100,21 @@ fn fits_in_i32(v: i64) -> bool {
 /// to the 4-bit x86-64 condition code used in JCC and SETCC encodings.
 fn condcode_to_cc_byte(cc: i64) -> u8 {
     match cc as u8 {
-        0  => 0x04, // E  (ZF=1)
-        1  => 0x05, // NE (ZF=0)
-        2  => 0x0C, // L  (SF!=OF)
-        3  => 0x0E, // LE (ZF=1 or SF!=OF)
-        4  => 0x0F, // G  (ZF=0 and SF=OF)
-        5  => 0x0D, // GE (SF=OF)
-        6  => 0x02, // B  (CF=1)
-        7  => 0x06, // BE (CF=1 or ZF=1)
-        8  => 0x07, // A  (CF=0 and ZF=0)
-        9  => 0x03, // AE (CF=0)
+        0 => 0x04,  // E  (ZF=1)
+        1 => 0x05,  // NE (ZF=0)
+        2 => 0x0C,  // L  (SF!=OF)
+        3 => 0x0E,  // LE (ZF=1 or SF!=OF)
+        4 => 0x0F,  // G  (ZF=0 and SF=OF)
+        5 => 0x0D,  // GE (SF=OF)
+        6 => 0x02,  // B  (CF=1)
+        7 => 0x06,  // BE (CF=1 or ZF=1)
+        8 => 0x07,  // A  (CF=0 and ZF=0)
+        9 => 0x03,  // AE (CF=0)
         10 => 0x08, // S  (SF=1)
         11 => 0x09, // NS (SF=0)
         12 => 0x0A, // P  (PF=1)
         13 => 0x0B, // NP (PF=0)
-        _  => 0x04, // Default to E
+        _ => 0x04,  // Default to E
     }
 }
 
@@ -122,13 +122,20 @@ fn condcode_to_cc_byte(cc: i64) -> u8 {
 #[allow(dead_code)]
 fn condcode_enum_to_cc(cc: &CondCode) -> u8 {
     match cc {
-        CondCode::E  => 0x04, CondCode::NE => 0x05,
-        CondCode::L  => 0x0C, CondCode::LE => 0x0E,
-        CondCode::G  => 0x0F, CondCode::GE => 0x0D,
-        CondCode::B  => 0x02, CondCode::BE => 0x06,
-        CondCode::A  => 0x07, CondCode::AE => 0x03,
-        CondCode::S  => 0x08, CondCode::NS => 0x09,
-        CondCode::P  => 0x0A, CondCode::NP => 0x0B,
+        CondCode::E => 0x04,
+        CondCode::NE => 0x05,
+        CondCode::L => 0x0C,
+        CondCode::LE => 0x0E,
+        CondCode::G => 0x0F,
+        CondCode::GE => 0x0D,
+        CondCode::B => 0x02,
+        CondCode::BE => 0x06,
+        CondCode::A => 0x07,
+        CondCode::AE => 0x03,
+        CondCode::S => 0x08,
+        CondCode::NS => 0x09,
+        CondCode::P => 0x0A,
+        CondCode::NP => 0x0B,
     }
 }
 
@@ -146,16 +153,22 @@ struct RexPrefix {
 
 impl RexPrefix {
     fn none() -> Self {
-        Self { w: false, r: false, x: false, b: false }
+        Self {
+            w: false,
+            r: false,
+            x: false,
+            b: false,
+        }
     }
 
     fn encode(&self) -> Option<u8> {
         if self.w || self.r || self.x || self.b {
-            Some(0x40
-                | (if self.w { 0x08 } else { 0 })
-                | (if self.r { 0x04 } else { 0 })
-                | (if self.x { 0x02 } else { 0 })
-                | (if self.b { 0x01 } else { 0 }))
+            Some(
+                0x40 | (if self.w { 0x08 } else { 0 })
+                    | (if self.r { 0x04 } else { 0 })
+                    | (if self.x { 0x02 } else { 0 })
+                    | (if self.b { 0x01 } else { 0 }),
+            )
         } else {
             None
         }
@@ -240,29 +253,45 @@ impl X86_64Encoder {
     // ----- Byte emission helpers -----
 
     #[inline]
-    fn emit_byte(&mut self, b: u8) { self.code.push(b); }
+    fn emit_byte(&mut self, b: u8) {
+        self.code.push(b);
+    }
 
     #[inline]
-    fn emit_bytes(&mut self, bytes: &[u8]) { self.code.extend_from_slice(bytes); }
+    fn emit_bytes(&mut self, bytes: &[u8]) {
+        self.code.extend_from_slice(bytes);
+    }
 
     #[inline]
-    fn emit_u16_le(&mut self, v: u16) { self.code.extend_from_slice(&v.to_le_bytes()); }
+    fn emit_u16_le(&mut self, v: u16) {
+        self.code.extend_from_slice(&v.to_le_bytes());
+    }
 
     #[inline]
-    fn emit_u32_le(&mut self, v: u32) { self.code.extend_from_slice(&v.to_le_bytes()); }
+    fn emit_u32_le(&mut self, v: u32) {
+        self.code.extend_from_slice(&v.to_le_bytes());
+    }
 
     #[inline]
-    fn emit_u64_le(&mut self, v: u64) { self.code.extend_from_slice(&v.to_le_bytes()); }
+    fn emit_u64_le(&mut self, v: u64) {
+        self.code.extend_from_slice(&v.to_le_bytes());
+    }
 
     #[inline]
-    fn emit_i8(&mut self, v: i8) { self.code.push(v as u8); }
+    fn emit_i8(&mut self, v: i8) {
+        self.code.push(v as u8);
+    }
 
     #[inline]
-    fn emit_i32_le(&mut self, v: i32) { self.code.extend_from_slice(&v.to_le_bytes()); }
+    fn emit_i32_le(&mut self, v: i32) {
+        self.code.extend_from_slice(&v.to_le_bytes());
+    }
 
     #[inline]
     fn emit_rex(&mut self, prefix: &RexPrefix) {
-        if let Some(byte) = prefix.encode() { self.emit_byte(byte); }
+        if let Some(byte) = prefix.encode() {
+            self.emit_byte(byte);
+        }
     }
 
     // ----- ModR/M and SIB emission -----
@@ -301,20 +330,38 @@ impl X86_64Encoder {
     // ----- REX prefix computation -----
 
     fn compute_rex_gpr(w: bool, reg_op: PhysReg, rm_op: PhysReg) -> RexPrefix {
-        RexPrefix { w, r: needs_rex_extension(reg_op), x: false, b: needs_rex_extension(rm_op) }
+        RexPrefix {
+            w,
+            r: needs_rex_extension(reg_op),
+            x: false,
+            b: needs_rex_extension(rm_op),
+        }
     }
 
     fn compute_rex_gpr_mem(w: bool, reg_op: PhysReg, base: PhysReg) -> RexPrefix {
-        RexPrefix { w, r: needs_rex_extension(reg_op), x: false, b: needs_rex_extension(base) }
+        RexPrefix {
+            w,
+            r: needs_rex_extension(reg_op),
+            x: false,
+            b: needs_rex_extension(base),
+        }
     }
 
     fn compute_rex_single(w: bool, rm_op: PhysReg) -> RexPrefix {
-        RexPrefix { w, r: false, x: false, b: needs_rex_extension(rm_op) }
+        RexPrefix {
+            w,
+            r: false,
+            x: false,
+            b: needs_rex_extension(rm_op),
+        }
     }
 
     fn xmm_enc_info(reg: PhysReg) -> (u8, bool) {
         if !is_xmm_reg(reg) {
-            panic!("xmm_enc_info called with non-XMM register: PhysReg({})", reg.0);
+            panic!(
+                "xmm_enc_info called with non-XMM register: PhysReg({})",
+                reg.0
+            );
         }
         let enc = xmm_encoding(reg);
         (enc & 0x07, enc >= 8)
@@ -361,28 +408,57 @@ impl X86_64Encoder {
     fn encode_sse_rr(&mut self, prefix: u8, opcode2: u8, dst: PhysReg, src: PhysReg) {
         let (dst_enc, dst_rex) = Self::xmm_enc_info(dst);
         let (src_enc, src_rex) = Self::xmm_enc_info(src);
-        if prefix != 0 { self.emit_byte(prefix); }
-        let rex = RexPrefix { w: false, r: dst_rex, x: false, b: src_rex };
+        if prefix != 0 {
+            self.emit_byte(prefix);
+        }
+        let rex = RexPrefix {
+            w: false,
+            r: dst_rex,
+            x: false,
+            b: src_rex,
+        };
         self.emit_rex(&rex);
         self.emit_byte(0x0F);
         self.emit_byte(opcode2);
         self.emit_modrm_rr(dst_enc, src_enc);
     }
 
-    fn encode_sse_gpr_to_xmm(&mut self, prefix: u8, opcode2: u8, dst_xmm: PhysReg, src_gpr: PhysReg) {
+    fn encode_sse_gpr_to_xmm(
+        &mut self,
+        prefix: u8,
+        opcode2: u8,
+        dst_xmm: PhysReg,
+        src_gpr: PhysReg,
+    ) {
         let (dst_enc, dst_rex) = Self::xmm_enc_info(dst_xmm);
         self.emit_byte(prefix);
-        let rex = RexPrefix { w: true, r: dst_rex, x: false, b: needs_rex_extension(src_gpr) };
+        let rex = RexPrefix {
+            w: true,
+            r: dst_rex,
+            x: false,
+            b: needs_rex_extension(src_gpr),
+        };
         self.emit_rex(&rex);
         self.emit_byte(0x0F);
         self.emit_byte(opcode2);
         self.emit_modrm_rr(dst_enc, reg_encoding(src_gpr));
     }
 
-    fn encode_sse_xmm_to_gpr(&mut self, prefix: u8, opcode2: u8, dst_gpr: PhysReg, src_xmm: PhysReg) {
+    fn encode_sse_xmm_to_gpr(
+        &mut self,
+        prefix: u8,
+        opcode2: u8,
+        dst_gpr: PhysReg,
+        src_xmm: PhysReg,
+    ) {
         let (src_enc, src_rex) = Self::xmm_enc_info(src_xmm);
         self.emit_byte(prefix);
-        let rex = RexPrefix { w: true, r: needs_rex_extension(dst_gpr), x: false, b: src_rex };
+        let rex = RexPrefix {
+            w: true,
+            r: needs_rex_extension(dst_gpr),
+            x: false,
+            b: src_rex,
+        };
         self.emit_rex(&rex);
         self.emit_byte(0x0F);
         self.emit_byte(opcode2);
@@ -397,8 +473,14 @@ impl X86_64Encoder {
 
     fn emit_label_ref(&mut self, label_id: u32, disp_size: u8) {
         let code_offset = self.code.len();
-        for _ in 0..disp_size { self.emit_byte(0x00); }
-        self.fixups.push(LabelFixup { code_offset, label_id, disp_size });
+        for _ in 0..disp_size {
+            self.emit_byte(0x00);
+        }
+        self.fixups.push(LabelFixup {
+            code_offset,
+            label_id,
+            disp_size,
+        });
     }
 
     fn resolve_fixups(&mut self) -> Result<(), CodeGenError> {
@@ -411,20 +493,28 @@ impl X86_64Encoder {
                 1 => {
                     if rel < -128 || rel > 127 {
                         return Err(CodeGenError::EncodingError(format!(
-                            "label {} rel8 overflow: {}", fixup.label_id, rel)));
+                            "label {} rel8 overflow: {}",
+                            fixup.label_id, rel
+                        )));
                     }
                     self.code[fixup.code_offset] = rel as i8 as u8;
                 }
                 4 => {
                     if rel < (i32::MIN as i64) || rel > (i32::MAX as i64) {
                         return Err(CodeGenError::EncodingError(format!(
-                            "label {} rel32 overflow: {}", fixup.label_id, rel)));
+                            "label {} rel32 overflow: {}",
+                            fixup.label_id, rel
+                        )));
                     }
                     let bytes = (rel as i32).to_le_bytes();
                     self.code[fixup.code_offset..fixup.code_offset + 4].copy_from_slice(&bytes);
                 }
-                _ => return Err(CodeGenError::EncodingError(format!(
-                    "invalid fixup disp_size: {}", fixup.disp_size))),
+                _ => {
+                    return Err(CodeGenError::EncodingError(format!(
+                        "invalid fixup disp_size: {}",
+                        fixup.disp_size
+                    )))
+                }
             }
         }
         Ok(())
@@ -432,43 +522,63 @@ impl X86_64Encoder {
 
     fn emit_relocation(&mut self, symbol: &str, reloc_type: RelocationType, addend: i64) {
         self.relocations.push(Relocation {
-            offset: self.code.len() as u64, symbol: symbol.to_string(),
-            reloc_type, addend, section_index: 0,
+            offset: self.code.len() as u64,
+            symbol: symbol.to_string(),
+            reloc_type,
+            addend,
+            section_index: 0,
         });
     }
 
-    pub fn get_relocations(&self) -> &[Relocation] { &self.relocations }
+    pub fn get_relocations(&self) -> &[Relocation] {
+        &self.relocations
+    }
 
     // ----- Operand extraction -----
 
     fn expect_reg(op: &MachineOperand, ctx: &str) -> Result<PhysReg, CodeGenError> {
         match op {
             MachineOperand::Register(r) => Ok(*r),
-            _ => Err(CodeGenError::EncodingError(format!("expected register for {}", ctx))),
+            _ => Err(CodeGenError::EncodingError(format!(
+                "expected register for {}",
+                ctx
+            ))),
         }
     }
     fn expect_imm(op: &MachineOperand, ctx: &str) -> Result<i64, CodeGenError> {
         match op {
             MachineOperand::Immediate(v) => Ok(*v),
-            _ => Err(CodeGenError::EncodingError(format!("expected immediate for {}", ctx))),
+            _ => Err(CodeGenError::EncodingError(format!(
+                "expected immediate for {}",
+                ctx
+            ))),
         }
     }
     fn expect_mem(op: &MachineOperand, ctx: &str) -> Result<(PhysReg, i32), CodeGenError> {
         match op {
             MachineOperand::Memory { base, offset } => Ok((*base, *offset)),
-            _ => Err(CodeGenError::EncodingError(format!("expected memory for {}", ctx))),
+            _ => Err(CodeGenError::EncodingError(format!(
+                "expected memory for {}",
+                ctx
+            ))),
         }
     }
     fn expect_label(op: &MachineOperand, ctx: &str) -> Result<u32, CodeGenError> {
         match op {
             MachineOperand::Label(id) => Ok(*id),
-            _ => Err(CodeGenError::EncodingError(format!("expected label for {}", ctx))),
+            _ => Err(CodeGenError::EncodingError(format!(
+                "expected label for {}",
+                ctx
+            ))),
         }
     }
     fn expect_symbol(op: &MachineOperand, ctx: &str) -> Result<String, CodeGenError> {
         match op {
             MachineOperand::Symbol(s) => Ok(s.clone()),
-            _ => Err(CodeGenError::EncodingError(format!("expected symbol for {}", ctx))),
+            _ => Err(CodeGenError::EncodingError(format!(
+                "expected symbol for {}",
+                ctx
+            ))),
         }
     }
 
@@ -530,7 +640,9 @@ impl X86_64Encoder {
                 let dst = Self::expect_reg(&ops[0], "IMUL_RI dst")?;
                 let (src, imm_idx) = if ops.len() > 2 {
                     (Self::expect_reg(&ops[1], "IMUL_RI src")?, 2)
-                } else { (dst, 1) };
+                } else {
+                    (dst, 1)
+                };
                 let imm = Self::expect_imm(&ops[imm_idx], "IMUL_RI imm")?;
                 let rex = Self::compute_rex_gpr(true, dst, src);
                 self.emit_rex(&rex);
@@ -578,8 +690,11 @@ impl X86_64Encoder {
             opcodes::XOR_RR => {
                 let dst = Self::expect_reg(&ops[0], "XOR_RR dst")?;
                 let src = Self::expect_reg(&ops[1], "XOR_RR src")?;
-                if dst == src { self.encode_alu_rr_32(0x31, dst, src); }
-                else { self.encode_alu_rr(0x31, dst, src); }
+                if dst == src {
+                    self.encode_alu_rr_32(0x31, dst, src);
+                } else {
+                    self.encode_alu_rr(0x31, dst, src);
+                }
             }
             opcodes::XOR_RI => {
                 let dst = Self::expect_reg(&ops[0], "XOR_RI dst")?;
@@ -590,28 +705,49 @@ impl X86_64Encoder {
                 let dst = Self::expect_reg(&ops[0], "SHL_RI")?;
                 let imm = Self::expect_imm(&ops[1], "SHL_RI imm")?;
                 let rex = Self::compute_rex_single(true, dst);
-                self.emit_rex(&rex); self.emit_byte(0xC1);
-                self.emit_modrm_rr(4, reg_encoding(dst)); self.emit_i8(imm as i8);
+                self.emit_rex(&rex);
+                self.emit_byte(0xC1);
+                self.emit_modrm_rr(4, reg_encoding(dst));
+                self.emit_i8(imm as i8);
             }
             opcodes::SHR_RI => {
                 let dst = Self::expect_reg(&ops[0], "SHR_RI")?;
                 let imm = Self::expect_imm(&ops[1], "SHR_RI imm")?;
                 let rex = Self::compute_rex_single(true, dst);
-                self.emit_rex(&rex); self.emit_byte(0xC1);
-                self.emit_modrm_rr(5, reg_encoding(dst)); self.emit_i8(imm as i8);
+                self.emit_rex(&rex);
+                self.emit_byte(0xC1);
+                self.emit_modrm_rr(5, reg_encoding(dst));
+                self.emit_i8(imm as i8);
             }
             opcodes::SAR_RI => {
                 let dst = Self::expect_reg(&ops[0], "SAR_RI")?;
                 let imm = Self::expect_imm(&ops[1], "SAR_RI imm")?;
                 let rex = Self::compute_rex_single(true, dst);
-                self.emit_rex(&rex); self.emit_byte(0xC1);
-                self.emit_modrm_rr(7, reg_encoding(dst)); self.emit_i8(imm as i8);
+                self.emit_rex(&rex);
+                self.emit_byte(0xC1);
+                self.emit_modrm_rr(7, reg_encoding(dst));
+                self.emit_i8(imm as i8);
             }
-            opcodes::SHL_RCL => { let d = Self::expect_reg(&ops[0], "SHL_RCL")?; self.encode_unary_r(0xD3, 4, d); }
-            opcodes::SHR_RCL => { let d = Self::expect_reg(&ops[0], "SHR_RCL")?; self.encode_unary_r(0xD3, 5, d); }
-            opcodes::SAR_RCL => { let d = Self::expect_reg(&ops[0], "SAR_RCL")?; self.encode_unary_r(0xD3, 7, d); }
-            opcodes::NOT_R => { let r = Self::expect_reg(&ops[0], "NOT_R")?; self.encode_unary_r(0xF7, 2, r); }
-            opcodes::NEG_R => { let r = Self::expect_reg(&ops[0], "NEG_R")?; self.encode_unary_r(0xF7, 3, r); }
+            opcodes::SHL_RCL => {
+                let d = Self::expect_reg(&ops[0], "SHL_RCL")?;
+                self.encode_unary_r(0xD3, 4, d);
+            }
+            opcodes::SHR_RCL => {
+                let d = Self::expect_reg(&ops[0], "SHR_RCL")?;
+                self.encode_unary_r(0xD3, 5, d);
+            }
+            opcodes::SAR_RCL => {
+                let d = Self::expect_reg(&ops[0], "SAR_RCL")?;
+                self.encode_unary_r(0xD3, 7, d);
+            }
+            opcodes::NOT_R => {
+                let r = Self::expect_reg(&ops[0], "NOT_R")?;
+                self.encode_unary_r(0xF7, 2, r);
+            }
+            opcodes::NEG_R => {
+                let r = Self::expect_reg(&ops[0], "NEG_R")?;
+                self.encode_unary_r(0xF7, 3, r);
+            }
 
             // --- Data Movement ---
             opcodes::MOV_RR => {
@@ -633,7 +769,8 @@ impl X86_64Encoder {
                             self.emit_i32_le(imm as i32);
                         } else if fits_in_i32(imm) {
                             let rex = Self::compute_rex_single(true, dst);
-                            self.emit_rex(&rex); self.emit_byte(0xC7);
+                            self.emit_rex(&rex);
+                            self.emit_byte(0xC7);
                             self.emit_modrm_rr(0, reg_encoding(dst));
                             self.emit_i32_le(imm as i32);
                         } else {
@@ -682,8 +819,10 @@ impl X86_64Encoder {
                         } else if fits_in_i32(imm) {
                             // Negative 32-bit: use mov r64, sign-extended-imm32 (REX.W + C7 /0)
                             let rex = Self::compute_rex_single(true, dst);
-                            self.emit_rex(&rex); self.emit_byte(0xC7);
-                            self.emit_modrm_rr(0, reg_encoding(dst)); self.emit_i32_le(imm as i32);
+                            self.emit_rex(&rex);
+                            self.emit_byte(0xC7);
+                            self.emit_modrm_rr(0, reg_encoding(dst));
+                            self.emit_i32_le(imm as i32);
                         } else {
                             // Full 64-bit immediate: movabs r64, imm64
                             let rex = Self::compute_rex_single(true, dst);
@@ -702,7 +841,7 @@ impl X86_64Encoder {
                     }
                     _ => {
                         return Err(CodeGenError::EncodingError(
-                            "MOV_RI: second operand must be immediate or symbol".to_string()
+                            "MOV_RI: second operand must be immediate or symbol".to_string(),
                         ));
                     }
                 }
@@ -712,12 +851,18 @@ impl X86_64Encoder {
                 match &ops[1] {
                     MachineOperand::Memory { base, offset } => {
                         let rex = Self::compute_rex_gpr_mem(true, dst, *base);
-                        self.emit_rex(&rex); self.emit_byte(0x8B);
+                        self.emit_rex(&rex);
+                        self.emit_byte(0x8B);
                         self.emit_modrm_mem(reg_encoding(dst), *base, *offset);
                     }
                     MachineOperand::Symbol(sym) => {
                         // RIP-relative MOV: mov reg, [rip + disp32] with GOTPCREL relocation
-                        let rex = RexPrefix { w: true, r: needs_rex_extension(dst), x: false, b: false };
+                        let rex = RexPrefix {
+                            w: true,
+                            r: needs_rex_extension(dst),
+                            x: false,
+                            b: false,
+                        };
                         self.emit_rex(&rex);
                         self.emit_byte(0x8B);
                         // ModRM: mod=00, reg=dst, rm=5 (RIP-relative)
@@ -730,43 +875,78 @@ impl X86_64Encoder {
                         self.emit_relocation(sym, reloc_type, -4);
                         self.emit_i32_le(0); // placeholder for linker
                     }
-                    _ => return Err(CodeGenError::EncodingError(
-                        "MOV_RM: second operand must be memory or symbol".to_string()
-                    )),
+                    _ => {
+                        return Err(CodeGenError::EncodingError(
+                            "MOV_RM: second operand must be memory or symbol".to_string(),
+                        ))
+                    }
                 }
             }
             opcodes::MOV_MR => {
                 let (base, offset) = Self::expect_mem(&ops[0], "MOV_MR dst")?;
                 let src = Self::expect_reg(&ops[1], "MOV_MR src")?;
                 let rex = Self::compute_rex_gpr_mem(true, src, base);
-                self.emit_rex(&rex); self.emit_byte(0x89);
+                self.emit_rex(&rex);
+                self.emit_byte(0x89);
                 self.emit_modrm_mem(reg_encoding(src), base, offset);
             }
             opcodes::MOV_MI => {
                 let (base, offset) = Self::expect_mem(&ops[0], "MOV_MI dst")?;
                 let imm = Self::expect_imm(&ops[1], "MOV_MI imm")?;
-                let rex = RexPrefix { w: true, r: false, x: false, b: needs_rex_extension(base) };
-                self.emit_rex(&rex); self.emit_byte(0xC7);
-                self.emit_modrm_mem(0, base, offset); self.emit_i32_le(imm as i32);
+                let rex = RexPrefix {
+                    w: true,
+                    r: false,
+                    x: false,
+                    b: needs_rex_extension(base),
+                };
+                self.emit_rex(&rex);
+                self.emit_byte(0xC7);
+                self.emit_modrm_mem(0, base, offset);
+                self.emit_i32_le(imm as i32);
             }
             opcodes::MOVSX => {
                 let dst = Self::expect_reg(&ops[0], "MOVSX dst")?;
                 let src = Self::expect_reg(&ops[1], "MOVSX src")?;
-                let size = if ops.len() > 2 { Self::expect_imm(&ops[2], "MOVSX sz")? as u8 } else { 4 };
+                let size = if ops.len() > 2 {
+                    Self::expect_imm(&ops[2], "MOVSX sz")? as u8
+                } else {
+                    4
+                };
                 match size {
-                    1 => { let rex = Self::compute_rex_gpr(true, dst, src); self.emit_rex(&rex);
-                           self.emit_bytes(&[0x0F, 0xBE]); self.emit_modrm_rr(reg_encoding(dst), reg_encoding(src)); }
-                    2 => { let rex = Self::compute_rex_gpr(true, dst, src); self.emit_rex(&rex);
-                           self.emit_bytes(&[0x0F, 0xBF]); self.emit_modrm_rr(reg_encoding(dst), reg_encoding(src)); }
-                    4 => { let rex = Self::compute_rex_gpr(true, dst, src); self.emit_rex(&rex);
-                           self.emit_byte(0x63); self.emit_modrm_rr(reg_encoding(dst), reg_encoding(src)); }
-                    _ => return Err(CodeGenError::EncodingError(format!("unsupported MOVSX size: {}", size))),
+                    1 => {
+                        let rex = Self::compute_rex_gpr(true, dst, src);
+                        self.emit_rex(&rex);
+                        self.emit_bytes(&[0x0F, 0xBE]);
+                        self.emit_modrm_rr(reg_encoding(dst), reg_encoding(src));
+                    }
+                    2 => {
+                        let rex = Self::compute_rex_gpr(true, dst, src);
+                        self.emit_rex(&rex);
+                        self.emit_bytes(&[0x0F, 0xBF]);
+                        self.emit_modrm_rr(reg_encoding(dst), reg_encoding(src));
+                    }
+                    4 => {
+                        let rex = Self::compute_rex_gpr(true, dst, src);
+                        self.emit_rex(&rex);
+                        self.emit_byte(0x63);
+                        self.emit_modrm_rr(reg_encoding(dst), reg_encoding(src));
+                    }
+                    _ => {
+                        return Err(CodeGenError::EncodingError(format!(
+                            "unsupported MOVSX size: {}",
+                            size
+                        )))
+                    }
                 }
             }
             opcodes::MOVZX => {
                 let dst = Self::expect_reg(&ops[0], "MOVZX dst")?;
                 let src = Self::expect_reg(&ops[1], "MOVZX src")?;
-                let size = if ops.len() > 2 { Self::expect_imm(&ops[2], "MOVZX sz")? as u8 } else { 1 };
+                let size = if ops.len() > 2 {
+                    Self::expect_imm(&ops[2], "MOVZX sz")? as u8
+                } else {
+                    1
+                };
                 match size {
                     1 => {
                         // For byte source operand: encodings 4-7 without REX
@@ -782,13 +962,27 @@ impl X86_64Encoder {
                         } else {
                             self.emit_rex(&rex);
                         }
-                        self.emit_bytes(&[0x0F, 0xB6]); self.emit_modrm_rr(reg_encoding(dst), reg_encoding(src));
+                        self.emit_bytes(&[0x0F, 0xB6]);
+                        self.emit_modrm_rr(reg_encoding(dst), reg_encoding(src));
                     }
-                    2 => { let rex = Self::compute_rex_gpr(false, dst, src); self.emit_rex(&rex);
-                           self.emit_bytes(&[0x0F, 0xB7]); self.emit_modrm_rr(reg_encoding(dst), reg_encoding(src)); }
-                    4 => { let rex = Self::compute_rex_gpr(false, dst, src); self.emit_rex(&rex);
-                           self.emit_byte(0x8B); self.emit_modrm_rr(reg_encoding(dst), reg_encoding(src)); }
-                    _ => return Err(CodeGenError::EncodingError(format!("unsupported MOVZX size: {}", size))),
+                    2 => {
+                        let rex = Self::compute_rex_gpr(false, dst, src);
+                        self.emit_rex(&rex);
+                        self.emit_bytes(&[0x0F, 0xB7]);
+                        self.emit_modrm_rr(reg_encoding(dst), reg_encoding(src));
+                    }
+                    4 => {
+                        let rex = Self::compute_rex_gpr(false, dst, src);
+                        self.emit_rex(&rex);
+                        self.emit_byte(0x8B);
+                        self.emit_modrm_rr(reg_encoding(dst), reg_encoding(src));
+                    }
+                    _ => {
+                        return Err(CodeGenError::EncodingError(format!(
+                            "unsupported MOVZX size: {}",
+                            size
+                        )))
+                    }
                 }
             }
             opcodes::LEA => {
@@ -796,13 +990,19 @@ impl X86_64Encoder {
                 match &ops[1] {
                     MachineOperand::Memory { base, offset } => {
                         let rex = Self::compute_rex_gpr_mem(true, dst, *base);
-                        self.emit_rex(&rex); self.emit_byte(0x8D);
+                        self.emit_rex(&rex);
+                        self.emit_byte(0x8D);
                         self.emit_modrm_mem(reg_encoding(dst), *base, *offset);
                     }
                     MachineOperand::Symbol(sym) => {
                         // RIP-relative LEA: lea reg, [rip + disp32]
                         // Encoding: REX.W 8D /r with ModRM mod=00 rm=101 (RIP-relative)
-                        let rex = RexPrefix { w: true, r: needs_rex_extension(dst), x: false, b: false };
+                        let rex = RexPrefix {
+                            w: true,
+                            r: needs_rex_extension(dst),
+                            x: false,
+                            b: false,
+                        };
                         self.emit_rex(&rex);
                         self.emit_byte(0x8D);
                         // ModRM: mod=00, reg=dst, rm=5 (RIP-relative)
@@ -810,9 +1010,11 @@ impl X86_64Encoder {
                         self.emit_relocation(sym, RelocationType::X86_64_PC32, -4);
                         self.emit_i32_le(0); // placeholder for linker
                     }
-                    _ => return Err(CodeGenError::EncodingError(
-                        "LEA src must be memory or symbol".to_string()
-                    )),
+                    _ => {
+                        return Err(CodeGenError::EncodingError(
+                            "LEA src must be memory or symbol".to_string(),
+                        ))
+                    }
                 }
             }
 
@@ -836,8 +1038,10 @@ impl X86_64Encoder {
                 let reg = Self::expect_reg(&ops[0], "TEST_RI")?;
                 let imm = Self::expect_imm(&ops[1], "TEST_RI")?;
                 let rex = Self::compute_rex_single(true, reg);
-                self.emit_rex(&rex); self.emit_byte(0xF7);
-                self.emit_modrm_rr(0, reg_encoding(reg)); self.emit_i32_le(imm as i32);
+                self.emit_rex(&rex);
+                self.emit_byte(0xF7);
+                self.emit_modrm_rr(0, reg_encoding(reg));
+                self.emit_i32_le(imm as i32);
             }
             opcodes::SETCC => {
                 let cc = Self::expect_imm(&ops[0], "SETCC cc")?;
@@ -853,11 +1057,11 @@ impl X86_64Encoder {
                 let needs_rex_b = needs_rex_extension(dst);
                 let force_rex = reg_encoding(dst) >= 4;
                 if needs_rex_b || force_rex {
-                    let rex_byte = 0x40u8
-                        | (if needs_rex_b { 0x01 } else { 0 });
+                    let rex_byte = 0x40u8 | (if needs_rex_b { 0x01 } else { 0 });
                     self.emit_byte(rex_byte);
                 }
-                self.emit_byte(0x0F); self.emit_byte(0x90 + cc_byte);
+                self.emit_byte(0x0F);
+                self.emit_byte(0x90 + cc_byte);
                 self.emit_modrm_rr(0, reg_encoding(dst));
             }
             opcodes::CMOVCC => {
@@ -867,20 +1071,23 @@ impl X86_64Encoder {
                 let cc_byte = condcode_to_cc_byte(cc);
                 let rex = Self::compute_rex_gpr(true, dst, src);
                 self.emit_rex(&rex);
-                self.emit_byte(0x0F); self.emit_byte(0x40 + cc_byte);
+                self.emit_byte(0x0F);
+                self.emit_byte(0x40 + cc_byte);
                 self.emit_modrm_rr(reg_encoding(dst), reg_encoding(src));
             }
 
             // --- Control Flow ---
             opcodes::JMP => {
                 let label = Self::expect_label(&ops[0], "JMP")?;
-                self.emit_byte(0xE9); self.emit_label_ref(label, 4);
+                self.emit_byte(0xE9);
+                self.emit_label_ref(label, 4);
             }
             opcodes::JCC => {
                 let cc = Self::expect_imm(&ops[0], "JCC cc")?;
                 let label = Self::expect_label(&ops[1], "JCC label")?;
                 let cc_byte = condcode_to_cc_byte(cc);
-                self.emit_byte(0x0F); self.emit_byte(0x80 + cc_byte);
+                self.emit_byte(0x0F);
+                self.emit_byte(0x80 + cc_byte);
                 self.emit_label_ref(label, 4);
             }
             opcodes::CALL => {
@@ -893,16 +1100,21 @@ impl X86_64Encoder {
                 let reg = Self::expect_reg(&ops[0], "CALL_R")?;
                 let rex = Self::compute_rex_single(false, reg);
                 self.emit_rex(&rex);
-                self.emit_byte(0xFF); self.emit_modrm_rr(2, reg_encoding(reg));
+                self.emit_byte(0xFF);
+                self.emit_modrm_rr(2, reg_encoding(reg));
             }
-            opcodes::RET => { self.emit_byte(0xC3); }
+            opcodes::RET => {
+                self.emit_byte(0xC3);
+            }
 
             // --- Stack ---
             opcodes::PUSH => {
                 match &ops[0] {
                     MachineOperand::Register(reg) => {
                         let reg = *reg;
-                        if needs_rex_extension(reg) { self.emit_byte(0x41); }
+                        if needs_rex_extension(reg) {
+                            self.emit_byte(0x41);
+                        }
                         self.emit_byte(0x50 + reg_encoding(reg));
                     }
                     MachineOperand::Memory { base, offset } => {
@@ -910,7 +1122,9 @@ impl X86_64Encoder {
                         let base = *base;
                         let offset = *offset;
                         let need_rex = needs_rex_extension(base);
-                        if need_rex { self.emit_byte(0x41); }
+                        if need_rex {
+                            self.emit_byte(0x41);
+                        }
                         self.emit_byte(0xFF);
                         self.emit_modrm_mem(6, base, offset);
                     }
@@ -924,19 +1138,24 @@ impl X86_64Encoder {
                             // PUSH imm32: 68 id
                             self.emit_byte(0x68);
                             let bytes = (val as u32).to_le_bytes();
-                            for b in &bytes { self.emit_byte(*b); }
+                            for b in &bytes {
+                                self.emit_byte(*b);
+                            }
                         }
                     }
                     other => {
-                        return Err(CodeGenError::EncodingError(
-                            format!("unsupported operand for PUSH: {:?}", other),
-                        ));
+                        return Err(CodeGenError::EncodingError(format!(
+                            "unsupported operand for PUSH: {:?}",
+                            other
+                        )));
                     }
                 }
             }
             opcodes::POP => {
                 let reg = Self::expect_reg(&ops[0], "POP")?;
-                if needs_rex_extension(reg) { self.emit_byte(0x41); }
+                if needs_rex_extension(reg) {
+                    self.emit_byte(0x41);
+                }
                 self.emit_byte(0x58 + reg_encoding(reg));
             }
 
@@ -945,14 +1164,16 @@ impl X86_64Encoder {
                 let dst = Self::expect_reg(&ops[0], "LOAD8")?;
                 let (base, offset) = Self::expect_mem(&ops[1], "LOAD8")?;
                 let rex = Self::compute_rex_gpr_mem(false, dst, base);
-                self.emit_rex(&rex); self.emit_bytes(&[0x0F, 0xB6]);
+                self.emit_rex(&rex);
+                self.emit_bytes(&[0x0F, 0xB6]);
                 self.emit_modrm_mem(reg_encoding(dst), base, offset);
             }
             opcodes::LOAD16 => {
                 let dst = Self::expect_reg(&ops[0], "LOAD16")?;
                 let (base, offset) = Self::expect_mem(&ops[1], "LOAD16")?;
                 let rex = Self::compute_rex_gpr_mem(false, dst, base);
-                self.emit_rex(&rex); self.emit_bytes(&[0x0F, 0xB7]);
+                self.emit_rex(&rex);
+                self.emit_bytes(&[0x0F, 0xB7]);
                 self.emit_modrm_mem(reg_encoding(dst), base, offset);
             }
             opcodes::LOAD32 => {
@@ -965,21 +1186,29 @@ impl X86_64Encoder {
                 let dst = Self::expect_reg(&ops[0], "LOAD32")?;
                 let (base, offset) = Self::expect_mem(&ops[1], "LOAD32")?;
                 let rex = Self::compute_rex_gpr_mem(true, dst, base);
-                self.emit_rex(&rex); self.emit_byte(0x63);
+                self.emit_rex(&rex);
+                self.emit_byte(0x63);
                 self.emit_modrm_mem(reg_encoding(dst), base, offset);
             }
             opcodes::LOAD64 => {
                 let dst = Self::expect_reg(&ops[0], "LOAD64")?;
                 let (base, offset) = Self::expect_mem(&ops[1], "LOAD64")?;
                 let rex = Self::compute_rex_gpr_mem(true, dst, base);
-                self.emit_rex(&rex); self.emit_byte(0x8B);
+                self.emit_rex(&rex);
+                self.emit_byte(0x8B);
                 self.emit_modrm_mem(reg_encoding(dst), base, offset);
             }
             opcodes::STORE8 => {
                 let (base, offset) = Self::expect_mem(&ops[0], "STORE8")?;
                 let src = Self::expect_reg(&ops[1], "STORE8")?;
-                let rex = RexPrefix { w: false, r: needs_rex_extension(src), x: false, b: needs_rex_extension(base) };
-                self.emit_rex(&rex); self.emit_byte(0x88);
+                let rex = RexPrefix {
+                    w: false,
+                    r: needs_rex_extension(src),
+                    x: false,
+                    b: needs_rex_extension(base),
+                };
+                self.emit_rex(&rex);
+                self.emit_byte(0x88);
                 self.emit_modrm_mem(reg_encoding(src), base, offset);
             }
             opcodes::STORE16 => {
@@ -987,34 +1216,69 @@ impl X86_64Encoder {
                 let src = Self::expect_reg(&ops[1], "STORE16")?;
                 self.emit_byte(0x66);
                 let rex = Self::compute_rex_gpr_mem(false, src, base);
-                self.emit_rex(&rex); self.emit_byte(0x89);
+                self.emit_rex(&rex);
+                self.emit_byte(0x89);
                 self.emit_modrm_mem(reg_encoding(src), base, offset);
             }
             opcodes::STORE32 => {
                 let (base, offset) = Self::expect_mem(&ops[0], "STORE32")?;
                 let src = Self::expect_reg(&ops[1], "STORE32")?;
                 let rex = Self::compute_rex_gpr_mem(false, src, base);
-                self.emit_rex(&rex); self.emit_byte(0x89);
+                self.emit_rex(&rex);
+                self.emit_byte(0x89);
                 self.emit_modrm_mem(reg_encoding(src), base, offset);
             }
             opcodes::STORE64 => {
                 let (base, offset) = Self::expect_mem(&ops[0], "STORE64")?;
                 let src = Self::expect_reg(&ops[1], "STORE64")?;
                 let rex = Self::compute_rex_gpr_mem(true, src, base);
-                self.emit_rex(&rex); self.emit_byte(0x89);
+                self.emit_rex(&rex);
+                self.emit_byte(0x89);
                 self.emit_modrm_mem(reg_encoding(src), base, offset);
             }
 
             // --- SSE Floating-Point ---
-            opcodes::ADDSS  => { let d = Self::expect_reg(&ops[0],"ADDSS")?; let s = Self::expect_reg(&ops[1],"ADDSS")?; self.encode_sse_rr(0xF3, 0x58, d, s); }
-            opcodes::ADDSD  => { let d = Self::expect_reg(&ops[0],"ADDSD")?; let s = Self::expect_reg(&ops[1],"ADDSD")?; self.encode_sse_rr(0xF2, 0x58, d, s); }
-            opcodes::SUBSS  => { let d = Self::expect_reg(&ops[0],"SUBSS")?; let s = Self::expect_reg(&ops[1],"SUBSS")?; self.encode_sse_rr(0xF3, 0x5C, d, s); }
-            opcodes::SUBSD  => { let d = Self::expect_reg(&ops[0],"SUBSD")?; let s = Self::expect_reg(&ops[1],"SUBSD")?; self.encode_sse_rr(0xF2, 0x5C, d, s); }
-            opcodes::MULSS  => { let d = Self::expect_reg(&ops[0],"MULSS")?; let s = Self::expect_reg(&ops[1],"MULSS")?; self.encode_sse_rr(0xF3, 0x59, d, s); }
-            opcodes::MULSD  => { let d = Self::expect_reg(&ops[0],"MULSD")?; let s = Self::expect_reg(&ops[1],"MULSD")?; self.encode_sse_rr(0xF2, 0x59, d, s); }
-            opcodes::DIVSS  => { let d = Self::expect_reg(&ops[0],"DIVSS")?; let s = Self::expect_reg(&ops[1],"DIVSS")?; self.encode_sse_rr(0xF3, 0x5E, d, s); }
-            opcodes::DIVSD  => { let d = Self::expect_reg(&ops[0],"DIVSD")?; let s = Self::expect_reg(&ops[1],"DIVSD")?; self.encode_sse_rr(0xF2, 0x5E, d, s); }
-            opcodes::MOVSS  => {
+            opcodes::ADDSS => {
+                let d = Self::expect_reg(&ops[0], "ADDSS")?;
+                let s = Self::expect_reg(&ops[1], "ADDSS")?;
+                self.encode_sse_rr(0xF3, 0x58, d, s);
+            }
+            opcodes::ADDSD => {
+                let d = Self::expect_reg(&ops[0], "ADDSD")?;
+                let s = Self::expect_reg(&ops[1], "ADDSD")?;
+                self.encode_sse_rr(0xF2, 0x58, d, s);
+            }
+            opcodes::SUBSS => {
+                let d = Self::expect_reg(&ops[0], "SUBSS")?;
+                let s = Self::expect_reg(&ops[1], "SUBSS")?;
+                self.encode_sse_rr(0xF3, 0x5C, d, s);
+            }
+            opcodes::SUBSD => {
+                let d = Self::expect_reg(&ops[0], "SUBSD")?;
+                let s = Self::expect_reg(&ops[1], "SUBSD")?;
+                self.encode_sse_rr(0xF2, 0x5C, d, s);
+            }
+            opcodes::MULSS => {
+                let d = Self::expect_reg(&ops[0], "MULSS")?;
+                let s = Self::expect_reg(&ops[1], "MULSS")?;
+                self.encode_sse_rr(0xF3, 0x59, d, s);
+            }
+            opcodes::MULSD => {
+                let d = Self::expect_reg(&ops[0], "MULSD")?;
+                let s = Self::expect_reg(&ops[1], "MULSD")?;
+                self.encode_sse_rr(0xF2, 0x59, d, s);
+            }
+            opcodes::DIVSS => {
+                let d = Self::expect_reg(&ops[0], "DIVSS")?;
+                let s = Self::expect_reg(&ops[1], "DIVSS")?;
+                self.encode_sse_rr(0xF3, 0x5E, d, s);
+            }
+            opcodes::DIVSD => {
+                let d = Self::expect_reg(&ops[0], "DIVSD")?;
+                let s = Self::expect_reg(&ops[1], "DIVSD")?;
+                self.encode_sse_rr(0xF2, 0x5E, d, s);
+            }
+            opcodes::MOVSS => {
                 // MOVSS has three forms:
                 //   xmm, xmm -> F3 0F 10 /r
                 //   xmm, mem -> F3 0F 10 /r (modrm memory)
@@ -1028,7 +1292,12 @@ impl X86_64Encoder {
                         self.emit_byte(0xF3);
                         let need_rex = needs_rex_extension(*d) || needs_rex_extension(*base);
                         if need_rex {
-                            let rex = RexPrefix { w: false, r: needs_rex_extension(*d), x: false, b: needs_rex_extension(*base) };
+                            let rex = RexPrefix {
+                                w: false,
+                                r: needs_rex_extension(*d),
+                                x: false,
+                                b: needs_rex_extension(*base),
+                            };
                             self.emit_rex(&rex);
                         }
                         self.emit_byte(0x0F);
@@ -1040,17 +1309,26 @@ impl X86_64Encoder {
                         self.emit_byte(0xF3);
                         let need_rex = needs_rex_extension(*s) || needs_rex_extension(*base);
                         if need_rex {
-                            let rex = RexPrefix { w: false, r: needs_rex_extension(*s), x: false, b: needs_rex_extension(*base) };
+                            let rex = RexPrefix {
+                                w: false,
+                                r: needs_rex_extension(*s),
+                                x: false,
+                                b: needs_rex_extension(*base),
+                            };
                             self.emit_rex(&rex);
                         }
                         self.emit_byte(0x0F);
                         self.emit_byte(0x11);
                         self.emit_modrm_mem(reg_encoding(*s), *base, *offset);
                     }
-                    _ => return Err(CodeGenError::EncodingError("MOVSS: unsupported operand combination".to_string())),
+                    _ => {
+                        return Err(CodeGenError::EncodingError(
+                            "MOVSS: unsupported operand combination".to_string(),
+                        ))
+                    }
                 }
             }
-            opcodes::MOVSD  => {
+            opcodes::MOVSD => {
                 // MOVSD has three forms (same structure as MOVSS but prefix F2):
                 //   xmm, xmm -> F2 0F 10 /r
                 //   xmm, mem -> F2 0F 10 /r (modrm memory)
@@ -1064,7 +1342,12 @@ impl X86_64Encoder {
                         self.emit_byte(0xF2);
                         let need_rex = needs_rex_extension(*d) || needs_rex_extension(*base);
                         if need_rex {
-                            let rex = RexPrefix { w: false, r: needs_rex_extension(*d), x: false, b: needs_rex_extension(*base) };
+                            let rex = RexPrefix {
+                                w: false,
+                                r: needs_rex_extension(*d),
+                                x: false,
+                                b: needs_rex_extension(*base),
+                            };
                             self.emit_rex(&rex);
                         }
                         self.emit_byte(0x0F);
@@ -1076,31 +1359,77 @@ impl X86_64Encoder {
                         self.emit_byte(0xF2);
                         let need_rex = needs_rex_extension(*s) || needs_rex_extension(*base);
                         if need_rex {
-                            let rex = RexPrefix { w: false, r: needs_rex_extension(*s), x: false, b: needs_rex_extension(*base) };
+                            let rex = RexPrefix {
+                                w: false,
+                                r: needs_rex_extension(*s),
+                                x: false,
+                                b: needs_rex_extension(*base),
+                            };
                             self.emit_rex(&rex);
                         }
                         self.emit_byte(0x0F);
                         self.emit_byte(0x11);
                         self.emit_modrm_mem(reg_encoding(*s), *base, *offset);
                     }
-                    _ => return Err(CodeGenError::EncodingError("MOVSD: unsupported operand combination".to_string())),
+                    _ => {
+                        return Err(CodeGenError::EncodingError(
+                            "MOVSD: unsupported operand combination".to_string(),
+                        ))
+                    }
                 }
             }
-            opcodes::UCOMISS  => { let d = Self::expect_reg(&ops[0],"UCOMISS")?;  let s = Self::expect_reg(&ops[1],"UCOMISS")?;  self.encode_sse_rr(0x00, 0x2E, d, s); }
-            opcodes::UCOMISD  => { let d = Self::expect_reg(&ops[0],"UCOMISD")?;  let s = Self::expect_reg(&ops[1],"UCOMISD")?;  self.encode_sse_rr(0x66, 0x2E, d, s); }
-            opcodes::CVTSS2SD => { let d = Self::expect_reg(&ops[0],"CVTSS2SD")?; let s = Self::expect_reg(&ops[1],"CVTSS2SD")?; self.encode_sse_rr(0xF3, 0x5A, d, s); }
-            opcodes::CVTSD2SS => { let d = Self::expect_reg(&ops[0],"CVTSD2SS")?; let s = Self::expect_reg(&ops[1],"CVTSD2SS")?; self.encode_sse_rr(0xF2, 0x5A, d, s); }
-            opcodes::CVTSI2SS  => { let d = Self::expect_reg(&ops[0],"CVTSI2SS")?;  let s = Self::expect_reg(&ops[1],"CVTSI2SS")?;  self.encode_sse_gpr_to_xmm(0xF3, 0x2A, d, s); }
-            opcodes::CVTSI2SD  => { let d = Self::expect_reg(&ops[0],"CVTSI2SD")?;  let s = Self::expect_reg(&ops[1],"CVTSI2SD")?;  self.encode_sse_gpr_to_xmm(0xF2, 0x2A, d, s); }
-            opcodes::CVTTSS2SI => { let d = Self::expect_reg(&ops[0],"CVTTSS2SI")?; let s = Self::expect_reg(&ops[1],"CVTTSS2SI")?; self.encode_sse_xmm_to_gpr(0xF3, 0x2C, d, s); }
-            opcodes::CVTTSD2SI => { let d = Self::expect_reg(&ops[0],"CVTTSD2SI")?; let s = Self::expect_reg(&ops[1],"CVTTSD2SI")?; self.encode_sse_xmm_to_gpr(0xF2, 0x2C, d, s); }
+            opcodes::UCOMISS => {
+                let d = Self::expect_reg(&ops[0], "UCOMISS")?;
+                let s = Self::expect_reg(&ops[1], "UCOMISS")?;
+                self.encode_sse_rr(0x00, 0x2E, d, s);
+            }
+            opcodes::UCOMISD => {
+                let d = Self::expect_reg(&ops[0], "UCOMISD")?;
+                let s = Self::expect_reg(&ops[1], "UCOMISD")?;
+                self.encode_sse_rr(0x66, 0x2E, d, s);
+            }
+            opcodes::CVTSS2SD => {
+                let d = Self::expect_reg(&ops[0], "CVTSS2SD")?;
+                let s = Self::expect_reg(&ops[1], "CVTSS2SD")?;
+                self.encode_sse_rr(0xF3, 0x5A, d, s);
+            }
+            opcodes::CVTSD2SS => {
+                let d = Self::expect_reg(&ops[0], "CVTSD2SS")?;
+                let s = Self::expect_reg(&ops[1], "CVTSD2SS")?;
+                self.encode_sse_rr(0xF2, 0x5A, d, s);
+            }
+            opcodes::CVTSI2SS => {
+                let d = Self::expect_reg(&ops[0], "CVTSI2SS")?;
+                let s = Self::expect_reg(&ops[1], "CVTSI2SS")?;
+                self.encode_sse_gpr_to_xmm(0xF3, 0x2A, d, s);
+            }
+            opcodes::CVTSI2SD => {
+                let d = Self::expect_reg(&ops[0], "CVTSI2SD")?;
+                let s = Self::expect_reg(&ops[1], "CVTSI2SD")?;
+                self.encode_sse_gpr_to_xmm(0xF2, 0x2A, d, s);
+            }
+            opcodes::CVTTSS2SI => {
+                let d = Self::expect_reg(&ops[0], "CVTTSS2SI")?;
+                let s = Self::expect_reg(&ops[1], "CVTTSS2SI")?;
+                self.encode_sse_xmm_to_gpr(0xF3, 0x2C, d, s);
+            }
+            opcodes::CVTTSD2SI => {
+                let d = Self::expect_reg(&ops[0], "CVTTSD2SI")?;
+                let s = Self::expect_reg(&ops[1], "CVTTSD2SI")?;
+                self.encode_sse_xmm_to_gpr(0xF2, 0x2C, d, s);
+            }
 
             // --- Extension / Conversion ---
-            opcodes::CDQ => { self.emit_byte(0x99); }
-            opcodes::CQO => { self.emit_byte(0x48); self.emit_byte(0x99); }
+            opcodes::CDQ => {
+                self.emit_byte(0x99);
+            }
+            opcodes::CQO => {
+                self.emit_byte(0x48);
+                self.emit_byte(0x99);
+            }
 
             // --- Special ---
-            opcodes::NOP     => {
+            opcodes::NOP => {
                 // NOP with a Label operand is a pseudo-instruction that defines
                 // the label (basic block entry point) without emitting any bytes.
                 // Plain NOP (no operands) emits 0x90.
@@ -1112,10 +1441,18 @@ impl X86_64Encoder {
                 }
                 self.emit_byte(0x90);
             }
-            opcodes::ENDBR64 => { self.emit_bytes(&[0xF3, 0x0F, 0x1E, 0xFA]); }
-            opcodes::PAUSE   => { self.emit_bytes(&[0xF3, 0x90]); }
-            opcodes::LFENCE  => { self.emit_bytes(&[0x0F, 0xAE, 0xE8]); }
-            opcodes::UD2     => { self.emit_bytes(&[0x0F, 0x0B]); }
+            opcodes::ENDBR64 => {
+                self.emit_bytes(&[0xF3, 0x0F, 0x1E, 0xFA]);
+            }
+            opcodes::PAUSE => {
+                self.emit_bytes(&[0xF3, 0x90]);
+            }
+            opcodes::LFENCE => {
+                self.emit_bytes(&[0x0F, 0xAE, 0xE8]);
+            }
+            opcodes::UD2 => {
+                self.emit_bytes(&[0x0F, 0x0B]);
+            }
 
             // --- Label pseudo-instruction ---
             _ => {
@@ -1125,7 +1462,10 @@ impl X86_64Encoder {
                         return Ok(());
                     }
                 }
-                return Err(CodeGenError::EncodingError(format!("unknown opcode: 0x{:04X}", op)));
+                return Err(CodeGenError::EncodingError(format!(
+                    "unknown opcode: 0x{:04X}",
+                    op
+                )));
             }
         }
         Ok(())
@@ -1169,21 +1509,37 @@ mod tests {
     use crate::codegen::{MachineInstr, MachineOperand};
 
     // --- Helper constructors ---
-    fn reg(id: u16) -> MachineOperand { MachineOperand::Register(PhysReg(id)) }
-    fn imm(v: i64) -> MachineOperand { MachineOperand::Immediate(v) }
-    fn mem(base: u16, off: i32) -> MachineOperand {
-        MachineOperand::Memory { base: PhysReg(base), offset: off }
+    fn reg(id: u16) -> MachineOperand {
+        MachineOperand::Register(PhysReg(id))
     }
-    fn sym(name: &str) -> MachineOperand { MachineOperand::Symbol(name.to_string()) }
-    fn label(id: u32) -> MachineOperand { MachineOperand::Label(id) }
+    fn imm(v: i64) -> MachineOperand {
+        MachineOperand::Immediate(v)
+    }
+    fn mem(base: u16, off: i32) -> MachineOperand {
+        MachineOperand::Memory {
+            base: PhysReg(base),
+            offset: off,
+        }
+    }
+    fn sym(name: &str) -> MachineOperand {
+        MachineOperand::Symbol(name.to_string())
+    }
+    fn label(id: u32) -> MachineOperand {
+        MachineOperand::Label(id)
+    }
 
     fn instr(opcode: u32, operands: Vec<MachineOperand>) -> MachineInstr {
-        MachineInstr { opcode, operands, loc: None }
+        MachineInstr {
+            opcode,
+            operands,
+            loc: None,
+        }
     }
 
     fn encode_single(opcode: u32, operands: Vec<MachineOperand>) -> Vec<u8> {
         let mut enc = X86_64Encoder::new();
-        enc.encode_function(&[instr(opcode, operands)]).expect("encoding failed")
+        enc.encode_function(&[instr(opcode, operands)])
+            .expect("encoding failed")
     }
 
     // ====================================================================
@@ -1208,7 +1564,11 @@ mod tests {
         // add r9, rax  =>  dst=r9 in rm field needs REX.B, src=rax in reg field
         // REX = 0x40 | W(0x08) | B(0x01) = 0x49
         let bytes = encode_single(opcodes::ADD_RR, vec![reg(9), reg(0)]);
-        assert_eq!(bytes[0] & 0x49, 0x49, "REX.WB should be set for r9 dst in rm field");
+        assert_eq!(
+            bytes[0] & 0x49,
+            0x49,
+            "REX.WB should be set for r9 dst in rm field"
+        );
     }
 
     #[test]
@@ -1280,7 +1640,7 @@ mod tests {
     // ====================================================================
     #[test]
     fn test_sib_simple_base() {
-        assert_eq!(sib(0, 4, 4), 0x24);  // scale=1, no index (RSP=4), base=RSP
+        assert_eq!(sib(0, 4, 4), 0x24); // scale=1, no index (RSP=4), base=RSP
     }
 
     #[test]
@@ -1371,7 +1731,9 @@ mod tests {
     fn test_encode_call_symbol() {
         // call <sym> => E8 xx xx xx xx (with PLT32 relocation)
         let mut enc = X86_64Encoder::new();
-        let result = enc.encode_all(&[instr(opcodes::CALL, vec![sym("printf")])]).unwrap();
+        let result = enc
+            .encode_all(&[instr(opcodes::CALL, vec![sym("printf")])])
+            .unwrap();
         assert_eq!(result.code[0], 0xE8);
         assert_eq!(result.code.len(), 5);
         assert_eq!(result.relocations.len(), 1);
@@ -1393,7 +1755,10 @@ mod tests {
 
     #[test]
     fn test_encode_endbr64() {
-        assert_eq!(encode_single(opcodes::ENDBR64, vec![]), vec![0xF3, 0x0F, 0x1E, 0xFA]);
+        assert_eq!(
+            encode_single(opcodes::ENDBR64, vec![]),
+            vec![0xF3, 0x0F, 0x1E, 0xFA]
+        );
     }
 
     #[test]
@@ -1403,7 +1768,10 @@ mod tests {
 
     #[test]
     fn test_encode_lfence() {
-        assert_eq!(encode_single(opcodes::LFENCE, vec![]), vec![0x0F, 0xAE, 0xE8]);
+        assert_eq!(
+            encode_single(opcodes::LFENCE, vec![]),
+            vec![0x0F, 0xAE, 0xE8]
+        );
     }
 
     #[test]
@@ -1468,15 +1836,22 @@ mod tests {
     fn test_forward_jump_fixup() {
         // JMP label(1), NOP, label(1):
         let mut enc = X86_64Encoder::new();
-        let result = enc.encode_all(&[
-            instr(opcodes::JMP, vec![label(1)]),
-            instr(opcodes::NOP, vec![]),
-            instr(0xFFFF, vec![label(1)]),  // label pseudo-instruction
-        ]).unwrap();
+        let result = enc
+            .encode_all(&[
+                instr(opcodes::JMP, vec![label(1)]),
+                instr(opcodes::NOP, vec![]),
+                instr(0xFFFF, vec![label(1)]), // label pseudo-instruction
+            ])
+            .unwrap();
         // JMP is E9 + rel32. JMP occupies 5 bytes (0..4), NOP at offset 5.
         // Label at offset 6. rel32 = 6 - (0 + 4+1) = 6-5 = 1
         assert_eq!(result.code[0], 0xE9);
-        let disp = i32::from_le_bytes([result.code[1], result.code[2], result.code[3], result.code[4]]);
+        let disp = i32::from_le_bytes([
+            result.code[1],
+            result.code[2],
+            result.code[3],
+            result.code[4],
+        ]);
         assert_eq!(disp, 1, "forward jump should skip the NOP");
     }
 
@@ -1484,15 +1859,22 @@ mod tests {
     fn test_backward_jump() {
         // label(1):, NOP, JMP label(1)
         let mut enc = X86_64Encoder::new();
-        let result = enc.encode_all(&[
-            instr(0xFFFF, vec![label(1)]),  // label at offset 0
-            instr(opcodes::NOP, vec![]),    // NOP at offset 0 (label emits no bytes)
-            instr(opcodes::JMP, vec![label(1)]),  // JMP at offset 1
-        ]).unwrap();
+        let result = enc
+            .encode_all(&[
+                instr(0xFFFF, vec![label(1)]),       // label at offset 0
+                instr(opcodes::NOP, vec![]),         // NOP at offset 0 (label emits no bytes)
+                instr(opcodes::JMP, vec![label(1)]), // JMP at offset 1
+            ])
+            .unwrap();
         // NOP=1 byte at offset 0, JMP at offset 1 (E9 + 4 bytes)
         // rel32 = 0 - (1 + 4 + 1) = 0 - 6 = -6
         assert_eq!(result.code[1], 0xE9);
-        let disp = i32::from_le_bytes([result.code[2], result.code[3], result.code[4], result.code[5]]);
+        let disp = i32::from_le_bytes([
+            result.code[2],
+            result.code[3],
+            result.code[4],
+            result.code[5],
+        ]);
         assert_eq!(disp, -6, "backward jump should have negative displacement");
     }
 
@@ -1525,7 +1907,7 @@ mod tests {
 
     #[test]
     fn test_reg_encoding_high() {
-        assert_eq!(reg_encoding(PhysReg(8)), 0);  // r8 encodes as 0 with REX.B
+        assert_eq!(reg_encoding(PhysReg(8)), 0); // r8 encodes as 0 with REX.B
         assert_eq!(reg_encoding(PhysReg(15)), 7); // r15 encodes as 7 with REX.B
     }
 
@@ -1567,10 +1949,12 @@ mod tests {
     fn test_encode_jcc_forward() {
         let cc_val = CondCode::NE as i64;
         let mut enc = X86_64Encoder::new();
-        let result = enc.encode_all(&[
-            instr(opcodes::JCC, vec![imm(cc_val), label(1)]),
-            instr(0xFFFF, vec![label(1)]),
-        ]).unwrap();
+        let result = enc
+            .encode_all(&[
+                instr(opcodes::JCC, vec![imm(cc_val), label(1)]),
+                instr(0xFFFF, vec![label(1)]),
+            ])
+            .unwrap();
         // JCC = 0F 85 + rel32 (6 bytes)
         assert_eq!(result.code[0], 0x0F);
         assert_eq!(result.code[1], 0x85);
@@ -1656,11 +2040,13 @@ mod tests {
     #[test]
     fn test_encode_all_structure() {
         let mut enc = X86_64Encoder::new();
-        let result = enc.encode_all(&[
-            instr(0xFFFF, vec![label(0)]),
-            instr(opcodes::NOP, vec![]),
-            instr(opcodes::RET, vec![]),
-        ]).unwrap();
+        let result = enc
+            .encode_all(&[
+                instr(0xFFFF, vec![label(0)]),
+                instr(opcodes::NOP, vec![]),
+                instr(opcodes::RET, vec![]),
+            ])
+            .unwrap();
         assert_eq!(result.code.len(), 2); // NOP + RET
         assert_eq!(result.code, vec![0x90, 0xC3]);
         assert!(result.labels.contains_key(&0));

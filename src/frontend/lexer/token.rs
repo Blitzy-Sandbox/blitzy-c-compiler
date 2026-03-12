@@ -53,7 +53,6 @@ pub enum TokenKind {
     // =======================================================================
     // C11 Keywords (44)
     // =======================================================================
-
     /// `auto`
     Auto,
     /// `break`
@@ -148,7 +147,6 @@ pub enum TokenKind {
     // =======================================================================
     // GCC Extension Keywords (40)
     // =======================================================================
-
     /// `__attribute__`
     GccAttribute,
     /// `__extension__`
@@ -349,7 +347,6 @@ pub enum TokenKind {
     // =======================================================================
     // Punctuation (9)
     // =======================================================================
-
     /// `(`
     LeftParen,
     /// `)`
@@ -372,7 +369,6 @@ pub enum TokenKind {
     // =======================================================================
     // Literals (4)
     // =======================================================================
-
     /// Integer constant — value stored in [`TokenValue::Integer`].
     IntegerLiteral,
     /// Floating-point constant — value stored in [`TokenValue::Float`].
@@ -385,14 +381,12 @@ pub enum TokenKind {
     // =======================================================================
     // Identifier (1)
     // =======================================================================
-
     /// Any non-keyword identifier — interned handle in [`TokenValue::Identifier`].
     Identifier,
 
     // =======================================================================
     // Special (1)
     // =======================================================================
-
     /// End of file / end of input marker.
     Eof,
 }
@@ -882,10 +876,7 @@ impl TokenKind {
     pub fn is_type_qualifier(&self) -> bool {
         matches!(
             self,
-            TokenKind::Const
-                | TokenKind::Volatile
-                | TokenKind::Restrict
-                | TokenKind::Atomic
+            TokenKind::Const | TokenKind::Volatile | TokenKind::Restrict | TokenKind::Atomic
         )
     }
 
@@ -1047,7 +1038,11 @@ impl fmt::Display for TokenValue {
         match self {
             TokenValue::None => f.write_str("(none)"),
             TokenValue::Identifier(id) => write!(f, "id:{}", id),
-            TokenValue::Integer { value, base, suffix } => {
+            TokenValue::Integer {
+                value,
+                base,
+                suffix,
+            } => {
                 let base_prefix = match base {
                     NumericBase::Decimal => "",
                     NumericBase::Hexadecimal => "0x",
@@ -1298,7 +1293,12 @@ mod tests {
             },
         );
         assert_eq!(tok.kind, TokenKind::IntegerLiteral);
-        if let TokenValue::Integer { value, suffix, base } = &tok.value {
+        if let TokenValue::Integer {
+            value,
+            suffix,
+            base,
+        } = &tok.value
+        {
             assert_eq!(*value, 42);
             assert_eq!(*suffix, IntSuffix::None);
             assert_eq!(*base, NumericBase::Decimal);

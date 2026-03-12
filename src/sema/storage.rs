@@ -236,10 +236,7 @@ fn validate_function_storage(
             Ok((Linkage::External, StorageDuration::Static))
         }
         Some(StorageClass::Auto) => {
-            diagnostics.error(
-                span.start,
-                "function declared with 'auto' storage class",
-            );
+            diagnostics.error(span.start, "function declared with 'auto' storage class");
             Err(())
         }
         Some(StorageClass::Register) => {
@@ -272,9 +269,7 @@ fn validate_parameter_storage(
         // Parameters have no linkage and automatic storage duration.
         // `register` is a hint; it does not change semantics beyond
         // preventing the address-of operator on the parameter.
-        None | Some(StorageClass::Register) => {
-            Ok((Linkage::None, StorageDuration::Automatic))
-        }
+        None | Some(StorageClass::Register) => Ok((Linkage::None, StorageDuration::Automatic)),
         Some(StorageClass::Static) => {
             diagnostics.error(
                 span.start,
@@ -326,18 +321,20 @@ fn validate_file_scope_storage(
         // `extern` at file scope: external linkage, static storage duration.
         Some(StorageClass::Extern) => Ok((Linkage::External, StorageDuration::Static)),
         Some(StorageClass::Auto) => {
-            diagnostics.error(
-                span.start,
-                "'auto' storage class not allowed at file scope",
-            );
+            diagnostics.error(span.start, "'auto' storage class not allowed at file scope");
             Err(())
         }
         Some(StorageClass::Register) => {
-            diagnostics.error(
+            // GCC extension: explicit register variables at file scope.
+            // `register unsigned long sp __asm__("rsp");` is valid in GCC
+            // and commonly used in the Linux kernel for per-CPU or
+            // stack-pointer bindings.  Treat as external linkage, static
+            // storage — the register hint is silently accepted.
+            diagnostics.warning(
                 span.start,
-                "'register' storage class not allowed at file scope",
+                "'register' storage class at file scope is a GCC extension",
             );
-            Err(())
+            Ok((Linkage::External, StorageDuration::Static))
         }
         Some(StorageClass::ThreadLocal) => {
             // `_Thread_local` alone at file scope per C11 §6.7.1¶3 is
@@ -488,17 +485,11 @@ pub fn check_conflicting_specifiers(
             StorageClass::Static => Some(StorageClass::Static),
             StorageClass::Extern => Some(StorageClass::Extern),
             StorageClass::Auto => {
-                diagnostics.error(
-                    span.start,
-                    "cannot combine '_Thread_local' with 'auto'",
-                );
+                diagnostics.error(span.start, "cannot combine '_Thread_local' with 'auto'");
                 None
             }
             StorageClass::Register => {
-                diagnostics.error(
-                    span.start,
-                    "cannot combine '_Thread_local' with 'register'",
-                );
+                diagnostics.error(span.start, "cannot combine '_Thread_local' with 'register'");
                 None
             }
             StorageClass::ThreadLocal => {
@@ -705,10 +696,7 @@ pub fn check_register_address(
 ) {
     if has_address_taken {
         if let Some(StorageClass::Register) = storage {
-            diagnostics.error(
-                span.start,
-                "address of register variable requested",
-            );
+            diagnostics.error(span.start, "address of register variable requested");
         }
     }
 }
@@ -796,9 +784,7 @@ mod tests {
     #[test]
     fn file_scope_no_storage_class_gives_external_static() {
         let mut diag = emitter();
-        let result = validate_storage_class(
-            None, ScopeKind::File, false, &mut diag, dummy_span(),
-        );
+        let result = validate_storage_class(None, ScopeKind::File, false, &mut diag, dummy_span());
         assert_eq!(result, Ok((Linkage::External, StorageDuration::Static)));
         assert!(!diag.has_errors());
     }
@@ -807,8 +793,11 @@ mod tests {
     fn file_scope_static_gives_internal_static() {
         let mut diag = emitter();
         let result = validate_storage_class(
-            Some(StorageClass::Static), ScopeKind::File, false,
-            &mut diag, dummy_span(),
+            Some(StorageClass::Static),
+            ScopeKind::File,
+            false,
+            &mut diag,
+            dummy_span(),
         );
         assert_eq!(result, Ok((Linkage::Internal, StorageDuration::Static)));
         assert!(!diag.has_errors());
@@ -818,8 +807,11 @@ mod tests {
     fn file_scope_extern_gives_external_static() {
         let mut diag = emitter();
         let result = validate_storage_class(
-            Some(StorageClass::Extern), ScopeKind::File, false,
-            &mut diag, dummy_span(),
+            Some(StorageClass::Extern),
+            ScopeKind::File,
+            false,
+            &mut diag,
+            dummy_span(),
         );
         assert_eq!(result, Ok((Linkage::External, StorageDuration::Static)));
         assert!(!diag.has_errors());
@@ -829,8 +821,11 @@ mod tests {
     fn file_scope_auto_is_error() {
         let mut diag = emitter();
         let result = validate_storage_class(
-            Some(StorageClass::Auto), ScopeKind::File, false,
-            &mut diag, dummy_span(),
+            Some(StorageClass::Auto),
+            ScopeKind::File,
+            false,
+            &mut diag,
+            dummy_span(),
         );
         assert!(result.is_err());
         assert!(diag.has_errors());
@@ -838,15 +833,20 @@ mod tests {
     }
 
     #[test]
-    fn file_scope_register_is_error() {
+    fn file_scope_register_is_gcc_extension_warning() {
+        // GCC extension: explicit register variables at file scope.
+        // bcc allows this with a warning for kernel compatibility
+        // (e.g. `register unsigned long current_stack_pointer __asm__("rsp");`).
         let mut diag = emitter();
         let result = validate_storage_class(
-            Some(StorageClass::Register), ScopeKind::File, false,
-            &mut diag, dummy_span(),
+            Some(StorageClass::Register),
+            ScopeKind::File,
+            false,
+            &mut diag,
+            dummy_span(),
         );
-        assert!(result.is_err());
-        assert!(diag.has_errors());
-        assert_eq!(diag.error_count(), 1);
+        assert!(result.is_ok());
+        assert!(!diag.has_errors());
     }
 
     #[test]
@@ -855,8 +855,11 @@ mod tests {
         // and implies external linkage with thread storage duration.
         let mut diag = emitter();
         let result = validate_storage_class(
-            Some(StorageClass::ThreadLocal), ScopeKind::File, false,
-            &mut diag, dummy_span(),
+            Some(StorageClass::ThreadLocal),
+            ScopeKind::File,
+            false,
+            &mut diag,
+            dummy_span(),
         );
         assert_eq!(result, Ok((Linkage::External, StorageDuration::Thread)));
         assert!(!diag.has_errors());
@@ -867,9 +870,7 @@ mod tests {
     #[test]
     fn block_scope_no_storage_class_gives_none_automatic() {
         let mut diag = emitter();
-        let result = validate_storage_class(
-            None, ScopeKind::Block, false, &mut diag, dummy_span(),
-        );
+        let result = validate_storage_class(None, ScopeKind::Block, false, &mut diag, dummy_span());
         assert_eq!(result, Ok((Linkage::None, StorageDuration::Automatic)));
         assert!(!diag.has_errors());
     }
@@ -878,8 +879,11 @@ mod tests {
     fn block_scope_static_gives_none_static() {
         let mut diag = emitter();
         let result = validate_storage_class(
-            Some(StorageClass::Static), ScopeKind::Block, false,
-            &mut diag, dummy_span(),
+            Some(StorageClass::Static),
+            ScopeKind::Block,
+            false,
+            &mut diag,
+            dummy_span(),
         );
         assert_eq!(result, Ok((Linkage::None, StorageDuration::Static)));
         assert!(!diag.has_errors());
@@ -889,8 +893,11 @@ mod tests {
     fn block_scope_extern_gives_external_static() {
         let mut diag = emitter();
         let result = validate_storage_class(
-            Some(StorageClass::Extern), ScopeKind::Block, false,
-            &mut diag, dummy_span(),
+            Some(StorageClass::Extern),
+            ScopeKind::Block,
+            false,
+            &mut diag,
+            dummy_span(),
         );
         assert_eq!(result, Ok((Linkage::External, StorageDuration::Static)));
         assert!(!diag.has_errors());
@@ -900,8 +907,11 @@ mod tests {
     fn block_scope_auto_gives_none_automatic() {
         let mut diag = emitter();
         let result = validate_storage_class(
-            Some(StorageClass::Auto), ScopeKind::Block, false,
-            &mut diag, dummy_span(),
+            Some(StorageClass::Auto),
+            ScopeKind::Block,
+            false,
+            &mut diag,
+            dummy_span(),
         );
         assert_eq!(result, Ok((Linkage::None, StorageDuration::Automatic)));
         assert!(!diag.has_errors());
@@ -911,8 +921,11 @@ mod tests {
     fn block_scope_register_gives_none_automatic() {
         let mut diag = emitter();
         let result = validate_storage_class(
-            Some(StorageClass::Register), ScopeKind::Block, false,
-            &mut diag, dummy_span(),
+            Some(StorageClass::Register),
+            ScopeKind::Block,
+            false,
+            &mut diag,
+            dummy_span(),
         );
         assert_eq!(result, Ok((Linkage::None, StorageDuration::Automatic)));
         assert!(!diag.has_errors());
@@ -922,8 +935,11 @@ mod tests {
     fn block_scope_thread_local_alone_gives_none_thread() {
         let mut diag = emitter();
         let result = validate_storage_class(
-            Some(StorageClass::ThreadLocal), ScopeKind::Block, false,
-            &mut diag, dummy_span(),
+            Some(StorageClass::ThreadLocal),
+            ScopeKind::Block,
+            false,
+            &mut diag,
+            dummy_span(),
         );
         assert_eq!(result, Ok((Linkage::None, StorageDuration::Thread)));
         assert!(!diag.has_errors());
@@ -942,9 +958,7 @@ mod tests {
     #[test]
     fn conflict_single_specifier_returns_it() {
         let mut diag = emitter();
-        let result = check_conflicting_specifiers(
-            &[StorageClass::Static], &mut diag, dummy_span(),
-        );
+        let result = check_conflicting_specifiers(&[StorageClass::Static], &mut diag, dummy_span());
         assert_eq!(result, Some(StorageClass::Static));
         assert!(!diag.has_errors());
     }
@@ -954,7 +968,8 @@ mod tests {
         let mut diag = emitter();
         let result = check_conflicting_specifiers(
             &[StorageClass::Static, StorageClass::Extern],
-            &mut diag, dummy_span(),
+            &mut diag,
+            dummy_span(),
         );
         assert!(result.is_none());
         assert!(diag.has_errors());
@@ -965,7 +980,8 @@ mod tests {
         let mut diag = emitter();
         let result = check_conflicting_specifiers(
             &[StorageClass::Auto, StorageClass::Register],
-            &mut diag, dummy_span(),
+            &mut diag,
+            dummy_span(),
         );
         assert!(result.is_none());
         assert!(diag.has_errors());
@@ -976,7 +992,8 @@ mod tests {
         let mut diag = emitter();
         let result = check_conflicting_specifiers(
             &[StorageClass::Extern, StorageClass::Static],
-            &mut diag, dummy_span(),
+            &mut diag,
+            dummy_span(),
         );
         assert!(result.is_none());
         assert!(diag.has_errors());
@@ -987,7 +1004,8 @@ mod tests {
         let mut diag = emitter();
         let result = check_conflicting_specifiers(
             &[StorageClass::ThreadLocal, StorageClass::Static],
-            &mut diag, dummy_span(),
+            &mut diag,
+            dummy_span(),
         );
         assert_eq!(result, Some(StorageClass::Static));
         assert!(!diag.has_errors());
@@ -998,7 +1016,8 @@ mod tests {
         let mut diag = emitter();
         let result = check_conflicting_specifiers(
             &[StorageClass::ThreadLocal, StorageClass::Extern],
-            &mut diag, dummy_span(),
+            &mut diag,
+            dummy_span(),
         );
         assert_eq!(result, Some(StorageClass::Extern));
         assert!(!diag.has_errors());
@@ -1009,7 +1028,8 @@ mod tests {
         let mut diag = emitter();
         let result = check_conflicting_specifiers(
             &[StorageClass::ThreadLocal, StorageClass::Auto],
-            &mut diag, dummy_span(),
+            &mut diag,
+            dummy_span(),
         );
         assert!(result.is_none());
         assert!(diag.has_errors());
@@ -1020,7 +1040,8 @@ mod tests {
         let mut diag = emitter();
         let result = check_conflicting_specifiers(
             &[StorageClass::ThreadLocal, StorageClass::Register],
-            &mut diag, dummy_span(),
+            &mut diag,
+            dummy_span(),
         );
         assert!(result.is_none());
         assert!(diag.has_errors());
@@ -1029,9 +1050,8 @@ mod tests {
     #[test]
     fn thread_local_alone_returns_thread_local() {
         let mut diag = emitter();
-        let result = check_conflicting_specifiers(
-            &[StorageClass::ThreadLocal], &mut diag, dummy_span(),
-        );
+        let result =
+            check_conflicting_specifiers(&[StorageClass::ThreadLocal], &mut diag, dummy_span());
         assert_eq!(result, Some(StorageClass::ThreadLocal));
         assert!(!diag.has_errors());
     }
@@ -1041,7 +1061,8 @@ mod tests {
         let mut diag = emitter();
         let result = check_conflicting_specifiers(
             &[StorageClass::ThreadLocal, StorageClass::ThreadLocal],
-            &mut diag, dummy_span(),
+            &mut diag,
+            dummy_span(),
         );
         assert!(result.is_none());
         assert!(diag.has_errors());
@@ -1052,9 +1073,7 @@ mod tests {
     #[test]
     fn function_default_gives_external_static() {
         let mut diag = emitter();
-        let result = validate_storage_class(
-            None, ScopeKind::File, true, &mut diag, dummy_span(),
-        );
+        let result = validate_storage_class(None, ScopeKind::File, true, &mut diag, dummy_span());
         assert_eq!(result, Ok((Linkage::External, StorageDuration::Static)));
         assert!(!diag.has_errors());
     }
@@ -1063,8 +1082,11 @@ mod tests {
     fn function_static_gives_internal_static() {
         let mut diag = emitter();
         let result = validate_storage_class(
-            Some(StorageClass::Static), ScopeKind::File, true,
-            &mut diag, dummy_span(),
+            Some(StorageClass::Static),
+            ScopeKind::File,
+            true,
+            &mut diag,
+            dummy_span(),
         );
         assert_eq!(result, Ok((Linkage::Internal, StorageDuration::Static)));
         assert!(!diag.has_errors());
@@ -1074,8 +1096,11 @@ mod tests {
     fn function_extern_gives_external_static() {
         let mut diag = emitter();
         let result = validate_storage_class(
-            Some(StorageClass::Extern), ScopeKind::File, true,
-            &mut diag, dummy_span(),
+            Some(StorageClass::Extern),
+            ScopeKind::File,
+            true,
+            &mut diag,
+            dummy_span(),
         );
         assert_eq!(result, Ok((Linkage::External, StorageDuration::Static)));
         assert!(!diag.has_errors());
@@ -1085,8 +1110,11 @@ mod tests {
     fn function_auto_is_error() {
         let mut diag = emitter();
         let result = validate_storage_class(
-            Some(StorageClass::Auto), ScopeKind::File, true,
-            &mut diag, dummy_span(),
+            Some(StorageClass::Auto),
+            ScopeKind::File,
+            true,
+            &mut diag,
+            dummy_span(),
         );
         assert!(result.is_err());
         assert!(diag.has_errors());
@@ -1096,8 +1124,11 @@ mod tests {
     fn function_register_is_error() {
         let mut diag = emitter();
         let result = validate_storage_class(
-            Some(StorageClass::Register), ScopeKind::File, true,
-            &mut diag, dummy_span(),
+            Some(StorageClass::Register),
+            ScopeKind::File,
+            true,
+            &mut diag,
+            dummy_span(),
         );
         assert!(result.is_err());
         assert!(diag.has_errors());
@@ -1107,8 +1138,11 @@ mod tests {
     fn function_thread_local_is_error() {
         let mut diag = emitter();
         let result = validate_storage_class(
-            Some(StorageClass::ThreadLocal), ScopeKind::File, true,
-            &mut diag, dummy_span(),
+            Some(StorageClass::ThreadLocal),
+            ScopeKind::File,
+            true,
+            &mut diag,
+            dummy_span(),
         );
         assert!(result.is_err());
         assert!(diag.has_errors());
@@ -1119,9 +1153,8 @@ mod tests {
     #[test]
     fn param_default_gives_none_automatic() {
         let mut diag = emitter();
-        let result = validate_storage_class(
-            None, ScopeKind::Prototype, false, &mut diag, dummy_span(),
-        );
+        let result =
+            validate_storage_class(None, ScopeKind::Prototype, false, &mut diag, dummy_span());
         assert_eq!(result, Ok((Linkage::None, StorageDuration::Automatic)));
         assert!(!diag.has_errors());
     }
@@ -1130,8 +1163,11 @@ mod tests {
     fn param_register_gives_none_automatic() {
         let mut diag = emitter();
         let result = validate_storage_class(
-            Some(StorageClass::Register), ScopeKind::Prototype, false,
-            &mut diag, dummy_span(),
+            Some(StorageClass::Register),
+            ScopeKind::Prototype,
+            false,
+            &mut diag,
+            dummy_span(),
         );
         assert_eq!(result, Ok((Linkage::None, StorageDuration::Automatic)));
         assert!(!diag.has_errors());
@@ -1141,8 +1177,11 @@ mod tests {
     fn param_static_is_error() {
         let mut diag = emitter();
         let result = validate_storage_class(
-            Some(StorageClass::Static), ScopeKind::Prototype, false,
-            &mut diag, dummy_span(),
+            Some(StorageClass::Static),
+            ScopeKind::Prototype,
+            false,
+            &mut diag,
+            dummy_span(),
         );
         assert!(result.is_err());
         assert!(diag.has_errors());
@@ -1152,8 +1191,11 @@ mod tests {
     fn param_extern_is_error() {
         let mut diag = emitter();
         let result = validate_storage_class(
-            Some(StorageClass::Extern), ScopeKind::Prototype, false,
-            &mut diag, dummy_span(),
+            Some(StorageClass::Extern),
+            ScopeKind::Prototype,
+            false,
+            &mut diag,
+            dummy_span(),
         );
         assert!(result.is_err());
         assert!(diag.has_errors());
@@ -1163,8 +1205,11 @@ mod tests {
     fn param_auto_is_error() {
         let mut diag = emitter();
         let result = validate_storage_class(
-            Some(StorageClass::Auto), ScopeKind::Prototype, false,
-            &mut diag, dummy_span(),
+            Some(StorageClass::Auto),
+            ScopeKind::Prototype,
+            false,
+            &mut diag,
+            dummy_span(),
         );
         assert!(result.is_err());
         assert!(diag.has_errors());
@@ -1174,8 +1219,11 @@ mod tests {
     fn param_thread_local_is_error() {
         let mut diag = emitter();
         let result = validate_storage_class(
-            Some(StorageClass::ThreadLocal), ScopeKind::Prototype, false,
-            &mut diag, dummy_span(),
+            Some(StorageClass::ThreadLocal),
+            ScopeKind::Prototype,
+            false,
+            &mut diag,
+            dummy_span(),
         );
         assert!(result.is_err());
         assert!(diag.has_errors());
@@ -1187,8 +1235,11 @@ mod tests {
     fn linkage_first_declaration_static_file_gives_internal() {
         let mut diag = emitter();
         let result = resolve_linkage(
-            Some(StorageClass::Static), None,
-            ScopeKind::File, &mut diag, dummy_span(),
+            Some(StorageClass::Static),
+            None,
+            ScopeKind::File,
+            &mut diag,
+            dummy_span(),
         );
         assert_eq!(result, Linkage::Internal);
         assert!(!diag.has_errors());
@@ -1198,8 +1249,11 @@ mod tests {
     fn linkage_first_declaration_extern_gives_external() {
         let mut diag = emitter();
         let result = resolve_linkage(
-            Some(StorageClass::Extern), None,
-            ScopeKind::File, &mut diag, dummy_span(),
+            Some(StorageClass::Extern),
+            None,
+            ScopeKind::File,
+            &mut diag,
+            dummy_span(),
         );
         assert_eq!(result, Linkage::External);
         assert!(!diag.has_errors());
@@ -1208,9 +1262,7 @@ mod tests {
     #[test]
     fn linkage_first_declaration_default_file_gives_external() {
         let mut diag = emitter();
-        let result = resolve_linkage(
-            None, None, ScopeKind::File, &mut diag, dummy_span(),
-        );
+        let result = resolve_linkage(None, None, ScopeKind::File, &mut diag, dummy_span());
         assert_eq!(result, Linkage::External);
         assert!(!diag.has_errors());
     }
@@ -1218,9 +1270,7 @@ mod tests {
     #[test]
     fn linkage_first_declaration_default_block_gives_none() {
         let mut diag = emitter();
-        let result = resolve_linkage(
-            None, None, ScopeKind::Block, &mut diag, dummy_span(),
-        );
+        let result = resolve_linkage(None, None, ScopeKind::Block, &mut diag, dummy_span());
         assert_eq!(result, Linkage::None);
         assert!(!diag.has_errors());
     }
@@ -1229,8 +1279,11 @@ mod tests {
     fn linkage_extern_after_extern_stays_external() {
         let mut diag = emitter();
         let result = resolve_linkage(
-            Some(StorageClass::Extern), Some(Linkage::External),
-            ScopeKind::File, &mut diag, dummy_span(),
+            Some(StorageClass::Extern),
+            Some(Linkage::External),
+            ScopeKind::File,
+            &mut diag,
+            dummy_span(),
         );
         assert_eq!(result, Linkage::External);
         assert!(!diag.has_errors());
@@ -1240,8 +1293,11 @@ mod tests {
     fn linkage_static_after_static_stays_internal() {
         let mut diag = emitter();
         let result = resolve_linkage(
-            Some(StorageClass::Static), Some(Linkage::Internal),
-            ScopeKind::File, &mut diag, dummy_span(),
+            Some(StorageClass::Static),
+            Some(Linkage::Internal),
+            ScopeKind::File,
+            &mut diag,
+            dummy_span(),
         );
         assert_eq!(result, Linkage::Internal);
         assert!(!diag.has_errors());
@@ -1251,8 +1307,11 @@ mod tests {
     fn linkage_static_after_extern_file_is_conflict() {
         let mut diag = emitter();
         let result = resolve_linkage(
-            Some(StorageClass::Static), Some(Linkage::External),
-            ScopeKind::File, &mut diag, dummy_span(),
+            Some(StorageClass::Static),
+            Some(Linkage::External),
+            ScopeKind::File,
+            &mut diag,
+            dummy_span(),
         );
         assert!(diag.has_errors());
         // Best-effort: returns Internal despite the error.
@@ -1265,8 +1324,11 @@ mod tests {
         // First `static` at file scope → internal linkage.
         // Then `extern` at block scope → inherits internal.
         let result = resolve_linkage(
-            Some(StorageClass::Extern), Some(Linkage::Internal),
-            ScopeKind::Block, &mut diag, dummy_span(),
+            Some(StorageClass::Extern),
+            Some(Linkage::Internal),
+            ScopeKind::Block,
+            &mut diag,
+            dummy_span(),
         );
         assert_eq!(result, Linkage::Internal);
         assert!(!diag.has_errors());
@@ -1276,8 +1338,11 @@ mod tests {
     fn linkage_extern_after_static_file_is_conflict() {
         let mut diag = emitter();
         let result = resolve_linkage(
-            Some(StorageClass::Extern), Some(Linkage::Internal),
-            ScopeKind::File, &mut diag, dummy_span(),
+            Some(StorageClass::Extern),
+            Some(Linkage::Internal),
+            ScopeKind::File,
+            &mut diag,
+            dummy_span(),
         );
         assert!(diag.has_errors());
         assert_eq!(result, Linkage::Internal);
@@ -1288,8 +1353,11 @@ mod tests {
         let mut diag = emitter();
         // Prior static (internal), then no storage at file scope (implicit external).
         let result = resolve_linkage(
-            None, Some(Linkage::Internal),
-            ScopeKind::File, &mut diag, dummy_span(),
+            None,
+            Some(Linkage::Internal),
+            ScopeKind::File,
+            &mut diag,
+            dummy_span(),
         );
         assert!(diag.has_errors());
         assert_eq!(result, Linkage::Internal);
@@ -1299,8 +1367,11 @@ mod tests {
     fn linkage_no_storage_after_external_file_stays_external() {
         let mut diag = emitter();
         let result = resolve_linkage(
-            None, Some(Linkage::External),
-            ScopeKind::File, &mut diag, dummy_span(),
+            None,
+            Some(Linkage::External),
+            ScopeKind::File,
+            &mut diag,
+            dummy_span(),
         );
         assert_eq!(result, Linkage::External);
         assert!(!diag.has_errors());
@@ -1311,9 +1382,7 @@ mod tests {
     #[test]
     fn register_with_address_taken_is_error() {
         let mut diag = emitter();
-        check_register_address(
-            Some(StorageClass::Register), true, &mut diag, dummy_span(),
-        );
+        check_register_address(Some(StorageClass::Register), true, &mut diag, dummy_span());
         assert!(diag.has_errors());
         assert_eq!(diag.error_count(), 1);
     }
@@ -1321,18 +1390,14 @@ mod tests {
     #[test]
     fn register_without_address_is_ok() {
         let mut diag = emitter();
-        check_register_address(
-            Some(StorageClass::Register), false, &mut diag, dummy_span(),
-        );
+        check_register_address(Some(StorageClass::Register), false, &mut diag, dummy_span());
         assert!(!diag.has_errors());
     }
 
     #[test]
     fn non_register_with_address_is_ok() {
         let mut diag = emitter();
-        check_register_address(
-            Some(StorageClass::Auto), true, &mut diag, dummy_span(),
-        );
+        check_register_address(Some(StorageClass::Auto), true, &mut diag, dummy_span());
         assert!(!diag.has_errors());
     }
 
@@ -1346,18 +1411,14 @@ mod tests {
     #[test]
     fn static_with_address_is_ok() {
         let mut diag = emitter();
-        check_register_address(
-            Some(StorageClass::Static), true, &mut diag, dummy_span(),
-        );
+        check_register_address(Some(StorageClass::Static), true, &mut diag, dummy_span());
         assert!(!diag.has_errors());
     }
 
     #[test]
     fn extern_with_address_is_ok() {
         let mut diag = emitter();
-        check_register_address(
-            Some(StorageClass::Extern), true, &mut diag, dummy_span(),
-        );
+        check_register_address(Some(StorageClass::Extern), true, &mut diag, dummy_span());
         assert!(!diag.has_errors());
     }
 
@@ -1366,7 +1427,11 @@ mod tests {
     #[test]
     fn struct_member_no_storage_is_ok() {
         let mut diag = emitter();
-        assert!(validate_struct_member_storage(None, &mut diag, dummy_span()));
+        assert!(validate_struct_member_storage(
+            None,
+            &mut diag,
+            dummy_span()
+        ));
         assert!(!diag.has_errors());
     }
 
@@ -1374,7 +1439,9 @@ mod tests {
     fn struct_member_static_is_error() {
         let mut diag = emitter();
         assert!(!validate_struct_member_storage(
-            Some(StorageClass::Static), &mut diag, dummy_span(),
+            Some(StorageClass::Static),
+            &mut diag,
+            dummy_span(),
         ));
         assert!(diag.has_errors());
     }
@@ -1383,7 +1450,9 @@ mod tests {
     fn struct_member_extern_is_error() {
         let mut diag = emitter();
         assert!(!validate_struct_member_storage(
-            Some(StorageClass::Extern), &mut diag, dummy_span(),
+            Some(StorageClass::Extern),
+            &mut diag,
+            dummy_span(),
         ));
         assert!(diag.has_errors());
     }
@@ -1392,7 +1461,9 @@ mod tests {
     fn struct_member_register_is_error() {
         let mut diag = emitter();
         assert!(!validate_struct_member_storage(
-            Some(StorageClass::Register), &mut diag, dummy_span(),
+            Some(StorageClass::Register),
+            &mut diag,
+            dummy_span(),
         ));
         assert!(diag.has_errors());
     }
@@ -1403,9 +1474,8 @@ mod tests {
     fn function_scope_block_scope_default_automatic() {
         // Function scope (label scope) treated like block scope for variables.
         let mut diag = emitter();
-        let result = validate_storage_class(
-            None, ScopeKind::Function, false, &mut diag, dummy_span(),
-        );
+        let result =
+            validate_storage_class(None, ScopeKind::Function, false, &mut diag, dummy_span());
         assert_eq!(result, Ok((Linkage::None, StorageDuration::Automatic)));
         assert!(!diag.has_errors());
     }
@@ -1414,9 +1484,7 @@ mod tests {
     fn function_at_block_scope_default_external() {
         // A function declared inside a block (block-scope function declaration).
         let mut diag = emitter();
-        let result = validate_storage_class(
-            None, ScopeKind::Block, true, &mut diag, dummy_span(),
-        );
+        let result = validate_storage_class(None, ScopeKind::Block, true, &mut diag, dummy_span());
         assert_eq!(result, Ok((Linkage::External, StorageDuration::Static)));
         assert!(!diag.has_errors());
     }
@@ -1425,8 +1493,11 @@ mod tests {
     fn first_declaration_auto_block() {
         let mut diag = emitter();
         let result = resolve_linkage(
-            Some(StorageClass::Auto), None,
-            ScopeKind::Block, &mut diag, dummy_span(),
+            Some(StorageClass::Auto),
+            None,
+            ScopeKind::Block,
+            &mut diag,
+            dummy_span(),
         );
         assert_eq!(result, Linkage::None);
         assert!(!diag.has_errors());
@@ -1436,8 +1507,11 @@ mod tests {
     fn first_declaration_register_block() {
         let mut diag = emitter();
         let result = resolve_linkage(
-            Some(StorageClass::Register), None,
-            ScopeKind::Block, &mut diag, dummy_span(),
+            Some(StorageClass::Register),
+            None,
+            ScopeKind::Block,
+            &mut diag,
+            dummy_span(),
         );
         assert_eq!(result, Linkage::None);
         assert!(!diag.has_errors());
@@ -1447,8 +1521,11 @@ mod tests {
     fn static_at_block_scope_no_linkage() {
         let mut diag = emitter();
         let result = resolve_linkage(
-            Some(StorageClass::Static), None,
-            ScopeKind::Block, &mut diag, dummy_span(),
+            Some(StorageClass::Static),
+            None,
+            ScopeKind::Block,
+            &mut diag,
+            dummy_span(),
         );
         assert_eq!(result, Linkage::None);
         assert!(!diag.has_errors());
@@ -1463,15 +1540,15 @@ mod tests {
         // Step 1: check_conflicting_specifiers returns the companion (Static).
         let effective = check_conflicting_specifiers(
             &[StorageClass::ThreadLocal, StorageClass::Static],
-            &mut diag, dummy_span(),
+            &mut diag,
+            dummy_span(),
         );
         assert_eq!(effective, Some(StorageClass::Static));
         assert!(!diag.has_errors());
 
         // Step 2: validate_storage_class with Static at file scope.
-        let result = validate_storage_class(
-            effective, ScopeKind::File, false, &mut diag, dummy_span(),
-        );
+        let result =
+            validate_storage_class(effective, ScopeKind::File, false, &mut diag, dummy_span());
         // Returns internal linkage, static duration. The caller would then
         // override duration to Thread because _Thread_local was present.
         assert_eq!(result, Ok((Linkage::Internal, StorageDuration::Static)));
@@ -1485,13 +1562,13 @@ mod tests {
 
         let effective = check_conflicting_specifiers(
             &[StorageClass::ThreadLocal, StorageClass::Extern],
-            &mut diag, dummy_span(),
+            &mut diag,
+            dummy_span(),
         );
         assert_eq!(effective, Some(StorageClass::Extern));
 
-        let result = validate_storage_class(
-            effective, ScopeKind::File, false, &mut diag, dummy_span(),
-        );
+        let result =
+            validate_storage_class(effective, ScopeKind::File, false, &mut diag, dummy_span());
         assert_eq!(result, Ok((Linkage::External, StorageDuration::Static)));
         assert!(!diag.has_errors());
     }
@@ -1502,7 +1579,8 @@ mod tests {
         let mut diag = emitter();
         let result = check_conflicting_specifiers(
             &[StorageClass::Static, StorageClass::ThreadLocal],
-            &mut diag, dummy_span(),
+            &mut diag,
+            dummy_span(),
         );
         assert_eq!(result, Some(StorageClass::Static));
         assert!(!diag.has_errors());
@@ -1512,8 +1590,13 @@ mod tests {
     fn three_specifiers_no_thread_local_error() {
         let mut diag = emitter();
         let result = check_conflicting_specifiers(
-            &[StorageClass::Static, StorageClass::Extern, StorageClass::Auto],
-            &mut diag, dummy_span(),
+            &[
+                StorageClass::Static,
+                StorageClass::Extern,
+                StorageClass::Auto,
+            ],
+            &mut diag,
+            dummy_span(),
         );
         assert!(result.is_none());
         assert!(diag.has_errors());
@@ -1524,8 +1607,11 @@ mod tests {
         // Prior external, new `static` at block scope → new entity (no linkage).
         let mut diag = emitter();
         let result = resolve_linkage(
-            Some(StorageClass::Static), Some(Linkage::External),
-            ScopeKind::Block, &mut diag, dummy_span(),
+            Some(StorageClass::Static),
+            Some(Linkage::External),
+            ScopeKind::Block,
+            &mut diag,
+            dummy_span(),
         );
         assert_eq!(result, Linkage::None);
         assert!(!diag.has_errors());
@@ -1536,8 +1622,11 @@ mod tests {
         // Prior no-linkage, any new storage → preserves prior.
         let mut diag = emitter();
         let result = resolve_linkage(
-            Some(StorageClass::Static), Some(Linkage::None),
-            ScopeKind::Block, &mut diag, dummy_span(),
+            Some(StorageClass::Static),
+            Some(Linkage::None),
+            ScopeKind::Block,
+            &mut diag,
+            dummy_span(),
         );
         assert_eq!(result, Linkage::None);
         assert!(!diag.has_errors());

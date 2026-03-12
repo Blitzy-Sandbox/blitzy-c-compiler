@@ -38,9 +38,9 @@
 //!    x86-64 machine code bytes with REX prefixes, ModR/M, SIB, and
 //!    relocation entries.
 
-pub mod isel;
-pub mod encoding;
 pub mod abi;
+pub mod encoding;
+pub mod isel;
 pub mod security;
 
 // ---------------------------------------------------------------------------
@@ -49,12 +49,10 @@ pub mod security;
 
 // Re-export register constants for use by parent codegen module and consumers.
 pub use abi::{
-    RAX, RCX, RDX, RBX, RSP, RBP, RSI, RDI,
-    R8, R9, R10, R11, R12, R13, R14, R15,
-    XMM0, XMM1, XMM2, XMM3, XMM4, XMM5, XMM6, XMM7,
-    XMM8, XMM9, XMM10, XMM11, XMM12, XMM13, XMM14, XMM15,
-    x86_64_register_info, ArgumentClass, ArgumentLayout,
-    INT_ARG_REGS, FLOAT_ARG_REGS, CALLEE_SAVED_GPRS,
+    x86_64_register_info, ArgumentClass, ArgumentLayout, CALLEE_SAVED_GPRS, FLOAT_ARG_REGS,
+    INT_ARG_REGS, R10, R11, R12, R13, R14, R15, R8, R9, RAX, RBP, RBX, RCX, RDI, RDX, RSI, RSP,
+    XMM0, XMM1, XMM10, XMM11, XMM12, XMM13, XMM14, XMM15, XMM2, XMM3, XMM4, XMM5, XMM6, XMM7, XMM8,
+    XMM9,
 };
 
 // Re-export security types for external configuration and use.
@@ -66,15 +64,13 @@ pub use security::{SecurityConfig, SecurityHardening};
 
 use std::collections::HashMap;
 
-use crate::codegen::{
-    Architecture, CodeGen, CodeGenError, ObjectCode,
-    Section, SectionType, SectionFlags,
-    Symbol, SymbolBinding, SymbolType, SymbolVisibility,
-    MachineInstr, MachineOperand,
-};
 use crate::codegen::regalloc::{self, PhysReg};
+use crate::codegen::{
+    Architecture, CodeGen, CodeGenError, MachineInstr, MachineOperand, ObjectCode, Section,
+    SectionFlags, SectionType, Symbol, SymbolBinding, SymbolType, SymbolVisibility,
+};
 use crate::driver::target::TargetConfig;
-use crate::ir::{Module, Function, Value};
+use crate::ir::{Function, Module, Value};
 
 // ---------------------------------------------------------------------------
 // X86_64CodeGen — x86-64 code generation backend
@@ -220,8 +216,7 @@ impl X86_64CodeGen {
                             // interval end.
                             for iv in live_intervals.iter() {
                                 if iv.value == *param_val {
-                                    stack_param_max_end =
-                                        stack_param_max_end.max(iv.end);
+                                    stack_param_max_end = stack_param_max_end.max(iv.end);
                                     break;
                                 }
                             }
@@ -249,10 +244,7 @@ impl X86_64CodeGen {
                 }
             }
 
-            let alloc_result = regalloc::linear_scan_allocate(
-                &mut live_intervals,
-                &reg_info,
-            );
+            let alloc_result = regalloc::linear_scan_allocate(&mut live_intervals, &reg_info);
             let value_to_reg = regalloc::build_value_to_reg_map(&alloc_result);
             let value_to_class = regalloc::build_value_to_class_map(&alloc_result);
 
@@ -339,20 +331,40 @@ impl X86_64CodeGen {
             // Record function symbol.
             // Section index is 0-based into ObjectCode.sections[] (0 = .text).
             let text_section_idx: usize = 0;
+            // Map function visibility attribute to ELF symbol visibility
+            let func_visibility = match function.visibility.as_deref() {
+                Some("hidden") => SymbolVisibility::Hidden,
+                Some("protected") => SymbolVisibility::Protected,
+                Some("internal") => SymbolVisibility::Internal,
+                _ => SymbolVisibility::Default,
+            };
+            // If function has `used` attribute, force global binding for static functions
+            let func_binding = if function.is_weak {
+                SymbolBinding::Weak
+            } else if function_is_global(function) || function.is_used {
+                SymbolBinding::Global
+            } else {
+                SymbolBinding::Local
+            };
+            // If function has `used` attribute but is static, keep it as Local but ensure it
+            // appears in symbol table (handled by is_definition = true)
+            let actual_binding = if function.is_static && !function.is_weak {
+                if function.is_used {
+                    SymbolBinding::Local
+                } else {
+                    SymbolBinding::Local
+                }
+            } else {
+                func_binding
+            };
             symbols.push(Symbol {
                 name: function.name.clone(),
                 section_index: text_section_idx,
                 offset: func_start as u64,
                 size: func_code.len() as u64,
-                binding: if function.is_weak {
-                    SymbolBinding::Weak
-                } else if function_is_global(function) {
-                    SymbolBinding::Global
-                } else {
-                    SymbolBinding::Local
-                },
+                binding: actual_binding,
                 symbol_type: SymbolType::Function,
-                visibility: SymbolVisibility::Default,
+                visibility: func_visibility,
                 is_definition: true,
             });
 
@@ -390,9 +402,78 @@ impl X86_64CodeGen {
         }
 
         // =================================================================
-        // Process global variables into .data, .rodata, .bss
+        // Process global variables into .data, .rodata, .bss, or custom sections
         // =================================================================
+        // Track custom sections for __attribute__((section("name")))
+        // Custom sections are created after the 4 standard sections (indices 4+).
+        let mut custom_sections: Vec<(String, Vec<u8>)> = Vec::new();
+        let mut custom_section_map: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+
         for global in &module.globals {
+            // Check for section override attribute
+            if let Some(ref section_name) = global.section_override {
+                // Place this variable in a custom section
+                let custom_idx = if let Some(&idx) = custom_section_map.get(section_name) {
+                    idx
+                } else {
+                    let idx = 4 + custom_sections.len(); // After .text, .rodata, .data, .bss
+                    custom_section_map.insert(section_name.clone(), idx);
+                    custom_sections.push((section_name.clone(), Vec::new()));
+                    idx
+                };
+
+                let type_size = global.ty.size(target);
+                let alignment = global.ty.alignment(target);
+                let sym_visibility = match global.visibility.as_deref() {
+                    Some("hidden") => SymbolVisibility::Hidden,
+                    Some("protected") => SymbolVisibility::Protected,
+                    Some("internal") => SymbolVisibility::Internal,
+                    _ => SymbolVisibility::Default,
+                };
+                let binding = if global.is_weak {
+                    SymbolBinding::Weak
+                } else if global.is_static {
+                    SymbolBinding::Local
+                } else {
+                    SymbolBinding::Global
+                };
+
+                // Get the custom section data
+                let sec_data_idx = custom_idx - 4;
+                let sec_data = &mut custom_sections[sec_data_idx].1;
+
+                // Align within the section
+                let padding = align_padding(sec_data.len(), alignment);
+                sec_data.extend(std::iter::repeat(0u8).take(padding));
+                let offset = sec_data.len();
+
+                // Write initializer bytes if present
+                if let Some(ref init) = global.initializer {
+                    if !is_zero_initializer(init) {
+                        let init_bytes = constant_to_bytes(init, type_size, target);
+                        sec_data.extend_from_slice(&init_bytes);
+                    } else {
+                        sec_data.extend(std::iter::repeat(0u8).take(type_size));
+                    }
+                } else {
+                    sec_data.extend(std::iter::repeat(0u8).take(type_size));
+                }
+
+                let actual_size = sec_data.len() - offset;
+                symbols.push(Symbol {
+                    name: global.name.clone(),
+                    section_index: custom_idx,
+                    offset: offset as u64,
+                    size: actual_size as u64,
+                    binding,
+                    symbol_type: SymbolType::Object,
+                    visibility: sym_visibility,
+                    is_definition: true,
+                });
+                continue;
+            }
+
             let sym = self.emit_global(
                 global,
                 target,
@@ -487,6 +568,21 @@ impl X86_64CodeGen {
                 allocatable: true,
             },
         });
+
+        // Add custom sections from __attribute__((section("...")))
+        for (sect_name, sect_data) in custom_sections {
+            object.add_section(Section {
+                name: sect_name,
+                data: sect_data,
+                section_type: SectionType::Data, // Custom sections default to data type
+                alignment: 8,
+                flags: SectionFlags {
+                    writable: true,
+                    executable: false,
+                    allocatable: true,
+                },
+            });
+        }
 
         // Filter out undefined symbols that have no relocations referencing them.
         // When system headers like <stdio.h> are included, they declare many
@@ -597,18 +693,18 @@ impl X86_64CodeGen {
         // (RDI/RSI/RDX/RCX/R8/R9) to avoid clobbering during call-argument
         // setup.  R10 and R11 are caller-saved, non-argument scratch regs.
         let int_fallback_pool: [PhysReg; 3] = [
-            PhysReg(0),   // RAX
-            PhysReg(10),  // R10
-            PhysReg(11),  // R11
+            PhysReg(0),  // RAX
+            PhysReg(10), // R10
+            PhysReg(11), // R11
         ];
         // XMM scratch pool for float values that weren't assigned a register
         // (spilled or temporary). Without this, spilled float vregs would get
         // GPR fallbacks and cause panics in SSE instruction encoding (ADDSD,
         // SUBSD, MULSD, etc. require XMM operands).
         let float_fallback_pool: [PhysReg; 3] = [
-            XMM0,   // PhysReg(16)
-            XMM1,   // PhysReg(17)
-            XMM2,   // PhysReg(18)
+            XMM0, // PhysReg(16)
+            XMM1, // PhysReg(17)
+            XMM2, // PhysReg(18)
         ];
         let mut int_fallback_idx: usize = 0;
         let mut float_fallback_idx: usize = 0;
@@ -630,15 +726,18 @@ impl X86_64CodeGen {
                                 if let Some(&phys) = vreg_fallback_map.get(&vreg_id) {
                                     *reg = phys;
                                 } else {
-                                    let is_float = value_to_class.get(&value)
+                                    let is_float = value_to_class
+                                        .get(&value)
                                         .map(|c| *c == regalloc::RegClass::Float)
                                         .unwrap_or(false);
                                     let phys = if is_float {
-                                        let p = float_fallback_pool[float_fallback_idx % float_fallback_pool.len()];
+                                        let p = float_fallback_pool
+                                            [float_fallback_idx % float_fallback_pool.len()];
                                         float_fallback_idx += 1;
                                         p
                                     } else {
-                                        let p = int_fallback_pool[int_fallback_idx % int_fallback_pool.len()];
+                                        let p = int_fallback_pool
+                                            [int_fallback_idx % int_fallback_pool.len()];
                                         int_fallback_idx += 1;
                                         p
                                     };
@@ -652,7 +751,8 @@ impl X86_64CodeGen {
                                 if let Some(&phys) = vreg_fallback_map.get(&vreg_id) {
                                     *reg = phys;
                                 } else {
-                                    let phys = int_fallback_pool[int_fallback_idx % int_fallback_pool.len()];
+                                    let phys = int_fallback_pool
+                                        [int_fallback_idx % int_fallback_pool.len()];
                                     vreg_fallback_map.insert(vreg_id, phys);
                                     *reg = phys;
                                     int_fallback_idx += 1;
@@ -673,7 +773,8 @@ impl X86_64CodeGen {
                             if let Some(&phys) = vreg_fallback_map.get(&vreg_id) {
                                 *base = phys;
                             } else {
-                                let phys = int_fallback_pool[int_fallback_idx % int_fallback_pool.len()];
+                                let phys =
+                                    int_fallback_pool[int_fallback_idx % int_fallback_pool.len()];
                                 vreg_fallback_map.insert(vreg_id, phys);
                                 *base = phys;
                                 int_fallback_idx += 1;
@@ -812,6 +913,14 @@ impl X86_64CodeGen {
         let type_size = global.ty.size(target);
         let alignment = global.ty.alignment(target);
 
+        // Map visibility attribute to ELF symbol visibility
+        let sym_visibility = match global.visibility.as_deref() {
+            Some("hidden") => SymbolVisibility::Hidden,
+            Some("protected") => SymbolVisibility::Protected,
+            Some("internal") => SymbolVisibility::Internal,
+            _ => SymbolVisibility::Default,
+        };
+
         // Extern declarations produce an undefined symbol reference.
         if global.is_extern {
             return Symbol {
@@ -821,17 +930,25 @@ impl X86_64CodeGen {
                 size: 0,
                 binding: SymbolBinding::Global,
                 symbol_type: SymbolType::Object,
-                visibility: SymbolVisibility::Default,
+                visibility: sym_visibility,
                 is_definition: false,
             };
         }
 
-        // Determine linkage based on storage class.
-        let binding = if global.is_static {
+        // Determine linkage based on storage class and attributes.
+        let binding = if global.is_weak {
+            SymbolBinding::Weak
+        } else if global.is_static {
             SymbolBinding::Local
         } else {
             SymbolBinding::Global
         };
+
+        // Note: section_override is stored in the Symbol but the actual section
+        // assignment is handled at the linker/ELF emission level. The section_index
+        // here refers to the default section; a section_override value means the
+        // linker should place the symbol in a custom section.
+        // We store section_override info in a separate mechanism - see below.
 
         match &global.initializer {
             None => {
@@ -845,7 +962,7 @@ impl X86_64CodeGen {
                     size: type_size as u64,
                     binding,
                     symbol_type: SymbolType::Object,
-                    visibility: SymbolVisibility::Default,
+                    visibility: sym_visibility,
                     is_definition: true,
                 };
                 *bss_size = aligned_offset + type_size as u64;
@@ -862,7 +979,7 @@ impl X86_64CodeGen {
                         size: type_size as u64,
                         binding,
                         symbol_type: SymbolType::Object,
-                        visibility: SymbolVisibility::Default,
+                        visibility: sym_visibility,
                         is_definition: true,
                     };
                     *bss_size = aligned_offset + type_size as u64;
@@ -890,7 +1007,7 @@ impl X86_64CodeGen {
                         size: init_bytes.len() as u64,
                         binding,
                         symbol_type: SymbolType::Object,
-                        visibility: SymbolVisibility::Default,
+                        visibility: sym_visibility,
                         is_definition: true,
                     }
                 }
@@ -908,11 +1025,7 @@ impl CodeGen for X86_64CodeGen {
     ///
     /// Delegates to [`generate_impl`](X86_64CodeGen::generate_impl) which
     /// orchestrates the full backend pipeline.
-    fn generate(
-        &self,
-        module: &Module,
-        target: &TargetConfig,
-    ) -> Result<ObjectCode, CodeGenError> {
+    fn generate(&self, module: &Module, target: &TargetConfig) -> Result<ObjectCode, CodeGenError> {
         self.generate_impl(module, target)
     }
 
@@ -948,8 +1061,8 @@ impl CodeGen for X86_64CodeGen {
 /// MOV dst, tmp`. For simplicity, for non-commutative ops where dst==rhs,
 /// we swap the MOV to copy rhs (nop), negate the sub via `NEG dst; ADD dst, lhs`.
 fn fix_two_address_clobbers(instrs: &mut Vec<MachineInstr>) {
-    use crate::codegen::MachineOperand;
     use crate::codegen::x86_64::isel::opcodes;
+    use crate::codegen::MachineOperand;
 
     // Set of commutative two-address opcodes.
     let commutative: std::collections::HashSet<u32> = [
@@ -958,11 +1071,13 @@ fn fix_two_address_clobbers(instrs: &mut Vec<MachineInstr>) {
         opcodes::AND_RR,
         opcodes::OR_RR,
         opcodes::XOR_RR,
-    ].iter().copied().collect();
+    ]
+    .iter()
+    .copied()
+    .collect();
 
-    let non_commutative: std::collections::HashSet<u32> = [
-        opcodes::SUB_RR,
-    ].iter().copied().collect();
+    let non_commutative: std::collections::HashSet<u32> =
+        [opcodes::SUB_RR].iter().copied().collect();
 
     let mut i = 0;
     while i + 1 < instrs.len() {
@@ -984,7 +1099,8 @@ fn fix_two_address_clobbers(instrs: &mut Vec<MachineInstr>) {
                 MachineOperand::Register(md),
                 MachineOperand::Register(od),
                 MachineOperand::Register(rhs_reg),
-            ) = (mov_dst, op_dst, op_src) {
+            ) = (mov_dst, op_dst, op_src)
+            {
                 if md == od && md == rhs_reg {
                     // dst == rhs — the MOV would clobber rhs.
                     if commutative.contains(&op_opcode) {
@@ -1166,10 +1282,10 @@ fn align_up(value: u64, alignment: u64) -> u64 {
 mod tests {
     use super::*;
     use crate::codegen::{Architecture, CodeGen};
-    use crate::ir::builder::{Module, Function, GlobalVariable};
-    use crate::ir::instructions::{Value, Constant, BlockId};
-    use crate::ir::types::IrType;
+    use crate::ir::builder::{Function, GlobalVariable, Module};
     use crate::ir::cfg::BasicBlock;
+    use crate::ir::instructions::{BlockId, Constant, Value};
+    use crate::ir::types::IrType;
 
     /// Helper to create a minimal TargetConfig for x86-64 tests.
     fn test_target() -> TargetConfig {
@@ -1193,6 +1309,9 @@ mod tests {
             is_definition: true,
             is_static: false,
             is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         }
     }
 
@@ -1208,6 +1327,9 @@ mod tests {
             is_definition: false,
             is_static: false,
             is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         }
     }
 
@@ -1281,7 +1403,11 @@ mod tests {
         module.functions.push(minimal_function("main"));
         let target = test_target();
         let result = backend.generate(&module, &target);
-        assert!(result.is_ok(), "Simple function should generate: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Simple function should generate: {:?}",
+            result.err()
+        );
         let obj = result.unwrap();
         // Should have a function symbol for 'main'.
         let main_sym = obj.symbols.iter().find(|s| s.name == "main");
@@ -1322,14 +1448,17 @@ mod tests {
     #[test]
     fn test_apply_register_assignments_physical_unchanged() {
         let backend = X86_64CodeGen::new();
-        let mut instrs = vec![
-            MachineInstr::with_operands(0x100, vec![
+        let mut instrs = vec![MachineInstr::with_operands(
+            0x100,
+            vec![
                 MachineOperand::Register(PhysReg(0)), // RAX — physical, should be unchanged
                 MachineOperand::Register(PhysReg(1)), // RCX — physical
-            ]),
-        ];
+            ],
+        )];
         let map = HashMap::new();
-        backend.apply_register_assignments(&mut instrs, &map).unwrap();
+        backend
+            .apply_register_assignments(&mut instrs, &map)
+            .unwrap();
         // Physical registers should remain unchanged.
         if let MachineOperand::Register(r) = &instrs[0].operands[0] {
             assert_eq!(r.0, 0);
@@ -1342,14 +1471,17 @@ mod tests {
     #[test]
     fn test_apply_register_assignments_virtual_mapped() {
         let backend = X86_64CodeGen::new();
-        let mut instrs = vec![
-            MachineInstr::with_operands(0x100, vec![
+        let mut instrs = vec![MachineInstr::with_operands(
+            0x100,
+            vec![
                 MachineOperand::Register(PhysReg(32)), // Virtual register
-            ]),
-        ];
+            ],
+        )];
         let mut map = HashMap::new();
         map.insert(Value(32), PhysReg(0)); // Map virtual 32 → RAX
-        backend.apply_register_assignments(&mut instrs, &map).unwrap();
+        backend
+            .apply_register_assignments(&mut instrs, &map)
+            .unwrap();
         if let MachineOperand::Register(r) = &instrs[0].operands[0] {
             assert_eq!(r.0, 0, "Virtual register 32 should map to RAX (0)");
         }
@@ -1362,9 +1494,7 @@ mod tests {
     #[test]
     fn test_insert_prologue_epilogue_empty_both() {
         let backend = X86_64CodeGen::new();
-        let mut instrs = vec![
-            MachineInstr::with_operands(isel::opcodes::RET, vec![]),
-        ];
+        let mut instrs = vec![MachineInstr::with_operands(isel::opcodes::RET, vec![])];
         backend.insert_prologue_epilogue(&mut instrs, &[], &[]);
         assert_eq!(instrs.len(), 1); // No changes for empty prologue/epilogue.
     }
@@ -1372,13 +1502,13 @@ mod tests {
     #[test]
     fn test_insert_prologue_epilogue_with_prologue() {
         let backend = X86_64CodeGen::new();
-        let push_rbp = MachineInstr::with_operands(isel::opcodes::PUSH, vec![
-            MachineOperand::Register(RBP),
-        ]);
+        let push_rbp =
+            MachineInstr::with_operands(isel::opcodes::PUSH, vec![MachineOperand::Register(RBP)]);
         let prologue = vec![push_rbp.clone()];
-        let epilogue = vec![MachineInstr::with_operands(isel::opcodes::POP, vec![
-            MachineOperand::Register(RBP),
-        ])];
+        let epilogue = vec![MachineInstr::with_operands(
+            isel::opcodes::POP,
+            vec![MachineOperand::Register(RBP)],
+        )];
         let mut instrs = vec![
             MachineInstr::with_operands(isel::opcodes::NOP, vec![]),
             MachineInstr::with_operands(isel::opcodes::RET, vec![]),
@@ -1398,7 +1528,10 @@ mod tests {
     #[test]
     fn test_function_has_calls_empty() {
         let func = minimal_function("test_leaf");
-        assert!(!function_has_calls(&func), "Empty function should be a leaf");
+        assert!(
+            !function_has_calls(&func),
+            "Empty function should be a leaf"
+        );
     }
 
     #[test]
@@ -1416,10 +1549,18 @@ mod tests {
 
     #[test]
     fn test_is_zero_initializer() {
-        assert!(is_zero_initializer(&Constant::Integer { value: 0, ty: IrType::I32 }));
-        assert!(!is_zero_initializer(&Constant::Integer { value: 42, ty: IrType::I32 }));
+        assert!(is_zero_initializer(&Constant::Integer {
+            value: 0,
+            ty: IrType::I32
+        }));
+        assert!(!is_zero_initializer(&Constant::Integer {
+            value: 42,
+            ty: IrType::I32
+        }));
         assert!(is_zero_initializer(&Constant::ZeroInit(IrType::I64)));
-        assert!(is_zero_initializer(&Constant::Null(IrType::Pointer(Box::new(IrType::I8)))));
+        assert!(is_zero_initializer(&Constant::Null(IrType::Pointer(
+            Box::new(IrType::I8)
+        ))));
         assert!(is_zero_initializer(&Constant::Bool(false)));
         assert!(!is_zero_initializer(&Constant::Bool(true)));
     }
@@ -1428,7 +1569,10 @@ mod tests {
     fn test_constant_to_bytes_integer() {
         let target = test_target();
         let bytes = constant_to_bytes(
-            &Constant::Integer { value: 42, ty: IrType::I32 },
+            &Constant::Integer {
+                value: 42,
+                ty: IrType::I32,
+            },
             4,
             &target,
         );
@@ -1439,7 +1583,10 @@ mod tests {
     fn test_constant_to_bytes_float() {
         let target = test_target();
         let bytes = constant_to_bytes(
-            &Constant::Float { value: 3.14, ty: IrType::F64 },
+            &Constant::Float {
+                value: 3.14,
+                ty: IrType::F64,
+            },
             8,
             &target,
         );
@@ -1449,11 +1596,7 @@ mod tests {
     #[test]
     fn test_constant_to_bytes_string() {
         let target = test_target();
-        let bytes = constant_to_bytes(
-            &Constant::String(b"hello\0".to_vec()),
-            6,
-            &target,
-        );
+        let bytes = constant_to_bytes(&Constant::String(b"hello\0".to_vec()), 6, &target);
         assert_eq!(bytes, b"hello\0".to_vec());
     }
 
@@ -1491,6 +1634,10 @@ mod tests {
             initializer: None,
             is_extern: true,
             is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         };
         let mut data = Vec::new();
         let mut rodata = Vec::new();
@@ -1513,6 +1660,10 @@ mod tests {
             initializer: None,
             is_extern: false,
             is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         };
         let mut data = Vec::new();
         let mut rodata = Vec::new();
@@ -1530,9 +1681,16 @@ mod tests {
         let global = GlobalVariable {
             name: "data_var".to_string(),
             ty: IrType::I32,
-            initializer: Some(Constant::Integer { value: 42, ty: IrType::I32 }),
+            initializer: Some(Constant::Integer {
+                value: 42,
+                ty: IrType::I32,
+            }),
             is_extern: false,
             is_static: false,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         };
         let mut data = Vec::new();
         let mut rodata = Vec::new();
@@ -1540,7 +1698,10 @@ mod tests {
         let sym = backend.emit_global(&global, &target, &mut data, &mut rodata, &mut bss, &[]);
         assert_eq!(sym.name, "data_var");
         assert_eq!(sym.binding, SymbolBinding::Global);
-        assert!(!data.is_empty(), ".data should contain the initialized value");
+        assert!(
+            !data.is_empty(),
+            ".data should contain the initialized value"
+        );
         assert_eq!(bss, 0, "BSS should not grow for initialized globals");
     }
 
@@ -1551,15 +1712,26 @@ mod tests {
         let global = GlobalVariable {
             name: "static_var".to_string(),
             ty: IrType::I32,
-            initializer: Some(Constant::Integer { value: 1, ty: IrType::I32 }),
+            initializer: Some(Constant::Integer {
+                value: 1,
+                ty: IrType::I32,
+            }),
             is_extern: false,
             is_static: true,
+            is_weak: false,
+            section_override: None,
+            visibility: None,
+            is_used: false,
         };
         let mut data = Vec::new();
         let mut rodata = Vec::new();
         let mut bss = 0u64;
         let sym = backend.emit_global(&global, &target, &mut data, &mut rodata, &mut bss, &[]);
-        assert_eq!(sym.binding, SymbolBinding::Local, "Static globals should have local binding");
+        assert_eq!(
+            sym.binding,
+            SymbolBinding::Local,
+            "Static globals should have local binding"
+        );
     }
 
     // =================================================================
@@ -1569,9 +1741,7 @@ mod tests {
     #[test]
     fn test_insert_stack_probe_empty() {
         let backend = X86_64CodeGen::new();
-        let mut instrs = vec![
-            MachineInstr::with_operands(isel::opcodes::NOP, vec![]),
-        ];
+        let mut instrs = vec![MachineInstr::with_operands(isel::opcodes::NOP, vec![])];
         backend.insert_stack_probe(&mut instrs, &[]);
         assert_eq!(instrs.len(), 1); // No change for empty probe instrs.
     }

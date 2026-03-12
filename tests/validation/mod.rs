@@ -40,6 +40,7 @@ pub mod sqlite;
 pub mod lua;
 pub mod zlib;
 pub mod redis;
+pub mod linux;
 
 // =========================================================================
 // Target Architecture Constants

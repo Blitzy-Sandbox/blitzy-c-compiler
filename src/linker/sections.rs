@@ -355,9 +355,9 @@ pub fn merge_sections(
         }
         match perm_key_for(name) {
             SectionPermission::ReadExecute => rem_rx.push(name.clone()),
-            SectionPermission::ReadOnly    => rem_ro.push(name.clone()),
-            SectionPermission::ReadWrite   => rem_rw.push(name.clone()),
-            SectionPermission::None        => rem_na.push(name.clone()),
+            SectionPermission::ReadOnly => rem_ro.push(name.clone()),
+            SectionPermission::ReadWrite => rem_rw.push(name.clone()),
+            SectionPermission::None => rem_na.push(name.clone()),
         }
     }
     rem_rx.sort();
@@ -374,9 +374,15 @@ pub fn merge_sections(
 
     // Find the last explicit section index for each permission group
     // so we know where to insert remaining sections.
-    let last_rx = explicit.iter().rposition(|n| perm_key_for(n) == SectionPermission::ReadExecute);
-    let last_ro = explicit.iter().rposition(|n| perm_key_for(n) == SectionPermission::ReadOnly);
-    let last_rw = explicit.iter().rposition(|n| perm_key_for(n) == SectionPermission::ReadWrite);
+    let last_rx = explicit
+        .iter()
+        .rposition(|n| perm_key_for(n) == SectionPermission::ReadExecute);
+    let last_ro = explicit
+        .iter()
+        .rposition(|n| perm_key_for(n) == SectionPermission::ReadOnly);
+    let last_rw = explicit
+        .iter()
+        .rposition(|n| perm_key_for(n) == SectionPermission::ReadWrite);
 
     for (idx, name) in explicit.iter().enumerate() {
         ordered_names.push(name.clone());
@@ -398,9 +404,15 @@ pub fn merge_sections(
     }
 
     // If no explicit section existed for a permission group, append at end.
-    if !emitted_rx { ordered_names.extend(rem_rx); }
-    if !emitted_ro { ordered_names.extend(rem_ro); }
-    if !emitted_rw { ordered_names.extend(rem_rw); }
+    if !emitted_rx {
+        ordered_names.extend(rem_rx);
+    }
+    if !emitted_ro {
+        ordered_names.extend(rem_ro);
+    }
+    if !emitted_rw {
+        ordered_names.extend(rem_rw);
+    }
     // Non-alloc sections always go last.
     ordered_names.extend(rem_na);
 

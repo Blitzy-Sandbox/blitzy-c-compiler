@@ -245,6 +245,16 @@ pub struct TargetConfig {
     /// Whether position-independent code generation is enabled (`-fPIC`).
     /// Defaults to `false`; set by the pipeline from CLI arguments.
     pub pic: bool,
+
+    /// Whether the 128-byte red zone should be omitted (`-mno-red-zone`).
+    /// Relevant only for x86-64; defaults to `false`.
+    pub no_red_zone: bool,
+
+    /// Whether each function should be emitted into `.text.<funcname>` (`-ffunction-sections`).
+    pub function_sections: bool,
+
+    /// Whether each global variable should be emitted into `.data.<varname>` (`-fdata-sections`).
+    pub data_sections: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -285,6 +295,9 @@ impl TargetConfig {
             retpoline: false,
             cf_protection: false,
             pic: false,
+            no_red_zone: false,
+            function_sections: false,
+            data_sections: false,
         }
     }
 
@@ -323,6 +336,9 @@ impl TargetConfig {
             retpoline: false,
             cf_protection: false,
             pic: false,
+            no_red_zone: false,
+            function_sections: false,
+            data_sections: false,
         }
     }
 
@@ -359,6 +375,9 @@ impl TargetConfig {
             retpoline: false,
             cf_protection: false,
             pic: false,
+            no_red_zone: false,
+            function_sections: false,
+            data_sections: false,
         }
     }
 
@@ -395,6 +414,9 @@ impl TargetConfig {
             retpoline: false,
             cf_protection: false,
             pic: false,
+            no_red_zone: false,
+            function_sections: false,
+            data_sections: false,
         }
     }
 }

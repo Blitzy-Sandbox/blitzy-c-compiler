@@ -149,6 +149,9 @@ pub enum SymbolVisibility {
     /// Default visibility (STV_DEFAULT = 0). The symbol's binding determines
     /// whether it is externally visible.
     Default,
+    /// Internal visibility (STV_INTERNAL = 1). Not visible outside the component
+    /// and not preemptible. Stricter than Hidden.
+    Internal,
     /// Hidden visibility (STV_HIDDEN = 2). The symbol is not visible to other
     /// components and is effectively local to the shared library.
     Hidden,
@@ -162,6 +165,7 @@ impl SymbolVisibility {
     pub fn from_elf(vis: u8) -> Self {
         match vis {
             v if v == elf::STV_DEFAULT => SymbolVisibility::Default,
+            v if v == elf::STV_INTERNAL => SymbolVisibility::Internal,
             v if v == elf::STV_HIDDEN => SymbolVisibility::Hidden,
             v if v == elf::STV_PROTECTED => SymbolVisibility::Protected,
             _ => SymbolVisibility::Default,
@@ -174,6 +178,7 @@ impl SymbolVisibility {
             SymbolVisibility::Default => elf::STV_DEFAULT,
             SymbolVisibility::Hidden => elf::STV_HIDDEN,
             SymbolVisibility::Protected => elf::STV_PROTECTED,
+            SymbolVisibility::Internal => elf::STV_INTERNAL,
         }
     }
 }
@@ -407,9 +412,7 @@ impl SymbolResolver {
 
         for sym in symbols {
             // Skip null/empty symbols (index 0 in ELF symbol table)
-            if sym.name.is_empty() && sym.symbol_type == SymbolType::NoType
-                && !sym.is_defined()
-            {
+            if sym.name.is_empty() && sym.symbol_type == SymbolType::NoType && !sym.is_defined() {
                 continue;
             }
 
@@ -721,10 +724,7 @@ impl SymbolResolver {
             };
 
             // Find all definitions (symbols that are defined, not references)
-            let defined: Vec<&Symbol> = candidates
-                .iter()
-                .filter(|s| s.is_defined())
-                .collect();
+            let defined: Vec<&Symbol> = candidates.iter().filter(|s| s.is_defined()).collect();
 
             if defined.is_empty() {
                 // No definition at all — only undefined references exist.
@@ -781,13 +781,12 @@ impl SymbolResolver {
 
             // Determine output section index from the winning symbol's
             // section_index. SHN_ABS and SHN_COMMON are special.
-            let output_section_index = if winner.section_index == SHN_ABS
-                || winner.section_index == SHN_COMMON
-            {
-                0
-            } else {
-                winner.section_index as usize
-            };
+            let output_section_index =
+                if winner.section_index == SHN_ABS || winner.section_index == SHN_COMMON {
+                    0
+                } else {
+                    winner.section_index as usize
+                };
 
             self.resolved.insert(
                 name.clone(),
@@ -893,10 +892,8 @@ impl SymbolResolver {
             let winner = match global_symbols_ref.get(name) {
                 Some(candidates) => {
                     // Find the defined symbol that won resolution
-                    let defined: Vec<&Symbol> = candidates
-                        .iter()
-                        .filter(|s| s.is_defined())
-                        .collect();
+                    let defined: Vec<&Symbol> =
+                        candidates.iter().filter(|s| s.is_defined()).collect();
 
                     if defined.is_empty() {
                         continue;
@@ -1001,22 +998,20 @@ impl SymbolResolver {
 
         // Helper to add a string to strtab and return its offset
         let mut strtab_offsets: HashMap<String, u32> = HashMap::new();
-        let add_string = |strtab: &mut Vec<u8>,
-                         offsets: &mut HashMap<String, u32>,
-                         name: &str|
-         -> u32 {
-            if name.is_empty() {
-                return 0; // Empty string → offset 0 (the null byte)
-            }
-            if let Some(&offset) = offsets.get(name) {
-                return offset;
-            }
-            let offset = strtab.len() as u32;
-            strtab.extend_from_slice(name.as_bytes());
-            strtab.push(0); // Null terminator
-            offsets.insert(name.to_string(), offset);
-            offset
-        };
+        let add_string =
+            |strtab: &mut Vec<u8>, offsets: &mut HashMap<String, u32>, name: &str| -> u32 {
+                if name.is_empty() {
+                    return 0; // Empty string → offset 0 (the null byte)
+                }
+                if let Some(&offset) = offsets.get(name) {
+                    return offset;
+                }
+                let offset = strtab.len() as u32;
+                strtab.extend_from_slice(name.as_bytes());
+                strtab.push(0); // Null terminator
+                offsets.insert(name.to_string(), offset);
+                offset
+            };
 
         // === First entry: STN_UNDEF (null symbol) ===
         if is_64bit {
@@ -1066,8 +1061,7 @@ impl SymbolResolver {
 
             for name in resolved_names {
                 if let Some(rsym) = self.resolved.get(name) {
-                    let name_offset =
-                        add_string(&mut strtab, &mut strtab_offsets, &rsym.name);
+                    let name_offset = add_string(&mut strtab, &mut strtab_offsets, &rsym.name);
                     let st_info =
                         elf::elf_st_info(rsym.binding.to_elf(), rsym.symbol_type.to_elf());
                     let st_other = rsym.visibility.to_elf();
@@ -1120,8 +1114,7 @@ impl SymbolResolver {
                         .find(|s| s.is_defined())
                         .or_else(|| candidates.first());
                     if let Some(sym) = sym {
-                        let name_offset =
-                            add_string(&mut strtab, &mut strtab_offsets, &sym.name);
+                        let name_offset = add_string(&mut strtab, &mut strtab_offsets, &sym.name);
                         let st_info =
                             elf::elf_st_info(sym.binding.to_elf(), sym.symbol_type.to_elf());
                         let st_other = sym.visibility.to_elf();
@@ -1340,8 +1333,14 @@ mod tests {
 
     #[test]
     fn test_symbol_binding_roundtrip() {
-        assert_eq!(SymbolBinding::from_elf(elf::STB_LOCAL), SymbolBinding::Local);
-        assert_eq!(SymbolBinding::from_elf(elf::STB_GLOBAL), SymbolBinding::Global);
+        assert_eq!(
+            SymbolBinding::from_elf(elf::STB_LOCAL),
+            SymbolBinding::Local
+        );
+        assert_eq!(
+            SymbolBinding::from_elf(elf::STB_GLOBAL),
+            SymbolBinding::Global
+        );
         assert_eq!(SymbolBinding::from_elf(elf::STB_WEAK), SymbolBinding::Weak);
         assert_eq!(SymbolBinding::Local.to_elf(), elf::STB_LOCAL);
         assert_eq!(SymbolBinding::Global.to_elf(), elf::STB_GLOBAL);
@@ -1361,9 +1360,18 @@ mod tests {
 
     #[test]
     fn test_symbol_visibility_roundtrip() {
-        assert_eq!(SymbolVisibility::from_elf(elf::STV_DEFAULT), SymbolVisibility::Default);
-        assert_eq!(SymbolVisibility::from_elf(elf::STV_HIDDEN), SymbolVisibility::Hidden);
-        assert_eq!(SymbolVisibility::from_elf(elf::STV_PROTECTED), SymbolVisibility::Protected);
+        assert_eq!(
+            SymbolVisibility::from_elf(elf::STV_DEFAULT),
+            SymbolVisibility::Default
+        );
+        assert_eq!(
+            SymbolVisibility::from_elf(elf::STV_HIDDEN),
+            SymbolVisibility::Hidden
+        );
+        assert_eq!(
+            SymbolVisibility::from_elf(elf::STV_PROTECTED),
+            SymbolVisibility::Protected
+        );
         assert_eq!(SymbolVisibility::Default.to_elf(), elf::STV_DEFAULT);
         assert_eq!(SymbolVisibility::Hidden.to_elf(), elf::STV_HIDDEN);
     }

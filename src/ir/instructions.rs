@@ -372,7 +372,6 @@ impl fmt::Display for Constant {
 #[derive(Debug, Clone)]
 pub enum Instruction {
     // === Arithmetic Operations ===
-
     /// Integer/float addition: `result = lhs + rhs`.
     Add {
         result: Value,
@@ -416,7 +415,6 @@ pub enum Instruction {
     },
 
     // === Bitwise Operations ===
-
     /// Bitwise AND: `result = lhs & rhs`.
     And {
         result: Value,
@@ -458,7 +456,6 @@ pub enum Instruction {
     },
 
     // === Comparison Operations ===
-
     /// Integer comparison producing an `i1` result.
     ///
     /// `ty` is the type of the *operands* being compared (not the result,
@@ -482,7 +479,6 @@ pub enum Instruction {
     },
 
     // === Memory Operations ===
-
     /// Stack allocation: `result = alloca ty [, count]`.
     ///
     /// Allocates space for one (or `count`) elements of type `ty` on the stack.
@@ -526,7 +522,6 @@ pub enum Instruction {
     },
 
     // === Function Operations ===
-
     /// Function call: `[result =] call return_ty callee(args...)`.
     ///
     /// `result` is `None` for void-returning functions.
@@ -538,7 +533,6 @@ pub enum Instruction {
     },
 
     // === SSA Operations ===
-
     /// Phi node: `result = phi ty [val1, block1], [val2, block2], ...`.
     ///
     /// Merges values from different control-flow predecessors at a join point.
@@ -551,7 +545,6 @@ pub enum Instruction {
     },
 
     // === Type Conversion Operations ===
-
     /// Type cast: `result = op value from from_ty to to_ty`.
     ///
     /// Performs a value-changing type conversion (e.g., integer truncation,
@@ -575,7 +568,6 @@ pub enum Instruction {
     },
 
     // === Miscellaneous ===
-
     /// Select (ternary): `result = select condition, true_val, false_val`.
     ///
     /// Evaluates to `true_val` if `condition` is nonzero, otherwise `false_val`.
@@ -591,10 +583,7 @@ pub enum Instruction {
     /// Load a constant value: `result = const value`.
     ///
     /// Materializes a compile-time constant as an SSA value.
-    Const {
-        result: Value,
-        value: Constant,
-    },
+    Const { result: Value, value: Constant },
     /// Copy instruction: `result = copy source`.
     ///
     /// Used during SSA destruction (phi elimination) to insert parallel copies
@@ -666,9 +655,7 @@ impl Instruction {
             | Instruction::FCmp { lhs, rhs, .. } => {
                 vec![*lhs, *rhs]
             }
-            Instruction::Alloca { count, .. } => {
-                count.iter().copied().collect()
-            }
+            Instruction::Alloca { count, .. } => count.iter().copied().collect(),
             Instruction::Load { ptr, .. } => vec![*ptr],
             Instruction::Store { value, ptr, .. } => vec![*value, *ptr],
             Instruction::GetElementPtr { ptr, indices, .. } => {
@@ -683,11 +670,8 @@ impl Instruction {
                 }
                 ops
             }
-            Instruction::Phi { incoming, .. } => {
-                incoming.iter().map(|(v, _)| *v).collect()
-            }
-            Instruction::Cast { value, .. }
-            | Instruction::BitCast { value, .. } => vec![*value],
+            Instruction::Phi { incoming, .. } => incoming.iter().map(|(v, _)| *v).collect(),
+            Instruction::Cast { value, .. } | Instruction::BitCast { value, .. } => vec![*value],
             Instruction::Select {
                 condition,
                 true_val,
@@ -721,9 +705,7 @@ impl Instruction {
             | Instruction::FCmp { lhs, rhs, .. } => {
                 vec![lhs, rhs]
             }
-            Instruction::Alloca { count, .. } => {
-                count.iter_mut().collect()
-            }
+            Instruction::Alloca { count, .. } => count.iter_mut().collect(),
             Instruction::Load { ptr, .. } => vec![ptr],
             Instruction::Store { value, ptr, .. } => vec![value, ptr],
             Instruction::GetElementPtr { ptr, indices, .. } => {
@@ -738,11 +720,8 @@ impl Instruction {
                 }
                 ops
             }
-            Instruction::Phi { incoming, .. } => {
-                incoming.iter_mut().map(|(v, _)| v).collect()
-            }
-            Instruction::Cast { value, .. }
-            | Instruction::BitCast { value, .. } => vec![value],
+            Instruction::Phi { incoming, .. } => incoming.iter_mut().map(|(v, _)| v).collect(),
+            Instruction::Cast { value, .. } | Instruction::BitCast { value, .. } => vec![value],
             Instruction::Select {
                 condition,
                 true_val,
@@ -777,20 +756,16 @@ impl Instruction {
             | Instruction::Copy { ty, .. } => Some(ty),
             // ICmp and FCmp produce i1 — we return the operand type field
             // but callers should know the result is always i1.
-            Instruction::ICmp { ty, .. }
-            | Instruction::FCmp { ty, .. } => Some(ty),
+            Instruction::ICmp { ty, .. } | Instruction::FCmp { ty, .. } => Some(ty),
             Instruction::Alloca { ty, .. } => Some(ty),
             Instruction::Load { ty, .. } => Some(ty),
             Instruction::GetElementPtr { base_ty, .. } => Some(base_ty),
-            Instruction::Cast { to_ty, .. }
-            | Instruction::BitCast { to_ty, .. } => Some(to_ty),
+            Instruction::Cast { to_ty, .. } | Instruction::BitCast { to_ty, .. } => Some(to_ty),
             Instruction::Call { return_ty, .. } => Some(return_ty),
             Instruction::Const { value, .. } => match value {
                 Constant::Integer { ty, .. } => Some(ty),
                 Constant::Float { ty, .. } => Some(ty),
-                Constant::Null(ty)
-                | Constant::Undef(ty)
-                | Constant::ZeroInit(ty) => Some(ty),
+                Constant::Null(ty) | Constant::Undef(ty) | Constant::ZeroInit(ty) => Some(ty),
                 // Bool, String, GlobalRef don't carry a direct IrType field.
                 Constant::Bool(_) | Constant::String(_) | Constant::GlobalRef(_) => None,
             },
@@ -824,9 +799,7 @@ impl Instruction {
     pub fn is_memory_operation(&self) -> bool {
         matches!(
             self,
-            Instruction::Alloca { .. }
-                | Instruction::Load { .. }
-                | Instruction::Store { .. }
+            Instruction::Alloca { .. } | Instruction::Load { .. } | Instruction::Store { .. }
         )
     }
 
@@ -870,47 +843,112 @@ impl fmt::Display for Instruction {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             // --- Arithmetic (basic binary with shared format) ---
-            Instruction::Add { result, lhs, rhs, ty } => {
+            Instruction::Add {
+                result,
+                lhs,
+                rhs,
+                ty,
+            } => {
                 write!(f, "{} = add {} {}, {}", result, ty, lhs, rhs)
             }
-            Instruction::Sub { result, lhs, rhs, ty } => {
+            Instruction::Sub {
+                result,
+                lhs,
+                rhs,
+                ty,
+            } => {
                 write!(f, "{} = sub {} {}, {}", result, ty, lhs, rhs)
             }
-            Instruction::Mul { result, lhs, rhs, ty } => {
+            Instruction::Mul {
+                result,
+                lhs,
+                rhs,
+                ty,
+            } => {
                 write!(f, "{} = mul {} {}, {}", result, ty, lhs, rhs)
             }
-            Instruction::Div { result, lhs, rhs, ty, is_signed } => {
+            Instruction::Div {
+                result,
+                lhs,
+                rhs,
+                ty,
+                is_signed,
+            } => {
                 let op = if *is_signed { "sdiv" } else { "udiv" };
                 write!(f, "{} = {} {} {}, {}", result, op, ty, lhs, rhs)
             }
-            Instruction::Mod { result, lhs, rhs, ty, is_signed } => {
+            Instruction::Mod {
+                result,
+                lhs,
+                rhs,
+                ty,
+                is_signed,
+            } => {
                 let op = if *is_signed { "srem" } else { "urem" };
                 write!(f, "{} = {} {} {}, {}", result, op, ty, lhs, rhs)
             }
 
             // --- Bitwise ---
-            Instruction::And { result, lhs, rhs, ty } => {
+            Instruction::And {
+                result,
+                lhs,
+                rhs,
+                ty,
+            } => {
                 write!(f, "{} = and {} {}, {}", result, ty, lhs, rhs)
             }
-            Instruction::Or { result, lhs, rhs, ty } => {
+            Instruction::Or {
+                result,
+                lhs,
+                rhs,
+                ty,
+            } => {
                 write!(f, "{} = or {} {}, {}", result, ty, lhs, rhs)
             }
-            Instruction::Xor { result, lhs, rhs, ty } => {
+            Instruction::Xor {
+                result,
+                lhs,
+                rhs,
+                ty,
+            } => {
                 write!(f, "{} = xor {} {}, {}", result, ty, lhs, rhs)
             }
-            Instruction::Shl { result, lhs, rhs, ty } => {
+            Instruction::Shl {
+                result,
+                lhs,
+                rhs,
+                ty,
+            } => {
                 write!(f, "{} = shl {} {}, {}", result, ty, lhs, rhs)
             }
-            Instruction::Shr { result, lhs, rhs, ty, is_arithmetic } => {
+            Instruction::Shr {
+                result,
+                lhs,
+                rhs,
+                ty,
+                is_arithmetic,
+            } => {
                 let op = if *is_arithmetic { "ashr" } else { "lshr" };
                 write!(f, "{} = {} {} {}, {}", result, op, ty, lhs, rhs)
             }
 
             // --- Comparisons ---
-            Instruction::ICmp { result, op, lhs, rhs, ty } => {
+            Instruction::ICmp {
+                result,
+                op,
+                lhs,
+                rhs,
+                ty,
+            } => {
                 write!(f, "{} = icmp {} {} {}, {}", result, op, ty, lhs, rhs)
             }
-            Instruction::FCmp { result, op, lhs, rhs, ty } => {
+            Instruction::FCmp {
+                result,
+                op,
+                lhs,
+                rhs,
+                ty,
+            } => {
                 write!(f, "{} = fcmp {} {} {}, {}", result, op, ty, lhs, rhs)
             }
 
@@ -990,11 +1028,7 @@ impl fmt::Display for Instruction {
                 from_ty,
                 to_ty,
             } => {
-                write!(
-                    f,
-                    "{} = {} {} {} to {}",
-                    result, op, from_ty, value, to_ty
-                )
+                write!(f, "{} = {} {} {} to {}", result, op, from_ty, value, to_ty)
             }
             Instruction::BitCast {
                 result,
@@ -1002,11 +1036,7 @@ impl fmt::Display for Instruction {
                 from_ty,
                 to_ty,
             } => {
-                write!(
-                    f,
-                    "{} = bitcast {} {} to {}",
-                    result, from_ty, value, to_ty
-                )
+                write!(f, "{} = bitcast {} {} to {}", result, from_ty, value, to_ty)
             }
 
             // --- Miscellaneous ---
@@ -1367,7 +1397,11 @@ mod tests {
 
     #[test]
     fn test_store_result_and_side_effects() {
-        let inst = Instruction::Store { value: Value(3), ptr: Value(4), store_ty: None };
+        let inst = Instruction::Store {
+            value: Value(3),
+            ptr: Value(4),
+            store_ty: None,
+        };
         assert_eq!(inst.result(), None);
         assert!(inst.has_side_effects());
         assert!(inst.is_memory_operation());
@@ -1403,10 +1437,7 @@ mod tests {
         let inst = Instruction::Phi {
             result: Value(10),
             ty: IrType::I32,
-            incoming: vec![
-                (Value(3), BlockId(1)),
-                (Value(5), BlockId(2)),
-            ],
+            incoming: vec![(Value(3), BlockId(1)), (Value(5), BlockId(2))],
         };
         assert_eq!(inst.result(), Some(Value(10)));
         // Operands should contain incoming values but not block IDs.
@@ -1454,7 +1485,11 @@ mod tests {
                 rhs: Value(2),
                 ty: IrType::I32,
             },
-            Instruction::Store { value: Value(0), ptr: Value(1), store_ty: None },
+            Instruction::Store {
+                value: Value(0),
+                ptr: Value(1),
+                store_ty: None,
+            },
             Instruction::Nop,
         ];
         for inst in &instructions {
@@ -1594,7 +1629,11 @@ mod tests {
 
     #[test]
     fn test_uses_value_store() {
-        let inst = Instruction::Store { value: Value(5), ptr: Value(6), store_ty: None };
+        let inst = Instruction::Store {
+            value: Value(5),
+            ptr: Value(6),
+            store_ty: None,
+        };
         assert!(inst.uses_value(Value(5)));
         assert!(inst.uses_value(Value(6)));
         assert!(!inst.uses_value(Value(7)));
@@ -1632,7 +1671,11 @@ mod tests {
 
     #[test]
     fn test_replace_use_store() {
-        let mut inst = Instruction::Store { value: Value(5), ptr: Value(6), store_ty: None };
+        let mut inst = Instruction::Store {
+            value: Value(5),
+            ptr: Value(6),
+            store_ty: None,
+        };
         inst.replace_use(Value(5), Value(50));
         assert_eq!(inst.operands(), vec![Value(50), Value(6)]);
     }
@@ -1642,10 +1685,7 @@ mod tests {
         let mut inst = Instruction::Phi {
             result: Value(10),
             ty: IrType::I32,
-            incoming: vec![
-                (Value(1), BlockId(0)),
-                (Value(2), BlockId(1)),
-            ],
+            incoming: vec![(Value(1), BlockId(0)), (Value(2), BlockId(1))],
         };
         inst.replace_use(Value(1), Value(100));
         assert_eq!(inst.operands(), vec![Value(100), Value(2)]);
@@ -1680,7 +1720,11 @@ mod tests {
 
     #[test]
     fn test_result_type_store() {
-        let inst = Instruction::Store { value: Value(1), ptr: Value(2), store_ty: None };
+        let inst = Instruction::Store {
+            value: Value(1),
+            ptr: Value(2),
+            store_ty: None,
+        };
         assert_eq!(inst.result_type(), None);
     }
 
@@ -1751,7 +1795,11 @@ mod tests {
 
     #[test]
     fn test_display_store() {
-        let inst = Instruction::Store { value: Value(3), ptr: Value(4), store_ty: None };
+        let inst = Instruction::Store {
+            value: Value(3),
+            ptr: Value(4),
+            store_ty: None,
+        };
         assert_eq!(format!("{}", inst), "store %3, %4");
     }
 
@@ -1806,15 +1854,9 @@ mod tests {
         let inst = Instruction::Phi {
             result: Value(10),
             ty: IrType::I32,
-            incoming: vec![
-                (Value(3), BlockId(1)),
-                (Value(5), BlockId(2)),
-            ],
+            incoming: vec![(Value(3), BlockId(1)), (Value(5), BlockId(2))],
         };
-        assert_eq!(
-            format!("{}", inst),
-            "%10 = phi i32 [%3, bb1], [%5, bb2]"
-        );
+        assert_eq!(format!("{}", inst), "%10 = phi i32 [%3, bb1], [%5, bb2]");
     }
 
     #[test]
@@ -1884,10 +1926,7 @@ mod tests {
             false_val: Value(3),
             ty: IrType::I32,
         };
-        assert_eq!(
-            format!("{}", inst),
-            "%10 = select i1 %1, i32 %2, i32 %3"
-        );
+        assert_eq!(format!("{}", inst), "%10 = select i1 %1, i32 %2, i32 %3");
     }
 
     #[test]
@@ -2017,7 +2056,11 @@ mod tests {
 
     #[test]
     fn test_operands_mut_store() {
-        let mut inst = Instruction::Store { value: Value(1), ptr: Value(2), store_ty: None };
+        let mut inst = Instruction::Store {
+            value: Value(1),
+            ptr: Value(2),
+            store_ty: None,
+        };
         let ops = inst.operands_mut();
         assert_eq!(ops.len(), 2);
     }

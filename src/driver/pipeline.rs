@@ -51,19 +51,18 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::common::{Arena, DiagnosticEmitter, Interner, SourceMap};
 use crate::codegen::{generate_code, ObjectCode};
+use crate::common::{Arena, DiagnosticEmitter, Interner, SourceMap};
 use crate::debug::{
     CompilationUnitDebugInfo, DebugInfoGenerator, DwarfSections, FunctionDebugInfo,
     FunctionFrameInfo,
 };
-use crate::driver::cli::{CliArgs, derive_output_path};
+use crate::driver::cli::{derive_output_path, CliArgs};
 use crate::driver::target::TargetConfig;
 use crate::frontend::{Lexer, Parser, Preprocessor, PreprocessorOptions};
 use crate::ir::{IrBuilder, Module};
 use crate::linker::{
-    self, DebugSections, LinkerConfig, LinkerInput,
-    OutputMode as LinkerOutputMode,
+    self, DebugSections, LinkerConfig, LinkerInput, OutputMode as LinkerOutputMode,
 };
 use crate::passes::{OptLevel, Pipeline};
 use crate::sema::SemanticAnalyzer;
@@ -175,6 +174,9 @@ impl CompilationContext {
         target.retpoline = cli_args.retpoline;
         target.cf_protection = cli_args.cf_protection;
         target.pic = cli_args.pic;
+        target.no_red_zone = cli_args.no_red_zone;
+        target.function_sections = cli_args.function_sections;
+        target.data_sections = cli_args.data_sections;
         CompilationContext {
             cli_args,
             target,
@@ -265,28 +267,24 @@ pub fn run(cli_args: CliArgs, target: TargetConfig) -> Result<(), ()> {
         let source = match fs::read_to_string(input_path) {
             Ok(content) => content,
             Err(err) => {
-                ctx.diagnostics.error_no_loc(format!(
-                    "{}: {}", input_path.display(), err
-                ));
+                ctx.diagnostics
+                    .error_no_loc(format!("{}: {}", input_path.display(), err));
                 return Err(());
             }
         };
 
         // Register the file in the source map.
-        let file_id = ctx.source_map.add_file(
-            PathBuf::from(input_path),
-            source.clone(),
-        );
+        let file_id = ctx
+            .source_map
+            .add_file(PathBuf::from(input_path), source.clone());
         // Sync file paths so diagnostics can resolve FileIds to file names.
         ctx.diagnostics.sync_source_map(&ctx.source_map);
 
         // === Step 2: Preprocessing (Phase F-001) ===
-        let pp_options = build_preprocessor_options(&ctx.cli_args, &bundled_header_path, &ctx.target);
-        let mut preprocessor = Preprocessor::new(
-            pp_options,
-            &mut ctx.source_map,
-            &mut ctx.diagnostics,
-        );
+        let pp_options =
+            build_preprocessor_options(&ctx.cli_args, &bundled_header_path, &ctx.target);
+        let mut preprocessor =
+            Preprocessor::new(pp_options, &mut ctx.source_map, &mut ctx.diagnostics);
         let preprocessed = match preprocessor.process(
             &source,
             input_path,
@@ -323,11 +321,7 @@ pub fn run(cli_args: CliArgs, target: TargetConfig) -> Result<(), ()> {
         }
 
         // === Step 4: Parsing (Phase F-003) ===
-        let ast = match Parser::parse(
-            &tokens,
-            &ctx.interner,
-            &mut ctx.diagnostics,
-        ) {
+        let ast = match Parser::parse(&tokens, &ctx.interner, &mut ctx.diagnostics) {
             Ok(tu) => tu,
             Err(()) => {
                 return Err(());
@@ -339,17 +333,14 @@ pub fn run(cli_args: CliArgs, target: TargetConfig) -> Result<(), ()> {
         }
 
         // === Step 5: Semantic Analysis (Phase F-004) ===
-        let typed_ast = match SemanticAnalyzer::analyze(
-            &ast,
-            &ctx.target,
-            &ctx.interner,
-            &mut ctx.diagnostics,
-        ) {
-            Ok(typed_tu) => typed_tu,
-            Err(()) => {
-                return Err(());
-            }
-        };
+        let typed_ast =
+            match SemanticAnalyzer::analyze(&ast, &ctx.target, &ctx.interner, &mut ctx.diagnostics)
+            {
+                Ok(typed_tu) => typed_tu,
+                Err(()) => {
+                    return Err(());
+                }
+            };
 
         if ctx.diagnostics.has_errors() {
             return Err(());
@@ -390,9 +381,8 @@ pub fn run(cli_args: CliArgs, target: TargetConfig) -> Result<(), ()> {
         let object_code = match generate_code(&optimized_module, &ctx.target) {
             Ok(obj) => obj,
             Err(err) => {
-                ctx.diagnostics.error_no_loc(format!(
-                    "code generation failed: {}", err
-                ));
+                ctx.diagnostics
+                    .error_no_loc(format!("code generation failed: {}", err));
                 return Err(());
             }
         };
@@ -478,77 +468,413 @@ fn build_preprocessor_options(
     // headers like <gnu/stubs.h> select the correct architecture paths.
     let arch_str = &target.triple;
     if arch_str.starts_with("x86_64") || arch_str.starts_with("x86-64") {
-        options.defines.push(("__x86_64__".to_string(), Some("1".to_string())));
-        options.defines.push(("__x86_64".to_string(), Some("1".to_string())));
-        options.defines.push(("__amd64__".to_string(), Some("1".to_string())));
-        options.defines.push(("__amd64".to_string(), Some("1".to_string())));
-        options.defines.push(("__LP64__".to_string(), Some("1".to_string())));
-        options.defines.push(("_LP64".to_string(), Some("1".to_string())));
-        options.defines.push(("__SIZEOF_POINTER__".to_string(), Some("8".to_string())));
-        options.defines.push(("__SIZEOF_LONG__".to_string(), Some("8".to_string())));
-        options.defines.push(("__SIZEOF_INT__".to_string(), Some("4".to_string())));
+        options
+            .defines
+            .push(("__x86_64__".to_string(), Some("1".to_string())));
+        options
+            .defines
+            .push(("__x86_64".to_string(), Some("1".to_string())));
+        options
+            .defines
+            .push(("__amd64__".to_string(), Some("1".to_string())));
+        options
+            .defines
+            .push(("__amd64".to_string(), Some("1".to_string())));
+        options
+            .defines
+            .push(("__LP64__".to_string(), Some("1".to_string())));
+        options
+            .defines
+            .push(("_LP64".to_string(), Some("1".to_string())));
+        options
+            .defines
+            .push(("__SIZEOF_POINTER__".to_string(), Some("8".to_string())));
+        options
+            .defines
+            .push(("__SIZEOF_LONG__".to_string(), Some("8".to_string())));
+        options
+            .defines
+            .push(("__SIZEOF_INT__".to_string(), Some("4".to_string())));
     } else if arch_str.starts_with("i686") || arch_str.starts_with("i386") {
-        options.defines.push(("__i686__".to_string(), Some("1".to_string())));
-        options.defines.push(("__i386__".to_string(), Some("1".to_string())));
-        options.defines.push(("__i386".to_string(), Some("1".to_string())));
-        options.defines.push(("i386".to_string(), Some("1".to_string())));
-        options.defines.push(("__ILP32__".to_string(), Some("1".to_string())));
-        options.defines.push(("__SIZEOF_POINTER__".to_string(), Some("4".to_string())));
-        options.defines.push(("__SIZEOF_LONG__".to_string(), Some("4".to_string())));
-        options.defines.push(("__SIZEOF_INT__".to_string(), Some("4".to_string())));
+        options
+            .defines
+            .push(("__i686__".to_string(), Some("1".to_string())));
+        options
+            .defines
+            .push(("__i386__".to_string(), Some("1".to_string())));
+        options
+            .defines
+            .push(("__i386".to_string(), Some("1".to_string())));
+        options
+            .defines
+            .push(("i386".to_string(), Some("1".to_string())));
+        options
+            .defines
+            .push(("__ILP32__".to_string(), Some("1".to_string())));
+        options
+            .defines
+            .push(("__SIZEOF_POINTER__".to_string(), Some("4".to_string())));
+        options
+            .defines
+            .push(("__SIZEOF_LONG__".to_string(), Some("4".to_string())));
+        options
+            .defines
+            .push(("__SIZEOF_INT__".to_string(), Some("4".to_string())));
     } else if arch_str.starts_with("aarch64") {
-        options.defines.push(("__aarch64__".to_string(), Some("1".to_string())));
-        options.defines.push(("__LP64__".to_string(), Some("1".to_string())));
-        options.defines.push(("_LP64".to_string(), Some("1".to_string())));
-        options.defines.push(("__SIZEOF_POINTER__".to_string(), Some("8".to_string())));
-        options.defines.push(("__SIZEOF_LONG__".to_string(), Some("8".to_string())));
-        options.defines.push(("__SIZEOF_INT__".to_string(), Some("4".to_string())));
+        options
+            .defines
+            .push(("__aarch64__".to_string(), Some("1".to_string())));
+        options
+            .defines
+            .push(("__LP64__".to_string(), Some("1".to_string())));
+        options
+            .defines
+            .push(("_LP64".to_string(), Some("1".to_string())));
+        options
+            .defines
+            .push(("__SIZEOF_POINTER__".to_string(), Some("8".to_string())));
+        options
+            .defines
+            .push(("__SIZEOF_LONG__".to_string(), Some("8".to_string())));
+        options
+            .defines
+            .push(("__SIZEOF_INT__".to_string(), Some("4".to_string())));
         // Suppress ARM NEON and SVE vector type declarations in glibc math.h.
         // Our compiler does not support NEON/SVE intrinsics, so these types
         // (__f32x4_t, __sv_f32_t, etc.) would cause parse errors.
-        options.defines.push(("__ARM_NEON".to_string(), Some("0".to_string())));
-        options.defines.push(("__ARM_FEATURE_SVE".to_string(), Some("0".to_string())));
+        options
+            .defines
+            .push(("__ARM_NEON".to_string(), Some("0".to_string())));
+        options
+            .defines
+            .push(("__ARM_FEATURE_SVE".to_string(), Some("0".to_string())));
         // Define GCC builtin vector types as simple integer types so that
         // glibc's bits/math-vector.h ADVSIMD/SVE sections parse cleanly.
         // These types are only used in SIMD math function declarations that
         // our compiler never invokes, so substituting `int` is sufficient.
-        options.defines.push(("__Float32x4_t".to_string(), Some("int".to_string())));
-        options.defines.push(("__Float64x2_t".to_string(), Some("long".to_string())));
-        options.defines.push(("__SVFloat32_t".to_string(), Some("int".to_string())));
-        options.defines.push(("__SVFloat64_t".to_string(), Some("long".to_string())));
-        options.defines.push(("__SVBool_t".to_string(), Some("int".to_string())));
+        options
+            .defines
+            .push(("__Float32x4_t".to_string(), Some("int".to_string())));
+        options
+            .defines
+            .push(("__Float64x2_t".to_string(), Some("long".to_string())));
+        options
+            .defines
+            .push(("__SVFloat32_t".to_string(), Some("int".to_string())));
+        options
+            .defines
+            .push(("__SVFloat64_t".to_string(), Some("long".to_string())));
+        options
+            .defines
+            .push(("__SVBool_t".to_string(), Some("int".to_string())));
         // Suppress the __aarch64_vector_pcs__ calling convention attribute.
         options.defines.push(("__vpcs".to_string(), None));
     } else if arch_str.starts_with("riscv64") {
-        options.defines.push(("__riscv".to_string(), Some("1".to_string())));
-        options.defines.push(("__riscv_xlen".to_string(), Some("64".to_string())));
+        options
+            .defines
+            .push(("__riscv".to_string(), Some("1".to_string())));
+        options
+            .defines
+            .push(("__riscv_xlen".to_string(), Some("64".to_string())));
         // RISC-V floating-point register length — required by glibc's
         // bits/setjmp.h to determine how many FP registers to save.
         // 64 = double-precision (D extension), matching RV64GC.
-        options.defines.push(("__riscv_flen".to_string(), Some("64".to_string())));
+        options
+            .defines
+            .push(("__riscv_flen".to_string(), Some("64".to_string())));
         // Double-precision float ABI flag required by glibc's bits/setjmp.h
         // to include FP callee-saved registers in jmp_buf.
-        options.defines.push(("__riscv_float_abi_double".to_string(), Some("1".to_string())));
-        options.defines.push(("__LP64__".to_string(), Some("1".to_string())));
-        options.defines.push(("_LP64".to_string(), Some("1".to_string())));
-        options.defines.push(("__SIZEOF_POINTER__".to_string(), Some("8".to_string())));
-        options.defines.push(("__SIZEOF_LONG__".to_string(), Some("8".to_string())));
-        options.defines.push(("__SIZEOF_INT__".to_string(), Some("4".to_string())));
+        options.defines.push((
+            "__riscv_float_abi_double".to_string(),
+            Some("1".to_string()),
+        ));
+        options
+            .defines
+            .push(("__LP64__".to_string(), Some("1".to_string())));
+        options
+            .defines
+            .push(("_LP64".to_string(), Some("1".to_string())));
+        options
+            .defines
+            .push(("__SIZEOF_POINTER__".to_string(), Some("8".to_string())));
+        options
+            .defines
+            .push(("__SIZEOF_LONG__".to_string(), Some("8".to_string())));
+        options
+            .defines
+            .push(("__SIZEOF_INT__".to_string(), Some("4".to_string())));
     }
 
+    // Byte-order macros — all four supported targets are little-endian
+    options.defines.push((
+        "__ORDER_LITTLE_ENDIAN__".to_string(),
+        Some("1234".to_string()),
+    ));
+    options
+        .defines
+        .push(("__ORDER_BIG_ENDIAN__".to_string(), Some("4321".to_string())));
+    options
+        .defines
+        .push(("__ORDER_PDP_ENDIAN__".to_string(), Some("3412".to_string())));
+    options.defines.push((
+        "__BYTE_ORDER__".to_string(),
+        Some("__ORDER_LITTLE_ENDIAN__".to_string()),
+    ));
+
+    // __SIZEOF_LONG_DOUBLE__: 16 on x86-64 (80-bit padded to 16), 8 on all others
+    let sizeof_long_double = if arch_str.starts_with("x86_64") || arch_str.starts_with("x86-64") {
+        "16"
+    } else {
+        "8"
+    };
+    options.defines.push((
+        "__SIZEOF_LONG_DOUBLE__".to_string(),
+        Some(sizeof_long_double.to_string()),
+    ));
+
+    // Additional sizeof macros used by kernel headers
+    options
+        .defines
+        .push(("__SIZEOF_SHORT__".to_string(), Some("2".to_string())));
+    options
+        .defines
+        .push(("__SIZEOF_LONG_LONG__".to_string(), Some("8".to_string())));
+    options
+        .defines
+        .push(("__SIZEOF_FLOAT__".to_string(), Some("4".to_string())));
+    options
+        .defines
+        .push(("__SIZEOF_DOUBLE__".to_string(), Some("8".to_string())));
+    options.defines.push((
+        "__SIZEOF_SIZE_T__".to_string(),
+        Some(target.pointer_size.to_string()),
+    ));
+    options.defines.push((
+        "__SIZEOF_PTRDIFF_T__".to_string(),
+        Some(target.pointer_size.to_string()),
+    ));
+    options
+        .defines
+        .push(("__SIZEOF_WCHAR_T__".to_string(), Some("4".to_string())));
+    options
+        .defines
+        .push(("__SIZEOF_WINT_T__".to_string(), Some("4".to_string())));
+
+    // __int128 support: 16 bytes on 64-bit platforms (x86_64, aarch64, riscv64)
+    // i686 does NOT support __int128 (it's a 32-bit platform)
+    if target.pointer_size == 8 {
+        options
+            .defines
+            .push(("__SIZEOF_INT128__".to_string(), Some("16".to_string())));
+    }
+
+    // Integer width macros used by kernel and glibc headers
+    options
+        .defines
+        .push(("__CHAR_BIT__".to_string(), Some("8".to_string())));
+    options
+        .defines
+        .push(("__INT_MAX__".to_string(), Some("2147483647".to_string())));
+    options.defines.push((
+        "__LONG_MAX__".to_string(),
+        Some(
+            if target.long_size == 8 {
+                "9223372036854775807L"
+            } else {
+                "2147483647L"
+            }
+            .to_string(),
+        ),
+    ));
+    options.defines.push((
+        "__LONG_LONG_MAX__".to_string(),
+        Some("9223372036854775807LL".to_string()),
+    ));
+    options
+        .defines
+        .push(("__SHRT_MAX__".to_string(), Some("32767".to_string())));
+    options
+        .defines
+        .push(("__SCHAR_MAX__".to_string(), Some("127".to_string())));
+    options
+        .defines
+        .push(("__WCHAR_MAX__".to_string(), Some("2147483647".to_string())));
+    options.defines.push((
+        "__WCHAR_MIN__".to_string(),
+        Some("(-__WCHAR_MAX__ - 1)".to_string()),
+    ));
+    options
+        .defines
+        .push(("__WINT_MAX__".to_string(), Some("4294967295U".to_string())));
+    options
+        .defines
+        .push(("__WINT_MIN__".to_string(), Some("0U".to_string())));
+    options.defines.push((
+        "__SIZE_MAX__".to_string(),
+        Some(
+            if target.pointer_size == 8 {
+                "18446744073709551615UL"
+            } else {
+                "4294967295U"
+            }
+            .to_string(),
+        ),
+    ));
+    options.defines.push((
+        "__PTRDIFF_MAX__".to_string(),
+        Some(
+            if target.pointer_size == 8 {
+                "9223372036854775807L"
+            } else {
+                "2147483647"
+            }
+            .to_string(),
+        ),
+    ));
+
+    // Signedness macros
+    options
+        .defines
+        .push(("__CHAR_UNSIGNED__".to_string(), None));
+    options
+        .defines
+        .push(("__WCHAR_TYPE__".to_string(), Some("int".to_string())));
+    options.defines.push((
+        "__WINT_TYPE__".to_string(),
+        Some("unsigned int".to_string()),
+    ));
+    options.defines.push((
+        "__SIZE_TYPE__".to_string(),
+        Some(
+            if target.pointer_size == 8 {
+                "long unsigned int"
+            } else {
+                "unsigned int"
+            }
+            .to_string(),
+        ),
+    ));
+    options.defines.push((
+        "__PTRDIFF_TYPE__".to_string(),
+        Some(
+            if target.pointer_size == 8 {
+                "long int"
+            } else {
+                "int"
+            }
+            .to_string(),
+        ),
+    ));
+    options.defines.push((
+        "__INTPTR_TYPE__".to_string(),
+        Some(
+            if target.pointer_size == 8 {
+                "long int"
+            } else {
+                "int"
+            }
+            .to_string(),
+        ),
+    ));
+    options.defines.push((
+        "__UINTPTR_TYPE__".to_string(),
+        Some(
+            if target.pointer_size == 8 {
+                "long unsigned int"
+            } else {
+                "unsigned int"
+            }
+            .to_string(),
+        ),
+    ));
+    options
+        .defines
+        .push(("__INT8_TYPE__".to_string(), Some("signed char".to_string())));
+    options
+        .defines
+        .push(("__INT16_TYPE__".to_string(), Some("short".to_string())));
+    options
+        .defines
+        .push(("__INT32_TYPE__".to_string(), Some("int".to_string())));
+    options
+        .defines
+        .push(("__INT64_TYPE__".to_string(), Some("long long".to_string())));
+    options.defines.push((
+        "__UINT8_TYPE__".to_string(),
+        Some("unsigned char".to_string()),
+    ));
+    options.defines.push((
+        "__UINT16_TYPE__".to_string(),
+        Some("unsigned short".to_string()),
+    ));
+    options.defines.push((
+        "__UINT32_TYPE__".to_string(),
+        Some("unsigned int".to_string()),
+    ));
+    options.defines.push((
+        "__UINT64_TYPE__".to_string(),
+        Some("unsigned long long".to_string()),
+    ));
+
+    // GCC version macros used by kernel headers for feature detection
+    options.defines.push((
+        "__GCC_HAVE_SYNC_COMPARE_AND_SWAP_1".to_string(),
+        Some("1".to_string()),
+    ));
+    options.defines.push((
+        "__GCC_HAVE_SYNC_COMPARE_AND_SWAP_2".to_string(),
+        Some("1".to_string()),
+    ));
+    options.defines.push((
+        "__GCC_HAVE_SYNC_COMPARE_AND_SWAP_4".to_string(),
+        Some("1".to_string()),
+    ));
+    options.defines.push((
+        "__GCC_HAVE_SYNC_COMPARE_AND_SWAP_8".to_string(),
+        Some("1".to_string()),
+    ));
+
+    // NOTE: __has_attribute / __has_builtin are NOT defined as macros.
+    // They are compiler built-in operators handled in the expression evaluator
+    // (expression.rs) and recognized by `defined()` checks in macros.rs
+    // is_defined(). Defining them as macros would cause incorrect expansion
+    // when used as `__has_attribute(name)` in `#if` directives (they would
+    // expand to "1" before the expression evaluator could parse them).
+
     // System include directories based on target architecture.
-    options.system_include_dirs.push(PathBuf::from("/usr/include"));
+    options
+        .system_include_dirs
+        .push(PathBuf::from("/usr/include"));
     if arch_str.starts_with("x86_64") || arch_str.starts_with("x86-64") {
-        options.system_include_dirs.push(PathBuf::from("/usr/include/x86_64-linux-gnu"));
+        options
+            .system_include_dirs
+            .push(PathBuf::from("/usr/include/x86_64-linux-gnu"));
     } else if arch_str.starts_with("i686") || arch_str.starts_with("i386") {
-        options.system_include_dirs.push(PathBuf::from("/usr/include/i386-linux-gnu"));
-        options.system_include_dirs.push(PathBuf::from("/usr/include/x86_64-linux-gnu"));
+        options
+            .system_include_dirs
+            .push(PathBuf::from("/usr/include/i386-linux-gnu"));
+        options
+            .system_include_dirs
+            .push(PathBuf::from("/usr/include/x86_64-linux-gnu"));
     } else if arch_str.starts_with("aarch64") {
-        options.system_include_dirs.push(PathBuf::from("/usr/aarch64-linux-gnu/include"));
-        options.system_include_dirs.push(PathBuf::from("/usr/include/aarch64-linux-gnu"));
+        options
+            .system_include_dirs
+            .push(PathBuf::from("/usr/aarch64-linux-gnu/include"));
+        options
+            .system_include_dirs
+            .push(PathBuf::from("/usr/include/aarch64-linux-gnu"));
     } else if arch_str.starts_with("riscv64") {
-        options.system_include_dirs.push(PathBuf::from("/usr/riscv64-linux-gnu/include"));
-        options.system_include_dirs.push(PathBuf::from("/usr/include/riscv64-linux-gnu"));
+        options
+            .system_include_dirs
+            .push(PathBuf::from("/usr/riscv64-linux-gnu/include"));
+        options
+            .system_include_dirs
+            .push(PathBuf::from("/usr/include/riscv64-linux-gnu"));
+    }
+
+    // Force-include files from -include flags.
+    for fi in &cli_args.force_includes {
+        options.force_includes.push(PathBuf::from(fi));
     }
 
     options
@@ -643,10 +969,7 @@ fn emit_object_files(
 
         // Build linker input for relocatable output.
         let debug_sections = if ctx.cli_args.debug_info && idx < debug_cu_infos.len() {
-            let dwarf = generate_dwarf_sections(
-                &debug_cu_infos[idx],
-                &ctx.target,
-            );
+            let dwarf = generate_dwarf_sections(&debug_cu_infos[idx], &ctx.target);
             Some(convert_dwarf_to_linker_debug(dwarf))
         } else {
             None
@@ -720,7 +1043,9 @@ fn link_objects(
         debug_sections,
     };
 
-    let library_paths: Vec<PathBuf> = ctx.cli_args.library_paths
+    let library_paths: Vec<PathBuf> = ctx
+        .cli_args
+        .library_paths
         .iter()
         .map(|p| PathBuf::from(p))
         .collect();
@@ -811,11 +1136,7 @@ fn build_debug_cu_info(
         .symbols
         .iter()
         .filter(|s| {
-            s.is_definition
-                && matches!(
-                    s.symbol_type,
-                    crate::codegen::SymbolType::Function
-                )
+            s.is_definition && matches!(s.symbol_type, crate::codegen::SymbolType::Function)
         })
         .map(|s| (s.name.as_str(), (s.offset, s.size)))
         .collect();
@@ -998,10 +1319,9 @@ fn merge_debug_sections(
 /// linking (e.g. `bcc a.o b.o -o out`).
 fn read_object_file(path: &Path, target: &TargetConfig) -> Result<ObjectCode, String> {
     use crate::codegen::{
-        Architecture, Relocation, RelocationType,
-        Section as CgSection, SectionFlags, SectionType as CgSectionType,
-        Symbol as CgSymbol, SymbolBinding, SymbolType as CgSymbolType,
-        SymbolVisibility,
+        Architecture, Relocation, RelocationType, Section as CgSection, SectionFlags,
+        SectionType as CgSectionType, Symbol as CgSymbol, SymbolBinding,
+        SymbolType as CgSymbolType, SymbolVisibility,
     };
     use crate::linker::elf;
 
@@ -1015,7 +1335,13 @@ fn read_object_file(path: &Path, target: &TargetConfig) -> Result<ObjectCode, St
         elf::EM_386 => Architecture::I686,
         elf::EM_AARCH64 => Architecture::Aarch64,
         elf::EM_RISCV => Architecture::Riscv64,
-        m => return Err(format!("{}: unsupported ELF machine type {}", path.display(), m)),
+        m => {
+            return Err(format!(
+                "{}: unsupported ELF machine type {}",
+                path.display(),
+                m
+            ))
+        }
     };
 
     let mut obj = ObjectCode::new(arch);
@@ -1087,8 +1413,7 @@ fn read_object_file(path: &Path, target: &TargetConfig) -> Result<ObjectCode, St
             _ => SymbolVisibility::Default,
         };
 
-        let is_def = sym.section_index != 0
-            && (sym.section_index as u32) < elf::SHN_ABS as u32;
+        let is_def = sym.section_index != 0 && (sym.section_index as u32) < elf::SHN_ABS as u32;
         let cg_sec_idx = if is_def {
             elf_to_cg_section
                 .get(&(sym.section_index as usize))
@@ -1166,14 +1491,12 @@ fn read_object_file(path: &Path, target: &TargetConfig) -> Result<ObjectCode, St
 // Helper: Extract debug type information from the typed AST
 // ===========================================================================
 
-use crate::frontend::parser::ast::{
-    TranslationUnit, Declaration, TypeSpecifier, Declarator, DirectDeclarator,
-    Statement,
-};
 use crate::debug::{
-    DebugTypeRef, BaseTypeKind, ParameterDebugInfo,
-    VariableDebugInfo as DebugVariableDebugInfo,
-    VariableLocation, StructDebugDef, StructMemberDebugInfo,
+    BaseTypeKind, DebugTypeRef, ParameterDebugInfo, StructDebugDef, StructMemberDebugInfo,
+    VariableDebugInfo as DebugVariableDebugInfo, VariableLocation,
+};
+use crate::frontend::parser::ast::{
+    Declaration, Declarator, DirectDeclarator, Statement, TranslationUnit, TypeSpecifier,
 };
 
 /// Convert an AST TypeSpecifier to a DebugTypeRef.
@@ -1206,7 +1529,10 @@ fn type_specifier_to_debug_ref(ts: &TypeSpecifier, interner: &Interner) -> Debug
             _ => DebugTypeRef::BaseType(BaseTypeKind::UnsignedInt),
         },
         TypeSpecifier::Struct(def) => {
-            let name = def.tag.map(|t| interner.resolve(t).to_string()).unwrap_or_default();
+            let name = def
+                .tag
+                .map(|t| interner.resolve(t).to_string())
+                .unwrap_or_default();
             DebugTypeRef::Struct(name)
         }
         TypeSpecifier::StructRef { tag, .. } => {
@@ -1223,10 +1549,7 @@ fn type_specifier_to_debug_ref(ts: &TypeSpecifier, interner: &Interner) -> Debug
 }
 
 /// Check if a declarator is a pointer type and wrap the base type accordingly.
-fn wrap_debug_type_for_declarator(
-    base: DebugTypeRef,
-    decl: &Declarator,
-) -> DebugTypeRef {
+fn wrap_debug_type_for_declarator(base: DebugTypeRef, decl: &Declarator) -> DebugTypeRef {
     let mut result = base;
     // Count pointer levels from the declarator's pointer chain.
     for _ in &decl.pointer {
@@ -1237,7 +1560,9 @@ fn wrap_debug_type_for_declarator(
         let count = match size {
             crate::frontend::parser::ast::ArraySize::Fixed(expr) => {
                 // Try to extract the constant value
-                if let crate::frontend::parser::ast::Expression::IntegerLiteral { value, .. } = expr.as_ref() {
+                if let crate::frontend::parser::ast::Expression::IntegerLiteral { value, .. } =
+                    expr.as_ref()
+                {
                     Some(*value as u64)
                 } else {
                     None
@@ -1255,7 +1580,11 @@ fn extract_function_debug_types(
     func_name: &str,
     typed_ast: &crate::sema::TypedTranslationUnit,
     interner: &Interner,
-) -> (Vec<ParameterDebugInfo>, Vec<DebugVariableDebugInfo>, DebugTypeRef) {
+) -> (
+    Vec<ParameterDebugInfo>,
+    Vec<DebugVariableDebugInfo>,
+    DebugTypeRef,
+) {
     for typed_decl in &typed_ast.declarations {
         if let Declaration::Function(fdef) = &typed_decl.decl {
             // Match by function name — extract from the direct declarator.
@@ -1279,17 +1608,22 @@ fn extract_function_debug_types(
 
             // Parameters from declarator
             let params: Vec<ParameterDebugInfo> = match &fdef.declarator.direct {
-                DirectDeclarator::Function { params, .. } => {
-                    params.params.iter().map(|p| {
+                DirectDeclarator::Function { params, .. } => params
+                    .params
+                    .iter()
+                    .map(|p| {
                         let param_name = if let Some(ref decl) = p.declarator {
                             match &decl.direct {
-                                DirectDeclarator::Identifier(id) => interner.resolve(*id).to_string(),
+                                DirectDeclarator::Identifier(id) => {
+                                    interner.resolve(*id).to_string()
+                                }
                                 _ => String::new(),
                             }
                         } else {
                             String::new()
                         };
-                        let base_type = type_specifier_to_debug_ref(&p.specifiers.type_specifier, interner);
+                        let base_type =
+                            type_specifier_to_debug_ref(&p.specifiers.type_specifier, interner);
                         let type_ref = if let Some(ref decl) = p.declarator {
                             wrap_debug_type_for_declarator(base_type, decl)
                         } else {
@@ -1300,8 +1634,8 @@ fn extract_function_debug_types(
                             type_ref,
                             location: VariableLocation::FrameOffset(0),
                         }
-                    }).collect()
-                }
+                    })
+                    .collect(),
                 _ => Vec::new(),
             };
 
@@ -1316,29 +1650,39 @@ fn extract_function_debug_types(
 }
 
 /// Recursively extract local variable declarations from a statement tree.
-fn extract_locals_from_stmt(
-    stmt: &Statement,
-    interner: &Interner,
-) -> Vec<DebugVariableDebugInfo> {
+fn extract_locals_from_stmt(stmt: &Statement, interner: &Interner) -> Vec<DebugVariableDebugInfo> {
     let mut locals = Vec::new();
     match stmt {
         Statement::Compound { items, .. } => {
             for item in items {
                 match item {
                     crate::frontend::parser::ast::BlockItem::Declaration(decl) => {
-                        if let Declaration::Variable { specifiers, declarators, .. } = decl.as_ref() {
-                            let base_type = type_specifier_to_debug_ref(&specifiers.type_specifier, interner);
+                        if let Declaration::Variable {
+                            specifiers,
+                            declarators,
+                            ..
+                        } = decl.as_ref()
+                        {
+                            let base_type =
+                                type_specifier_to_debug_ref(&specifiers.type_specifier, interner);
                             for init_decl in declarators {
                                 let var_name = match &init_decl.declarator.direct {
-                                    DirectDeclarator::Identifier(id) => interner.resolve(*id).to_string(),
+                                    DirectDeclarator::Identifier(id) => {
+                                        interner.resolve(*id).to_string()
+                                    }
                                     DirectDeclarator::Array { base, .. } => {
                                         if let DirectDeclarator::Identifier(id) = base.as_ref() {
                                             interner.resolve(*id).to_string()
-                                        } else { continue; }
+                                        } else {
+                                            continue;
+                                        }
                                     }
                                     _ => continue,
                                 };
-                                let type_ref = wrap_debug_type_for_declarator(base_type.clone(), &init_decl.declarator);
+                                let type_ref = wrap_debug_type_for_declarator(
+                                    base_type.clone(),
+                                    &init_decl.declarator,
+                                );
                                 locals.push(DebugVariableDebugInfo {
                                     name: var_name,
                                     type_ref,
@@ -1355,7 +1699,11 @@ fn extract_locals_from_stmt(
                 }
             }
         }
-        Statement::If { then_branch, else_branch, .. } => {
+        Statement::If {
+            then_branch,
+            else_branch,
+            ..
+        } => {
             locals.extend(extract_locals_from_stmt(then_branch, interner));
             if let Some(e) = else_branch {
                 locals.extend(extract_locals_from_stmt(e, interner));
@@ -1409,11 +1757,7 @@ fn extract_struct_from_type_specifier(
 }
 
 /// Check if a type specifier contains a struct definition and extract it.
-fn check_type_for_struct(
-    ts: &TypeSpecifier,
-    interner: &Interner,
-    defs: &mut Vec<StructDebugDef>,
-) {
+fn check_type_for_struct(ts: &TypeSpecifier, interner: &Interner, defs: &mut Vec<StructDebugDef>) {
     if let TypeSpecifier::Struct(sdef) = ts {
         if let Some(tag) = sdef.tag {
             let name = interner.resolve(tag).to_string();
@@ -1421,14 +1765,24 @@ fn check_type_for_struct(
                 let mut field_members: Vec<StructMemberDebugInfo> = Vec::new();
                 let mut byte_offset: u64 = 0;
                 for member in &sdef.members {
-                    if let crate::frontend::parser::ast::StructMember::Field { specifiers, declarators, .. } = member {
+                    if let crate::frontend::parser::ast::StructMember::Field {
+                        specifiers,
+                        declarators,
+                        ..
+                    } = member
+                    {
                         for field_decl in declarators {
                             if let Some(ref decl) = field_decl.declarator {
                                 let field_name = match &decl.direct {
-                                    DirectDeclarator::Identifier(id) => interner.resolve(*id).to_string(),
+                                    DirectDeclarator::Identifier(id) => {
+                                        interner.resolve(*id).to_string()
+                                    }
                                     _ => continue,
                                 };
-                                let type_ref = type_specifier_to_debug_ref(&specifiers.type_specifier, interner);
+                                let type_ref = type_specifier_to_debug_ref(
+                                    &specifiers.type_specifier,
+                                    interner,
+                                );
                                 field_members.push(StructMemberDebugInfo {
                                     name: field_name,
                                     byte_offset,
@@ -1468,7 +1822,11 @@ fn extract_structs_from_stmt(
                 }
             }
         }
-        Statement::If { then_branch, else_branch, .. } => {
+        Statement::If {
+            then_branch,
+            else_branch,
+            ..
+        } => {
             extract_structs_from_stmt(then_branch, interner, defs);
             if let Some(e) = else_branch {
                 extract_structs_from_stmt(e, interner, defs);
@@ -1609,14 +1967,21 @@ mod tests {
         // The first two defines are the user-specified ones; additional
         // defines are architecture-specific predefined macros added by
         // build_preprocessor_options for system header compatibility.
-        assert!(opts.defines.len() >= 2, "Expected at least 2 defines, got {}", opts.defines.len());
+        assert!(
+            opts.defines.len() >= 2,
+            "Expected at least 2 defines, got {}",
+            opts.defines.len()
+        );
         assert_eq!(opts.defines[0].0, "DEBUG");
         assert_eq!(opts.defines[0].1, Some("1".to_string()));
         assert_eq!(opts.defines[1].0, "NDEBUG");
         assert_eq!(opts.defines[1].1, None);
         // Verify architecture-specific macros are present.
         let has_x86_64 = opts.defines.iter().any(|(k, _)| k == "__x86_64__");
-        assert!(has_x86_64, "Expected __x86_64__ in defines for x86_64 target");
+        assert!(
+            has_x86_64,
+            "Expected __x86_64__ in defines for x86_64 target"
+        );
     }
 
     #[test]
@@ -1675,7 +2040,8 @@ mod tests {
     fn test_run_no_input_file_returns_error() {
         // When given a nonexistent file, the pipeline should return Err.
         let mut args = CliArgs::default();
-        args.input_files.push("/nonexistent/path/to/file.c".to_string());
+        args.input_files
+            .push("/nonexistent/path/to/file.c".to_string());
         let target = TargetConfig::x86_64();
         let result = run(args, target);
         assert!(result.is_err());

@@ -90,17 +90,15 @@ pub use types::{IrType, StructLayout};
 
 // Instruction set and SSA value model
 pub use instructions::{
-    BlockId, Callee, CastOp, CompareOp, Constant, FloatCompareOp, Instruction,
-    LocatedInstruction, Value,
+    BlockId, Callee, CastOp, CompareOp, Constant, FloatCompareOp, Instruction, LocatedInstruction,
+    Value,
 };
 
 // Builder and top-level IR containers
 pub use builder::{Function, GlobalVariable, IrBuilder, Module};
 
 // Control flow graph, dominance, terminators, phi nodes, and loops
-pub use cfg::{
-    BasicBlock, ControlFlowGraph, DominanceTree, Loop, PhiNode, Terminator,
-};
+pub use cfg::{BasicBlock, ControlFlowGraph, DominanceTree, Loop, PhiNode, Terminator};
 
 // SSA construction and destruction entry points
 pub use ssa::{construct_ssa, destruct_ssa};

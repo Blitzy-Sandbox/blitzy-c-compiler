@@ -115,7 +115,10 @@ impl std::fmt::Display for ArchiveError {
                 write!(f, "truncated archive member header (expected 60 bytes)")
             }
             ArchiveError::InvalidHeaderMagic => {
-                write!(f, "invalid archive header end-of-header marker (expected \"`\\n\")")
+                write!(
+                    f,
+                    "invalid archive header end-of-header marker (expected \"`\\n\")"
+                )
             }
             ArchiveError::InvalidNumericField(field) => {
                 write!(f, "invalid numeric field in archive header: {}", field)
@@ -211,8 +214,7 @@ impl ArHeader {
         let name = parse_ascii_field(&header_bytes[0..16], "name")?;
 
         // Parse numeric fields, defaulting to 0 for empty/whitespace-only fields.
-        let modification_time =
-            parse_decimal_u64(&header_bytes[16..28], "modification_time")?;
+        let modification_time = parse_decimal_u64(&header_bytes[16..28], "modification_time")?;
         let owner_id = parse_decimal_u32(&header_bytes[28..34], "owner_id")?;
         let group_id = parse_decimal_u32(&header_bytes[34..40], "group_id")?;
         let mode = parse_octal_u32(&header_bytes[40..48], "mode")?;
@@ -447,8 +449,7 @@ impl Archive {
     pub fn elf_members(&self) -> Vec<(&str, &[u8])> {
         self.iter_members()
             .filter(|(_, data)| {
-                data.len() >= elf::ELF_MAGIC.len()
-                    && data[..elf::ELF_MAGIC.len()] == elf::ELF_MAGIC
+                data.len() >= elf::ELF_MAGIC.len() && data[..elf::ELF_MAGIC.len()] == elf::ELF_MAGIC
             })
             .collect()
     }
@@ -523,8 +524,7 @@ fn resolve_member_name(
             Ok(name.to_string())
         } else {
             Err(ArchiveError::InvalidNumericField(
-                "GNU long name reference found but no long name table (//) present"
-                    .to_string(),
+                "GNU long name reference found but no long name table (//) present".to_string(),
             ))
         }
     } else if raw_name.starts_with("#1/") {
@@ -589,10 +589,7 @@ fn parse_ascii_field(bytes: &[u8], field_name: &str) -> Result<String, ArchiveEr
 /// which is common for UID/GID fields in some archive generators.
 fn parse_decimal_u64(bytes: &[u8], field_name: &str) -> Result<u64, ArchiveError> {
     let s = std::str::from_utf8(bytes).map_err(|_| {
-        ArchiveError::InvalidNumericField(format!(
-            "'{}' field contains invalid UTF-8",
-            field_name
-        ))
+        ArchiveError::InvalidNumericField(format!("'{}' field contains invalid UTF-8", field_name))
     })?;
     let trimmed = s.trim();
     if trimmed.is_empty() {
@@ -612,10 +609,7 @@ fn parse_decimal_u64(bytes: &[u8], field_name: &str) -> Result<u64, ArchiveError
 /// default to 0.
 fn parse_decimal_u32(bytes: &[u8], field_name: &str) -> Result<u32, ArchiveError> {
     let s = std::str::from_utf8(bytes).map_err(|_| {
-        ArchiveError::InvalidNumericField(format!(
-            "'{}' field contains invalid UTF-8",
-            field_name
-        ))
+        ArchiveError::InvalidNumericField(format!("'{}' field contains invalid UTF-8", field_name))
     })?;
     let trimmed = s.trim();
     if trimmed.is_empty() {
@@ -636,10 +630,7 @@ fn parse_decimal_u32(bytes: &[u8], field_name: &str) -> Result<u32, ArchiveError
 /// Empty fields default to 0.
 fn parse_octal_u32(bytes: &[u8], field_name: &str) -> Result<u32, ArchiveError> {
     let s = std::str::from_utf8(bytes).map_err(|_| {
-        ArchiveError::InvalidNumericField(format!(
-            "'{}' field contains invalid UTF-8",
-            field_name
-        ))
+        ArchiveError::InvalidNumericField(format!("'{}' field contains invalid UTF-8", field_name))
     })?;
     let trimmed = s.trim();
     if trimmed.is_empty() {
@@ -960,8 +951,8 @@ mod tests {
         // Archive magic followed by less than 60 bytes of header.
         let mut data = AR_MAGIC.to_vec();
         data.extend_from_slice(&[b' '; 30]); // Not enough for a header
-        // This should not be treated as a valid member — our parser
-        // tolerates trailing bytes shorter than AR_HEADER_SIZE.
+                                             // This should not be treated as a valid member — our parser
+                                             // tolerates trailing bytes shorter than AR_HEADER_SIZE.
         let archive = Archive::parse(data).unwrap();
         assert_eq!(archive.member_count(), 0);
     }
@@ -1030,8 +1021,7 @@ mod tests {
         // Long-name table entry: name = "//" (16 bytes)
         // Table content: "very_long_member_name.o/\n"
         let long_names_content = b"very_long_member_name.o/\n";
-        let ln_header =
-            make_raw_header(b"//              ", long_names_content.len());
+        let ln_header = make_raw_header(b"//              ", long_names_content.len());
         data.extend_from_slice(&ln_header);
         data.extend_from_slice(long_names_content);
         // Padding to even boundary
@@ -1047,10 +1037,7 @@ mod tests {
 
         let archive = Archive::parse(data).unwrap();
         assert_eq!(archive.member_count(), 1);
-        assert_eq!(
-            archive.member_names(),
-            vec!["very_long_member_name.o"]
-        );
+        assert_eq!(archive.member_names(), vec!["very_long_member_name.o"]);
         assert_eq!(
             archive.get_member_data("very_long_member_name.o").unwrap(),
             member_data
@@ -1063,8 +1050,7 @@ mod tests {
 
         // Long-name table with two entries separated by "/\n"
         let long_names_content = b"first_long_name.o/\nsecond_long_name.o/\n";
-        let ln_header =
-            make_raw_header(b"//              ", long_names_content.len());
+        let ln_header = make_raw_header(b"//              ", long_names_content.len());
         data.extend_from_slice(&ln_header);
         data.extend_from_slice(long_names_content);
         if data.len() % 2 != 0 {
@@ -1118,10 +1104,7 @@ mod tests {
         elf_data.extend_from_slice(&[0u8; 12]); // Padding to make it look like ELF
         let non_elf_data = b"not an elf object";
 
-        let data = make_test_archive(&[
-            ("elf_obj.o", &elf_data),
-            ("text_file.txt", non_elf_data),
-        ]);
+        let data = make_test_archive(&[("elf_obj.o", &elf_data), ("text_file.txt", non_elf_data)]);
         let archive = Archive::parse(data).unwrap();
 
         let elf = archive.elf_members();
@@ -1132,10 +1115,7 @@ mod tests {
 
     #[test]
     fn test_elf_members_empty_for_non_elf_archive() {
-        let data = make_test_archive(&[
-            ("readme.txt", b"hello"),
-            ("notes.txt", b"world"),
-        ]);
+        let data = make_test_archive(&[("readme.txt", b"hello"), ("notes.txt", b"world")]);
         let archive = Archive::parse(data).unwrap();
         assert!(archive.elf_members().is_empty());
     }
@@ -1204,16 +1184,11 @@ mod tests {
 
     #[test]
     fn test_archive_error_is_std_error() {
-        let err: Box<dyn std::error::Error> =
-            Box::new(ArchiveError::NotAnArchive);
+        let err: Box<dyn std::error::Error> = Box::new(ArchiveError::NotAnArchive);
         assert!(err.source().is_none());
 
-        let io_err = std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            "file not found",
-        );
-        let err2: Box<dyn std::error::Error> =
-            Box::new(ArchiveError::IoError(io_err));
+        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "file not found");
+        let err2: Box<dyn std::error::Error> = Box::new(ArchiveError::IoError(io_err));
         assert!(err2.source().is_some());
     }
 

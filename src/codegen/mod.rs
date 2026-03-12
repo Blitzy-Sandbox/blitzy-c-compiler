@@ -293,6 +293,9 @@ pub enum SymbolVisibility {
     /// Like `Default`, but the symbol cannot be preempted by another
     /// definition at runtime.
     Protected,
+    /// Symbol is not visible to other components and not preemptible.
+    /// Stricter than Hidden — also prevents internal module references.
+    Internal,
 }
 
 /// A symbol definition produced by code generation.
@@ -580,11 +583,7 @@ pub trait CodeGen {
     /// relocations for this compilation unit. Returns a [`CodeGenError`] if
     /// code generation fails for any reason (unsupported construct, register
     /// pressure, encoding constraint violation, etc.).
-    fn generate(
-        &self,
-        module: &Module,
-        target: &TargetConfig,
-    ) -> Result<ObjectCode, CodeGenError>;
+    fn generate(&self, module: &Module, target: &TargetConfig) -> Result<ObjectCode, CodeGenError>;
 
     /// Returns the target architecture this backend generates code for.
     ///
@@ -623,10 +622,7 @@ pub trait CodeGen {
 /// let object = generate_code(&ir_module, &target)?;
 /// // object.sections, object.symbols, object.relocations ready for linker
 /// ```
-pub fn generate_code(
-    module: &Module,
-    target: &TargetConfig,
-) -> Result<ObjectCode, CodeGenError> {
+pub fn generate_code(module: &Module, target: &TargetConfig) -> Result<ObjectCode, CodeGenError> {
     // Select the architecture-specific backend based on the target config.
     let backend: Box<dyn CodeGen> = match target.arch {
         Architecture::X86_64 => Box::new(x86_64::X86_64CodeGen::new()),
@@ -1256,10 +1252,7 @@ mod tests {
     #[test]
     fn test_codegen_error_display_unsupported() {
         let err = CodeGenError::UnsupportedInstruction("vector add".to_string());
-        assert_eq!(
-            format!("{}", err),
-            "unsupported instruction: vector add"
-        );
+        assert_eq!(format!("{}", err), "unsupported instruction: vector add");
     }
 
     #[test]
