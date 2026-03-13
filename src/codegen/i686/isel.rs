@@ -34,7 +34,7 @@
 //!
 //! Only imports from `std` and internal crate modules. No external crates.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::codegen::regalloc::PhysReg;
 use crate::codegen::{CodeGenError, MachineInstr, MachineOperand};
@@ -156,6 +156,12 @@ struct ISel<'a> {
     next_label: u32,
     /// Next available virtual register number.
     next_vreg: u16,
+    /// Cumulative stack offset for alloca instructions (grows downward from EBP).
+    /// Each alloca bumps this offset so that allocas get distinct stack slots.
+    stack_offset: i32,
+    /// Set of IR Values that are function parameters — used to prevent
+    /// `select_const` from clobbering parameter register bindings.
+    param_value_set: HashSet<Value>,
 }
 
 impl<'a> ISel<'a> {
@@ -171,7 +177,28 @@ impl<'a> ISel<'a> {
             block_label_map: HashMap::with_capacity(function.blocks.len()),
             next_label: 0,
             next_vreg: VREG_BASE,
+            stack_offset: 0,
+            param_value_set: HashSet::new(),
         }
+    }
+
+    /// Build a reverse map from virtual register IDs to IR SSA Values.
+    ///
+    /// This is used by the register assignment phase to perform the correct
+    /// two-step lookup: vreg_id → IR Value → physical register. Without
+    /// this map, virtual register IDs are misinterpreted as IR Value IDs,
+    /// causing all unresolved vregs to collapse onto EAX.
+    pub fn build_vreg_to_value_map(&self) -> HashMap<u32, Value> {
+        let mut map = HashMap::new();
+        for (&value, operand) in &self.value_map {
+            if let MachineOperand::Register(reg) = operand {
+                // Virtual registers have IDs >= VREG_BASE (100)
+                if reg.0 >= VREG_BASE {
+                    map.insert(reg.0 as u32, value);
+                }
+            }
+        }
+        map
     }
 
     /// Allocate a fresh virtual register.
@@ -1062,13 +1089,28 @@ impl<'a> ISel<'a> {
         let lhs_op = self.operand_for(lhs);
         let rhs_op = self.operand_for(rhs);
 
+        // Ensure LHS is in a register — CMP requires at least one register
+        // operand. When LHS is a memory operand (e.g., a function parameter
+        // at [ebp+8]), load it into a scratch register first.
+        let lhs_reg = match &lhs_op {
+            MachineOperand::Memory { .. } => {
+                let scratch = self.alloc_vreg();
+                self.emit_with(
+                    I686Opcode::Mov,
+                    vec![MachineOperand::Register(scratch), lhs_op],
+                );
+                MachineOperand::Register(scratch)
+            }
+            _ => lhs_op,
+        };
+
         // cmp lhs, rhs
-        self.emit_with(I686Opcode::Cmp, vec![lhs_op, rhs_op]);
+        self.emit_with(I686Opcode::Cmp, vec![lhs_reg, rhs_op]);
 
         // Map CompareOp to x86 condition code.
         let cc = compare_op_to_cc(cmp_op);
 
-        // setcc result_reg
+        // setcc result_reg — SETCC only sets the low byte (AL/CL/DL etc.).
         let dst = self.bind_vreg(result);
         self.emit_with(
             I686Opcode::Setcc,
@@ -1076,6 +1118,14 @@ impl<'a> ISel<'a> {
                 MachineOperand::Immediate(cc as i64),
                 MachineOperand::Register(dst),
             ],
+        );
+
+        // Zero-extend from byte to full 32-bit register width.
+        // Without this, the upper 24 bits may contain garbage from previous
+        // operations, causing TEST+JNE to always branch as non-zero.
+        self.emit_with(
+            I686Opcode::Movzx8,
+            vec![MachineOperand::Register(dst), MachineOperand::Register(dst)],
         );
 
         Ok(())
@@ -1312,22 +1362,33 @@ impl<'a> ISel<'a> {
         ty: &IrType,
         _count: Option<&Value>,
     ) -> Result<(), CodeGenError> {
-        // Alloca is resolved during frame layout. At isel time, we bind the
-        // result to a stack slot address. The actual offset is determined later.
+        // Compute the size of the allocation. Minimum 4 bytes for alignment
+        // on a 32-bit architecture. Align to 4-byte boundary.
         let size = ty.size(self.target) as i32;
-        let dst = self.bind_vreg(result);
+        let aligned = (size.max(4) + 3) & !3;
 
-        // Emit a LEA to compute the address of the stack slot.
-        // The actual offset will be patched during frame layout.
-        self.emit_with(
-            I686Opcode::Lea,
-            vec![
-                MachineOperand::Register(dst),
-                MachineOperand::Memory {
-                    base: EBP,
-                    offset: -(size.max(4)),
-                },
-            ],
+        // Bump the cumulative stack offset. Each alloca gets a distinct
+        // stack slot, growing downward from EBP.
+        self.stack_offset += aligned;
+
+        // Map the alloca result directly to an EBP-relative memory operand.
+        // Loads/stores that reference this alloca will use the memory operand
+        // directly (e.g., `MOV [ebp-8], reg` for stores, `MOV reg, [ebp-8]`
+        // for loads). When the alloca value is used as a pointer (e.g., in
+        // GEP, call argument, or stored into another variable), the consuming
+        // instruction is responsible for emitting a LEA to materialise the
+        // address into a register.
+        //
+        // We intentionally do NOT emit a LEA here to avoid allocating a
+        // virtual register that the register allocator could map to an EAX
+        // fallback, causing all allocas to collapse onto the same register
+        // and clobber each other.
+        self.value_map.insert(
+            result,
+            MachineOperand::Memory {
+                base: EBP,
+                offset: -self.stack_offset,
+            },
         );
 
         Ok(())
@@ -2459,10 +2520,22 @@ fn offset_mem(op: MachineOperand, additional: i32) -> MachineOperand {
 ///
 /// Returns [`CodeGenError`] if an unsupported IR construct is encountered or
 /// if an internal invariant is violated.
+/// Result of instruction selection, containing both the machine instructions
+/// and the virtual-register-to-IR-Value reverse map needed for correct
+/// register assignment after allocation.
+pub struct ISelResult {
+    /// The lowered machine instruction sequence.
+    pub instrs: Vec<MachineInstr>,
+    /// Reverse map: virtual register ID → IR SSA Value.
+    /// Used by `apply_register_assignments` for the two-step
+    /// vreg → Value → PhysReg lookup.
+    pub vreg_to_value: HashMap<u32, Value>,
+}
+
 pub fn select_instructions(
     function: &Function,
     target: &TargetConfig,
-) -> Result<Vec<MachineInstr>, CodeGenError> {
+) -> Result<ISelResult, CodeGenError> {
     // Verify we are targeting a 32-bit architecture.
     debug_assert!(
         target.is_32bit(),
@@ -2475,12 +2548,19 @@ pub fn select_instructions(
 
     // Skip non-definition functions (extern declarations have no body).
     if !function.is_definition || function.blocks.is_empty() {
-        return Ok(Vec::new());
+        return Ok(ISelResult {
+            instrs: Vec::new(),
+            vreg_to_value: HashMap::new(),
+        });
     }
 
     let mut isel = ISel::new(function, target);
     isel.select_all()?;
-    Ok(isel.output)
+    let vreg_to_value = isel.build_vreg_to_value_map();
+    Ok(ISelResult {
+        instrs: isel.output,
+        vreg_to_value,
+    })
 }
 
 // ===========================================================================
@@ -2601,7 +2681,7 @@ mod tests {
                 value: Some(Value(12)),
             },
         );
-        let result = select_instructions(&func, &target).unwrap();
+        let result = select_instructions(&func, &target).unwrap().instrs;
         assert!(
             has_opcode(&result, I686Opcode::Add),
             "should contain Add instruction"
@@ -2649,7 +2729,7 @@ mod tests {
                 value: Some(Value(12)),
             },
         );
-        let result = select_instructions(&func, &target).unwrap();
+        let result = select_instructions(&func, &target).unwrap().instrs;
         assert!(
             has_opcode(&result, I686Opcode::Imul),
             "should contain Imul for signed multiply"
@@ -2693,7 +2773,7 @@ mod tests {
                 value: Some(Value(12)),
             },
         );
-        let result = select_instructions(&func, &target).unwrap();
+        let result = select_instructions(&func, &target).unwrap().instrs;
         // 64-bit add should produce one Add (low half) and one Adc (high half
         // with carry propagation).
         let add_count = count_opcode(&result, I686Opcode::Add);
@@ -2747,7 +2827,7 @@ mod tests {
                 value: Some(Value(12)),
             },
         );
-        let result = select_instructions(&func, &target).unwrap();
+        let result = select_instructions(&func, &target).unwrap().instrs;
         assert!(
             has_opcode(&result, I686Opcode::Shld),
             "64-bit left shift should use Shld"
@@ -2796,7 +2876,7 @@ mod tests {
                 value: Some(Value(12)),
             },
         );
-        let result = select_instructions(&func, &target).unwrap();
+        let result = select_instructions(&func, &target).unwrap().instrs;
         assert!(
             has_opcode(&result, I686Opcode::Cdq),
             "signed div should use Cdq"
@@ -2862,7 +2942,7 @@ mod tests {
             visibility: None,
             is_used: false,
         };
-        let result = select_instructions(&func, &target).unwrap();
+        let result = select_instructions(&func, &target).unwrap().instrs;
         assert!(
             has_opcode(&result, I686Opcode::Cmp),
             "should have Cmp instruction"
@@ -2899,7 +2979,7 @@ mod tests {
                 value: Some(Value(10)),
             },
         );
-        let result = select_instructions(&func, &target).unwrap();
+        let result = select_instructions(&func, &target).unwrap().instrs;
         // The xor-for-zero pattern: find an Xor where both operands are the same register.
         let has_xor_zero = result.iter().any(|i| {
             i.opcode == I686Opcode::Xor as u32
@@ -2943,7 +3023,7 @@ mod tests {
                 value: Some(Value(11)),
             },
         );
-        let result = select_instructions(&func, &target).unwrap();
+        let result = select_instructions(&func, &target).unwrap().instrs;
         assert!(has_opcode(&result, I686Opcode::Push), "should push args");
         assert!(
             has_opcode(&result, I686Opcode::Call),
@@ -2988,7 +3068,7 @@ mod tests {
                 value: Some(Value(11)),
             },
         );
-        let result = select_instructions(&func, &target).unwrap();
+        let result = select_instructions(&func, &target).unwrap().instrs;
         assert!(
             has_opcode(&result, I686Opcode::Mov),
             "should have Mov for i32 load"
@@ -3020,7 +3100,7 @@ mod tests {
                 value: Some(Value(11)),
             },
         );
-        let result = select_instructions(&func, &target).unwrap();
+        let result = select_instructions(&func, &target).unwrap().instrs;
         assert!(
             has_opcode(&result, I686Opcode::Movzx8),
             "should have Movzx8 for byte load"
@@ -3058,7 +3138,7 @@ mod tests {
                 value: Some(Value(11)),
             },
         );
-        let result = select_instructions(&func, &target).unwrap();
+        let result = select_instructions(&func, &target).unwrap().instrs;
         assert!(
             has_opcode(&result, I686Opcode::Movzx8),
             "zext i8->i32 should use Movzx8"
@@ -3092,7 +3172,7 @@ mod tests {
                 value: Some(Value(11)),
             },
         );
-        let result = select_instructions(&func, &target).unwrap();
+        let result = select_instructions(&func, &target).unwrap().instrs;
         assert!(
             has_opcode(&result, I686Opcode::Movsx8),
             "sext i8->i32 should use Movsx8"
@@ -3126,7 +3206,7 @@ mod tests {
                 value: Some(Value(11)),
             },
         );
-        let result = select_instructions(&func, &target).unwrap();
+        let result = select_instructions(&func, &target).unwrap().instrs;
         // Truncation I64->I32 just takes the low register, which is a Mov.
         assert!(
             has_opcode(&result, I686Opcode::Mov),
@@ -3155,7 +3235,7 @@ mod tests {
             visibility: None,
             is_used: false,
         };
-        let result = select_instructions(&func, &target).unwrap();
+        let result = select_instructions(&func, &target).unwrap().instrs;
         assert!(
             result.is_empty(),
             "non-definition should produce empty output"
@@ -3199,7 +3279,7 @@ mod tests {
                 value: Some(Value(12)),
             },
         );
-        let result = select_instructions(&func, &target).unwrap();
+        let result = select_instructions(&func, &target).unwrap().instrs;
         assert!(
             has_opcode(&result, I686Opcode::Addss),
             "float add should use Addss"
@@ -3239,7 +3319,7 @@ mod tests {
                 value: Some(Value(12)),
             },
         );
-        let result = select_instructions(&func, &target).unwrap();
+        let result = select_instructions(&func, &target).unwrap().instrs;
         assert!(
             has_opcode(&result, I686Opcode::Addsd),
             "double add should use Addsd"

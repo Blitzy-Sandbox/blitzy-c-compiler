@@ -448,13 +448,39 @@ impl Aarch64CodeGen {
         // Step 5: Generate AAPCS64-compliant function epilogue.
         let epilogue = abi::generate_epilogue(function, &alloc_result, target);
 
-        // Step 6: Concatenate prologue + body + epilogue into a complete
-        // instruction sequence for the function.
-        let mut all_instrs =
-            Vec::with_capacity(prologue.len() + body_instrs.len() + epilogue.len());
-        all_instrs.extend(prologue);
-        all_instrs.extend(body_instrs);
-        all_instrs.extend(epilogue);
+        // Step 6: Insert prologue at the beginning and epilogue before each RET.
+        // The ISel emits RET for each `return` statement, but the epilogue
+        // (callee-saved restore, frame deallocation) must execute before RET.
+        // We replace each body RET with the full epilogue (which ends with RET).
+        let ret_opcode = isel::Aarch64Opcode::RET.as_u32();
+
+        // Find all RET positions in the body (process in reverse to preserve indices).
+        let ret_positions: Vec<usize> = body_instrs
+            .iter()
+            .enumerate()
+            .filter(|(_, instr)| instr.opcode == ret_opcode)
+            .map(|(i, _)| i)
+            .collect();
+
+        if !ret_positions.is_empty() {
+            // Replace each body RET with the full epilogue sequence.
+            for &pos in ret_positions.iter().rev() {
+                body_instrs.remove(pos);
+                for (j, epi_instr) in epilogue.iter().enumerate() {
+                    body_instrs.insert(pos + j, epi_instr.clone());
+                }
+            }
+        } else {
+            // No RET in body — append epilogue at the end.
+            body_instrs.extend(epilogue);
+        }
+
+        // Insert prologue at the very beginning.
+        for (i, pro_instr) in prologue.iter().enumerate() {
+            body_instrs.insert(i, pro_instr.clone());
+        }
+
+        let all_instrs = body_instrs;
 
         // Step 7: Encode all instructions to machine code bytes.
         // All AArch64 instructions are fixed-width 32 bits (4 bytes).

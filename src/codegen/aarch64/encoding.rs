@@ -317,6 +317,15 @@ impl Aarch64Encoder {
             // NOP
             // =============================================================
             Aarch64Opcode::NOP => {
+                // NOP with a Label operand is a pseudo-instruction that defines
+                // the label (basic block entry point) without emitting any bytes.
+                // Plain NOP (no operands) emits a hardware NOP.
+                if !instr.operands.is_empty() {
+                    if let MachineOperand::Label(lbl) = &instr.operands[0] {
+                        self.record_label(*lbl);
+                        return; // No bytes emitted for label markers.
+                    }
+                }
                 self.emit_u32(0xD503201F);
             }
 
@@ -870,6 +879,28 @@ impl Aarch64Encoder {
             | (rt & 0x1F)
     }
 
+    /// Load/store register pair (post-indexed):
+    /// `[opc(2)][101][V(1)][001][L(1)][imm7(7)][Rt2(5)][Rn(5)][Rt(5)]`
+    fn encode_ldst_pair_post_fn(
+        opc: u32,
+        v: u32,
+        l: u32,
+        imm7: u32,
+        rt2: u32,
+        rn: u32,
+        rt: u32,
+    ) -> u32 {
+        (opc << 30)
+            | (0b101 << 27)
+            | (v << 26)
+            | (0b001 << 23)
+            | ((l & 1) << 22)
+            | ((imm7 & 0x7F) << 15)
+            | ((rt2 & 0x1F) << 10)
+            | ((rn & 0x1F) << 5)
+            | (rt & 0x1F)
+    }
+
     /// FP two-operand data processing:
     /// `[M(1)][0][S(1)][11110][ftype(2)][1][Rm(5)][opcode(4)][10][Rn(5)][Rd(5)]`
     fn encode_fp_dp2_fn(ftype: u32, rm: u32, opcode: u32, rn: u32, rd: u32) -> u32 {
@@ -1289,6 +1320,10 @@ impl Aarch64Encoder {
 
     /// Encode LDP / STP (integer register pair).
     /// Operands: Rt, Rt2, Memory{base, offset}.
+    /// Optional operand at index 3:
+    ///   - Immediate(1) → pre-indexed (offset applied before access, base updated)
+    ///   - Immediate(2) → post-indexed (access at base, then base updated by offset)
+    ///   - absent        → signed-offset (base unchanged)
     fn encode_ldp_stp(&mut self, operands: &[MachineOperand], is_load: bool) {
         let rt = self.extract_reg(operands, 0);
         let rt2 = self.extract_reg(operands, 1);
@@ -1298,12 +1333,14 @@ impl Aarch64Encoder {
         // Signed offset scaled by 8 (64-bit registers).
         let imm7 = ((off / 8) as u32) & 0x7F;
 
-        // Check if this is a pre-indexed form (offset applied before access).
-        // Convention: if there is an Immediate(1) at index 3, it's pre-indexed.
+        // Determine addressing mode from optional index 3 marker.
         let pre_index = matches!(operands.get(3), Some(MachineOperand::Immediate(1)));
+        let post_index = matches!(operands.get(3), Some(MachineOperand::Immediate(2)));
 
         let enc = if pre_index {
             Self::encode_ldst_pair_pre_fn(0b10, 0, l, imm7, rt2, rn, rt)
+        } else if post_index {
+            Self::encode_ldst_pair_post_fn(0b10, 0, l, imm7, rt2, rn, rt)
         } else {
             Self::encode_ldst_pair_fn(0b10, 0, l, imm7, rt2, rn, rt)
         };

@@ -162,38 +162,76 @@ impl I686CodeGen {
     }
 
     /// Replace virtual register references with physical registers assigned
-    /// by the register allocator. Virtual registers for i686 use IDs >= 16
-    /// (VREG_BASE = 100). Unresolved virtual registers are assigned to
-    /// EAX (PhysReg(0)) as a safe fallback to prevent ICEs in the encoder,
-    /// which panics on register IDs >= 16.
+    /// by the register allocator. Uses a two-step lookup:
+    ///   vreg_id → IR Value (via `vreg_to_value`) → PhysReg (via `value_to_reg`)
+    ///
+    /// This corrects the previous approach that treated vreg IDs as IR Value
+    /// IDs directly, which caused all unresolved vregs to collapse onto EAX.
+    ///
+    /// Unresolved virtual registers cycle through a fallback pool of
+    /// caller-saved scratch registers (EAX, ECX, EDX) to avoid collapsing
+    /// multiple distinct vregs onto the same physical register. The same
+    /// vreg ID always resolves to the same physical register across all
+    /// instructions within a function.
     fn apply_register_assignments(
         &self,
         instrs: &mut Vec<MachineInstr>,
+        vreg_to_value: &HashMap<u32, Value>,
         value_to_reg: &HashMap<Value, PhysReg>,
     ) {
+        // Fallback pool cycles through caller-saved scratch registers to
+        // avoid collapsing multiple distinct vregs onto the same register.
+        let fallback_pool: [PhysReg; 3] = [
+            PhysReg(0), // EAX
+            PhysReg(1), // ECX
+            PhysReg(2), // EDX
+        ];
+        let mut fallback_idx: usize = 0;
+        // Track assigned fallbacks so the same vreg always gets the same
+        // physical register across all instructions.
+        let mut vreg_fallback_map: HashMap<u32, PhysReg> = HashMap::new();
+
         for instr in instrs.iter_mut() {
             for operand in instr.operands.iter_mut() {
                 match operand {
                     MachineOperand::Register(ref mut reg) => {
                         if reg.0 >= 16 {
-                            let value = Value(reg.0 as u32);
-                            if let Some(&phys) = value_to_reg.get(&value) {
+                            let vreg_id = reg.0 as u32;
+                            // Two-step lookup: vreg → Value → PhysReg
+                            if let Some(&value) = vreg_to_value.get(&vreg_id) {
+                                if let Some(&phys) = value_to_reg.get(&value) {
+                                    *reg = phys;
+                                    continue;
+                                }
+                            }
+                            // Fallback: use cycling scratch registers with
+                            // consistency tracking.
+                            if let Some(&phys) = vreg_fallback_map.get(&vreg_id) {
                                 *reg = phys;
                             } else {
-                                // Unresolved virtual register: assign to EAX as safe
-                                // fallback. Prevents ICE from encoder panicking on
-                                // register IDs >= 16.
-                                *reg = PhysReg(0); // EAX
+                                let phys = fallback_pool[fallback_idx % fallback_pool.len()];
+                                vreg_fallback_map.insert(vreg_id, phys);
+                                *reg = phys;
+                                fallback_idx += 1;
                             }
                         }
                     }
                     MachineOperand::Memory { ref mut base, .. } => {
                         if base.0 >= 16 {
-                            let value = Value(base.0 as u32);
-                            if let Some(&phys) = value_to_reg.get(&value) {
+                            let vreg_id = base.0 as u32;
+                            if let Some(&value) = vreg_to_value.get(&vreg_id) {
+                                if let Some(&phys) = value_to_reg.get(&value) {
+                                    *base = phys;
+                                    continue;
+                                }
+                            }
+                            if let Some(&phys) = vreg_fallback_map.get(&vreg_id) {
                                 *base = phys;
                             } else {
-                                *base = PhysReg(0); // EAX
+                                let phys = fallback_pool[fallback_idx % fallback_pool.len()];
+                                vreg_fallback_map.insert(vreg_id, phys);
+                                *base = phys;
+                                fallback_idx += 1;
                             }
                         }
                     }
@@ -274,7 +312,9 @@ impl CodeGen for I686CodeGen {
             }
 
             // Step 1: Instruction selection — convert IR to MachineInstr.
-            let machine_instrs = isel::select_instructions(function, target)?;
+            let isel_result = isel::select_instructions(function, target)?;
+            let machine_instrs = isel_result.instrs;
+            let vreg_to_value = isel_result.vreg_to_value;
 
             // Step 2: Compute live intervals for register allocation.
             let mut live_intervals = compute_live_intervals(function);
@@ -307,6 +347,28 @@ impl CodeGen for I686CodeGen {
             let prologue = abi::generate_prologue(&frame_layout);
             let epilogue = abi::generate_epilogue(&frame_layout);
 
+            // Step 6.5: Adjust EBP-relative memory offsets to account for
+            // callee-saved registers pushed between the frame pointer setup
+            // (push ebp / mov ebp,esp) and the locals area. The ISel allocates
+            // locals starting at [ebp-4], but the prologue pushes callee-saved
+            // registers at [ebp-4], [ebp-8], ... So locals must shift down by
+            // (num_callee_saved * 4) bytes to avoid overlapping.
+            let callee_save_shift = (frame_layout.callee_saved_count as i32) * 4;
+            let mut machine_instrs = machine_instrs;
+            if callee_save_shift > 0 {
+                for instr in &mut machine_instrs {
+                    for operand in &mut instr.operands {
+                        if let MachineOperand::Memory { base, offset } = operand {
+                            // Only shift EBP-relative negative offsets (locals area).
+                            // EBP = PhysReg(5) for i686.
+                            if base.0 == 5 && *offset < 0 {
+                                *offset -= callee_save_shift;
+                            }
+                        }
+                    }
+                }
+            }
+
             // Step 7: Assemble final instruction sequence.
             // Insert epilogue before EACH ret instruction in the body (not just
             // appending at the end) so the stack frame is properly torn down
@@ -330,7 +392,7 @@ impl CodeGen for I686CodeGen {
             // Step 7.5: Apply register assignments — replace virtual registers
             // (IDs >= 16) with physical registers from the allocator, preventing
             // ICEs in the encoder which panics on out-of-range register IDs.
-            self.apply_register_assignments(&mut final_instrs, &value_to_reg);
+            self.apply_register_assignments(&mut final_instrs, &vreg_to_value, &value_to_reg);
 
             // Step 8: Encode to raw machine code bytes.
             let encoded = encoding::encode_instructions(&final_instrs)?;

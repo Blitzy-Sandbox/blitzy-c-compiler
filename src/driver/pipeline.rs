@@ -842,34 +842,75 @@ fn build_preprocessor_options(
     // expand to "1" before the expression evaluator could parse them).
 
     // System include directories based on target architecture.
-    options
-        .system_include_dirs
-        .push(PathBuf::from("/usr/include"));
-    if arch_str.starts_with("x86_64") || arch_str.starts_with("x86-64") {
+    //
+    // When `--sysroot <dir>` is specified, all system header paths are resolved
+    // relative to the sysroot directory.  For example, `--sysroot /usr/aarch64-linux-gnu`
+    // causes the resolver to search `/usr/aarch64-linux-gnu/usr/include` instead of
+    // the host `/usr/include`.  This prevents host-architecture headers from leaking
+    // into cross-compilation builds.
+    //
+    // Search order: user `-I` dirs → sysroot system dirs → bundled freestanding headers.
+    if let Some(ref sysroot) = cli_args.sysroot {
+        let root = PathBuf::from(sysroot);
+        // <sysroot>/usr/include is the standard cross-compilation system header path.
+        let usr_include = root.join("usr").join("include");
+        if usr_include.is_dir() {
+            options.system_include_dirs.push(usr_include);
+        }
+        // <sysroot>/include is an alternate location used by some toolchains.
+        let bare_include = root.join("include");
+        if bare_include.is_dir() {
+            options.system_include_dirs.push(bare_include);
+        }
+        // Architecture-specific subdirectory under <sysroot>/usr/include.
+        let arch_sub = if arch_str.starts_with("x86_64") || arch_str.starts_with("x86-64") {
+            Some("x86_64-linux-gnu")
+        } else if arch_str.starts_with("i686") || arch_str.starts_with("i386") {
+            Some("i386-linux-gnu")
+        } else if arch_str.starts_with("aarch64") {
+            Some("aarch64-linux-gnu")
+        } else if arch_str.starts_with("riscv64") {
+            Some("riscv64-linux-gnu")
+        } else {
+            None
+        };
+        if let Some(sub) = arch_sub {
+            let arch_dir = root.join("usr").join("include").join(sub);
+            if arch_dir.is_dir() {
+                options.system_include_dirs.push(arch_dir);
+            }
+        }
+    } else {
+        // No sysroot: use host system paths (default behaviour).
         options
             .system_include_dirs
-            .push(PathBuf::from("/usr/include/x86_64-linux-gnu"));
-    } else if arch_str.starts_with("i686") || arch_str.starts_with("i386") {
-        options
-            .system_include_dirs
-            .push(PathBuf::from("/usr/include/i386-linux-gnu"));
-        options
-            .system_include_dirs
-            .push(PathBuf::from("/usr/include/x86_64-linux-gnu"));
-    } else if arch_str.starts_with("aarch64") {
-        options
-            .system_include_dirs
-            .push(PathBuf::from("/usr/aarch64-linux-gnu/include"));
-        options
-            .system_include_dirs
-            .push(PathBuf::from("/usr/include/aarch64-linux-gnu"));
-    } else if arch_str.starts_with("riscv64") {
-        options
-            .system_include_dirs
-            .push(PathBuf::from("/usr/riscv64-linux-gnu/include"));
-        options
-            .system_include_dirs
-            .push(PathBuf::from("/usr/include/riscv64-linux-gnu"));
+            .push(PathBuf::from("/usr/include"));
+        if arch_str.starts_with("x86_64") || arch_str.starts_with("x86-64") {
+            options
+                .system_include_dirs
+                .push(PathBuf::from("/usr/include/x86_64-linux-gnu"));
+        } else if arch_str.starts_with("i686") || arch_str.starts_with("i386") {
+            options
+                .system_include_dirs
+                .push(PathBuf::from("/usr/include/i386-linux-gnu"));
+            options
+                .system_include_dirs
+                .push(PathBuf::from("/usr/include/x86_64-linux-gnu"));
+        } else if arch_str.starts_with("aarch64") {
+            options
+                .system_include_dirs
+                .push(PathBuf::from("/usr/aarch64-linux-gnu/include"));
+            options
+                .system_include_dirs
+                .push(PathBuf::from("/usr/include/aarch64-linux-gnu"));
+        } else if arch_str.starts_with("riscv64") {
+            options
+                .system_include_dirs
+                .push(PathBuf::from("/usr/riscv64-linux-gnu/include"));
+            options
+                .system_include_dirs
+                .push(PathBuf::from("/usr/include/riscv64-linux-gnu"));
+        }
     }
 
     // Force-include files from -include flags.
@@ -1043,12 +1084,27 @@ fn link_objects(
         debug_sections,
     };
 
-    let library_paths: Vec<PathBuf> = ctx
+    let mut library_paths: Vec<PathBuf> = ctx
         .cli_args
         .library_paths
         .iter()
         .map(|p| PathBuf::from(p))
         .collect();
+
+    // When --sysroot is specified, inject sysroot-relative library search
+    // paths so the linker finds CRT objects and system libraries under the
+    // sysroot instead of the host root filesystem.
+    if let Some(ref sysroot) = ctx.cli_args.sysroot {
+        let root = PathBuf::from(sysroot);
+        let lib = root.join("lib");
+        let usr_lib = root.join("usr").join("lib");
+        if lib.is_dir() {
+            library_paths.push(lib);
+        }
+        if usr_lib.is_dir() {
+            library_paths.push(usr_lib);
+        }
+    }
 
     let libraries = ctx.cli_args.libraries.clone();
 

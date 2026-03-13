@@ -33,10 +33,9 @@ use std::collections::HashMap;
 use crate::codegen::regalloc::{build_value_to_reg_map, AllocationResult, PhysReg, RegClass};
 use crate::codegen::{CodeGenError, MachineInstr, MachineOperand, Relocation, RelocationType};
 use crate::driver::target::TargetConfig;
-use crate::ir::cfg::reverse_postorder;
 use crate::ir::{
-    BasicBlock, BlockId, Callee, CastOp, CompareOp, Constant, ControlFlowGraph, FloatCompareOp,
-    Function, Instruction, IrType, PhiNode, Terminator, Value,
+    BasicBlock, BlockId, Callee, CastOp, CompareOp, Constant, FloatCompareOp, Function,
+    Instruction, IrType, PhiNode, Terminator, Value,
 };
 
 // ---------------------------------------------------------------------------
@@ -419,6 +418,14 @@ pub struct Riscv64InstructionSelector<'a> {
     /// ABI registers by the allocator.  Const instructions for these must
     /// be skipped so the actual argument values are preserved.
     param_value_set: std::collections::HashSet<Value>,
+    /// Cumulative stack offset for local variable allocation (alloca).
+    /// Tracks how many bytes of local storage have been reserved
+    /// below the frame pointer (s0).
+    stack_offset: i32,
+    /// Maps IR Values to MachineOperands — used when an alloca result
+    /// should be represented as a frame-pointer-relative Memory operand
+    /// rather than a register (since registers can be clobbered across calls).
+    operand_map: HashMap<Value, MachineOperand>,
 }
 
 impl<'a> Riscv64InstructionSelector<'a> {
@@ -431,6 +438,15 @@ impl<'a> Riscv64InstructionSelector<'a> {
     /// * `target` — Target configuration for the RISC-V 64 architecture.
     pub fn new(alloc_result: &AllocationResult, target: &'a TargetConfig) -> Self {
         let value_map = build_value_to_reg_map(alloc_result);
+        // Compute the reserved area size below FP: RA (8) + FP (8) + callee-saved + spills.
+        // Alloca locals will be placed below this area.
+        let callee_count = alloc_result
+            .used_callee_saved
+            .iter()
+            .filter(|&&r| r != S0) // FP is already in base 16
+            .count() as i32;
+        let reserved_area = 16 + callee_count * 8 + alloc_result.num_spill_slots as i32 * 8;
+
         Riscv64InstructionSelector {
             value_map,
             target,
@@ -440,6 +456,8 @@ impl<'a> Riscv64InstructionSelector<'a> {
             used_callee_saved: alloc_result.used_callee_saved.clone(),
             relocations: Vec::new(),
             param_value_set: std::collections::HashSet::new(),
+            stack_offset: reserved_area,
+            operand_map: HashMap::new(),
         }
     }
 
@@ -476,24 +494,16 @@ impl<'a> Riscv64InstructionSelector<'a> {
             self.block_labels.insert(block.id, label);
         }
 
-        // Build a ControlFlowGraph for RPO traversal.
         if function.blocks.is_empty() {
             return instructions;
         }
-        let mut cfg = ControlFlowGraph::new(function.entry_block);
+
+        // Walk blocks in declaration order.  The IR builder emits blocks in a
+        // reasonable control-flow order that works well without explicit RPO
+        // computation (the blocks already carry correct terminator-based
+        // successor information consumed by the encoder's branch resolution).
+        let mut is_entry_block = true;
         for block in &function.blocks {
-            cfg.add_block(block.clone());
-        }
-        let rpo = reverse_postorder(&cfg);
-
-        // Select instructions for each block in reverse postorder.
-        for &block_id in &rpo {
-            let idx = block_id.0 as usize;
-            if idx >= function.blocks.len() {
-                continue;
-            }
-            let block = &function.blocks[idx];
-
             // Emit a label marker for this block (encoded as a NOP with label operand).
             if let Some(&label) = self.block_labels.get(&block.id) {
                 let label_instr = MachineInstr::with_operands(
@@ -501,6 +511,16 @@ impl<'a> Riscv64InstructionSelector<'a> {
                     vec![MachineOperand::Label(label)],
                 );
                 instructions.push(label_instr);
+            }
+
+            // At the entry block, emit MOV instructions to copy function
+            // parameters from their ABI-specified argument registers (a0-a7
+            // for integers, fa0-fa7 for floats) into the registers assigned
+            // by the register allocator.  Without this step, the allocator-
+            // assigned registers would contain garbage.
+            if is_entry_block {
+                self.lower_params(function, &mut instructions);
+                is_entry_block = false;
             }
 
             // Process phi nodes — emit move instructions for parallel copies.
@@ -524,6 +544,72 @@ impl<'a> Riscv64InstructionSelector<'a> {
     /// `select_function()` call.
     pub fn relocations(&self) -> &[Relocation] {
         &self.relocations
+    }
+
+    // -----------------------------------------------------------------------
+    // Parameter lowering
+    // -----------------------------------------------------------------------
+
+    /// Emits MOV instructions at the function entry to copy function parameters
+    /// from their ABI-specified argument registers (a0-a7 for integers, fa0-fa7
+    /// for floats per the LP64D calling convention) into the registers assigned
+    /// by the register allocator.
+    ///
+    /// Without this step, the allocator-assigned registers for parameter values
+    /// contain garbage because the hardware places arguments in fixed ABI
+    /// registers but the allocator is free to assign any general-purpose register
+    /// to each parameter value.
+    fn lower_params(&mut self, function: &Function, instrs: &mut Vec<MachineInstr>) {
+        let mut int_idx: usize = 0;
+        let mut float_idx: usize = 0;
+
+        for (i, (_name, ty)) in function.params.iter().enumerate() {
+            // Determine the IR Value that represents this parameter.
+            let param_val = if i < function.param_values.len() {
+                function.param_values[i]
+            } else {
+                Value(i as u32)
+            };
+
+            // Get the register the allocator assigned to this parameter value.
+            let dest = self.get_reg(param_val);
+            if dest == X0 {
+                // Value was not allocated (unused parameter) — skip.
+                continue;
+            }
+
+            let is_float = matches!(ty, IrType::F32 | IrType::F64);
+
+            if is_float {
+                // Float parameters are passed in fa0-fa7 (PhysReg(42)-PhysReg(49)).
+                if float_idx < FLOAT_ARG_REGS.len() {
+                    let abi_reg = FLOAT_ARG_REGS[float_idx];
+                    if dest != abi_reg {
+                        // FSGNJ.D dest, src, src (float MV pseudo)
+                        Self::emit(
+                            instrs,
+                            Riscv64Opcode::FMV_D_X,
+                            vec![
+                                MachineOperand::Register(dest),
+                                MachineOperand::Register(abi_reg),
+                            ],
+                        );
+                    }
+                    float_idx += 1;
+                }
+                // Stack-passed floats would need a load — not yet implemented.
+            } else {
+                // Integer / pointer parameters are passed in a0-a7 (PhysReg(10)-PhysReg(17)).
+                if int_idx < ARG_REGS.len() {
+                    let abi_reg = ARG_REGS[int_idx];
+                    if dest != abi_reg {
+                        Self::emit_mv(instrs, dest, abi_reg);
+                    }
+                    int_idx += 1;
+                }
+                // Stack-passed integers would need a load — not yet implemented.
+            }
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -1265,7 +1351,14 @@ impl<'a> Riscv64InstructionSelector<'a> {
     /// Selects a RISC-V load instruction based on the loaded type.
     fn select_load(&self, result: Value, ty: &IrType, ptr: Value, instrs: &mut Vec<MachineInstr>) {
         let dest = self.get_reg(result);
-        let base = self.get_reg(ptr);
+
+        // Check if the pointer is a frame-pointer-relative alloca (Memory operand).
+        let (base, offset) =
+            if let Some(MachineOperand::Memory { base, offset }) = self.operand_map.get(&ptr) {
+                (*base, *offset)
+            } else {
+                (self.get_reg(ptr), 0)
+            };
 
         let opcode = match ty {
             IrType::I1 | IrType::I8 => Riscv64Opcode::LBU,
@@ -1281,7 +1374,7 @@ impl<'a> Riscv64InstructionSelector<'a> {
             opcode,
             vec![
                 MachineOperand::Register(dest),
-                MachineOperand::Memory { base, offset: 0 },
+                MachineOperand::Memory { base, offset },
             ],
         );
     }
@@ -1289,14 +1382,20 @@ impl<'a> Riscv64InstructionSelector<'a> {
     /// Selects a RISC-V store instruction.
     fn select_store(&self, value: Value, ptr: Value, instrs: &mut Vec<MachineInstr>) {
         let src = self.get_reg(value);
-        let base = self.get_reg(ptr);
+
+        // Check if the pointer is a frame-pointer-relative alloca (Memory operand).
+        let (base, offset) =
+            if let Some(MachineOperand::Memory { base, offset }) = self.operand_map.get(&ptr) {
+                (*base, *offset)
+            } else {
+                (self.get_reg(ptr), 0)
+            };
 
         // Determine store width from the source register class.
         // If the source is an FP register, use float store; otherwise
         // we use SD as the default (the exact width is determined by
         // the IR type context that the encoder will refine).
         let opcode = if is_fp_reg(src) {
-            // Detect single vs double by register range convention.
             Riscv64Opcode::FSD
         } else {
             Riscv64Opcode::SD
@@ -1306,32 +1405,42 @@ impl<'a> Riscv64InstructionSelector<'a> {
             opcode,
             vec![
                 MachineOperand::Register(src),
-                MachineOperand::Memory { base, offset: 0 },
+                MachineOperand::Memory { base, offset },
             ],
         );
     }
 
     /// Selects instructions for a stack allocation (alloca).
     fn select_alloca(
-        &self,
+        &mut self,
         result: Value,
-        _ty: &IrType,
+        ty: &IrType,
         _count: Option<&Value>,
-        instrs: &mut Vec<MachineInstr>,
+        _instrs: &mut Vec<MachineInstr>,
     ) {
-        let dest = self.get_reg(result);
-        // Alloca is handled by the frame layout in the ABI module.
-        // Here we compute the stack slot address using SP + offset.
-        // The offset will be patched by the frame finalizer.
-        Self::emit(
-            instrs,
-            Riscv64Opcode::ADDI,
-            vec![
-                MachineOperand::Register(dest),
-                MachineOperand::Register(SP),
-                MachineOperand::Immediate(0), // Placeholder; patched during frame layout
-            ],
+        // Compute the allocation size, aligned to 8 bytes minimum.
+        let elem_size = ty.size(self.target) as i32;
+        let aligned = if elem_size <= 0 {
+            8
+        } else {
+            (elem_size + 7) & !7
+        };
+
+        // Accumulate stack offset below the frame pointer (s0).
+        self.stack_offset += aligned;
+
+        // Map the alloca result directly to a frame-pointer-relative Memory
+        // operand. This avoids placing the address in a caller-saved register
+        // that could be clobbered across function calls. S0 (x8) is the frame
+        // pointer, which is callee-saved and stable across calls.
+        self.operand_map.insert(
+            result,
+            MachineOperand::Memory {
+                base: S0,
+                offset: -(self.stack_offset),
+            },
         );
+        // No instruction emitted — loads/stores will resolve through operand_map.
     }
 
     /// Selects instructions for GetElementPtr (address computation).
@@ -1499,18 +1608,14 @@ impl<'a> Riscv64InstructionSelector<'a> {
             Callee::Direct(name) => {
                 // CALL pseudo: AUIPC ra, %pcrel_hi(symbol) + JALR ra, ra, %pcrel_lo(symbol)
                 // Encoded as a single CALL pseudo with R_RISCV_CALL relocation.
+                // Emit CALL pseudo — the encoder will produce AUIPC+JALR
+                // and its own R_RISCV_CALL relocation at the correct offset.
+                // Do NOT emit a duplicate relocation here.
                 Self::emit(
                     instrs,
                     Riscv64Opcode::CALL,
                     vec![MachineOperand::Symbol(name.clone())],
                 );
-                self.relocations.push(Relocation {
-                    offset: 0, // Patched during encoding
-                    symbol: name.clone(),
-                    reloc_type: RelocationType::Riscv_Call,
-                    addend: 0,
-                    section_index: 0,
-                });
             }
             Callee::Indirect(val) => {
                 let target_reg = self.get_reg(*val);
@@ -2092,6 +2197,9 @@ impl<'a> Riscv64InstructionSelector<'a> {
             }
             Constant::GlobalRef(name) => {
                 // Load address of global: AUIPC + ADDI with PC-relative relocations.
+                // Emit LA pseudo — the encoder will produce AUIPC+ADDI
+                // and its own relocations at the correct offsets.
+                // Do NOT emit duplicate relocations here.
                 Self::emit(
                     instrs,
                     Riscv64Opcode::LA,
@@ -2100,20 +2208,6 @@ impl<'a> Riscv64InstructionSelector<'a> {
                         MachineOperand::Symbol(name.clone()),
                     ],
                 );
-                self.relocations.push(Relocation {
-                    offset: 0,
-                    symbol: name.clone(),
-                    reloc_type: RelocationType::Riscv_Pcrel_Hi20,
-                    addend: 0,
-                    section_index: 0,
-                });
-                self.relocations.push(Relocation {
-                    offset: 4,
-                    symbol: name.clone(),
-                    reloc_type: RelocationType::Riscv_Pcrel_Lo12_I,
-                    addend: 0,
-                    section_index: 0,
-                });
             }
             Constant::String(bytes) => {
                 // String constants are placed in .rodata; load the address.
@@ -2947,10 +3041,19 @@ mod tests {
             .any(|i| i.opcode == Riscv64Opcode::CALL.as_u32());
         assert!(call, "Direct function call should emit CALL pseudo");
 
-        // Should also produce a relocation.
+        // Relocations for CALL are generated at encoding time (the encoder
+        // records the correct byte offset), so the ISel relocation list is
+        // intentionally empty.  Verify the CALL instruction carries the
+        // target symbol name as a Symbol operand.
+        let has_symbol = instrs.iter().any(|i| {
+            i.opcode == Riscv64Opcode::CALL.as_u32()
+                && i.operands
+                    .iter()
+                    .any(|op| matches!(op, MachineOperand::Symbol(_)))
+        });
         assert!(
-            !selector.relocations().is_empty(),
-            "CALL should produce relocation"
+            has_symbol,
+            "CALL instruction should carry a Symbol operand for the callee"
         );
     }
 

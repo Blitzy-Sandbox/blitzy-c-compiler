@@ -243,7 +243,10 @@ pub fn riscv64_register_info() -> RegisterInfo {
             // Argument registers (caller-saved):
             X10, X11, X12, X13, X14, X15, X16, X17, // a0-a7
             // Callee-saved registers (used when caller-saved are exhausted):
-            X8, X9, // s0-s1
+            // NOTE: X8 (s0) is deliberately EXCLUDED — it serves as the frame
+            // pointer (FP) and must not be allocated to user values. The
+            // prologue/epilogue manage s0 explicitly.
+            X9, // s1
             X18, X19, X20, X21, X22, X23, X24, X25, X26, X27, // s2-s11
         ],
         // Allocatable floating-point registers in allocation priority order.
@@ -258,8 +261,11 @@ pub fn riscv64_register_info() -> RegisterInfo {
             F18, F19, F20, F21, F22, F23, F24, F25, F26, F27, // fs2-fs11
         ],
         // Integer callee-saved registers (s0-s11 per LP64D ABI).
+        // NOTE: X8 (s0/FP) is excluded because the prologue/epilogue manage
+        // it explicitly. Including it here would cause the allocator to
+        // double-save and attempt to use it as a general register.
         callee_saved_int: vec![
-            X8, X9, // s0-s1
+            X9, // s1
             X18, X19, X20, X21, X22, X23, X24, X25, X26, X27, // s2-s11
         ],
         // FP callee-saved registers (fs0-fs11 per LP64D ABI).
@@ -392,13 +398,37 @@ fn classify_register(reg: PhysReg) -> RegClass {
 // and any callee-saved registers used by the register allocator, then
 // allocates the stack frame. The epilogue reverses these operations.
 
+/// Estimates the local variable space needed by a function by scanning
+/// its basic blocks for Alloca instructions and summing their sizes.
+/// Returns a 16-byte-aligned size.
+fn estimate_locals_size(function: &Function, target: &TargetConfig) -> i64 {
+    use crate::ir::Instruction;
+    let mut total: i64 = 0;
+    for block in &function.blocks {
+        for instr in &block.instructions {
+            if let Instruction::Alloca { ty, .. } = instr {
+                let elem_size = ty.size(target) as i64;
+                let aligned = if elem_size <= 0 {
+                    8
+                } else {
+                    (elem_size + 7) & !7
+                };
+                total += aligned;
+            }
+        }
+    }
+    // Align to 16 bytes.
+    (total + 15) & !15
+}
+
 /// Computes the stack frame size for a function, accounting for:
 /// - Return address (ra) save slot: 8 bytes
 /// - Frame pointer (s0) save slot: 8 bytes
 /// - Callee-saved registers used: 8 bytes each
 /// - Spill slots from register allocation: 8 bytes each
+/// - Local variable space (alloca)
 /// - 16-byte alignment as required by LP64D ABI
-fn compute_frame_size(alloc_result: &AllocationResult) -> i64 {
+fn compute_frame_size_with_locals(alloc_result: &AllocationResult, locals_size: i64) -> i64 {
     // Base frame: ra + s0 = 16 bytes
     let mut frame_size: i64 = 16;
 
@@ -408,8 +438,6 @@ fn compute_frame_size(alloc_result: &AllocationResult) -> i64 {
         if reg == FP {
             continue; // Already counted in the base 16 bytes
         }
-        // Both integer (8 bytes for 64-bit GPR) and floating-point (8 bytes
-        // for double-precision FPR) callee-saved registers require 8 bytes.
         let _class = classify_register(reg);
         frame_size += 8;
     }
@@ -417,10 +445,18 @@ fn compute_frame_size(alloc_result: &AllocationResult) -> i64 {
     // Spill slots from register allocation (8 bytes each)
     frame_size += alloc_result.num_spill_slots as i64 * 8;
 
+    // Local variable space (alloca)
+    frame_size += locals_size;
+
     // Align frame size to 16 bytes (LP64D ABI requirement)
     frame_size = (frame_size + 15) & !15;
 
     frame_size
+}
+
+/// Computes the stack frame size without locals (backwards compatible).
+fn compute_frame_size(alloc_result: &AllocationResult) -> i64 {
+    compute_frame_size_with_locals(alloc_result, 0)
 }
 
 /// Generates the function prologue as a sequence of machine instructions.
@@ -442,8 +478,26 @@ fn compute_frame_size(alloc_result: &AllocationResult) -> i64 {
 ///     | spill slots      |
 ///     +------------------+ ← new sp (16-byte aligned)
 /// ```
+/// Generates the function prologue with locals included in the frame size.
+fn generate_prologue_with_locals(
+    alloc_result: &AllocationResult,
+    target: &TargetConfig,
+    locals_size: i64,
+) -> Vec<MachineInstr> {
+    generate_prologue_inner(alloc_result, target, locals_size)
+}
+
+#[allow(dead_code)]
 fn generate_prologue(alloc_result: &AllocationResult, _target: &TargetConfig) -> Vec<MachineInstr> {
-    let frame_size = compute_frame_size(alloc_result);
+    generate_prologue_inner(alloc_result, _target, 0)
+}
+
+fn generate_prologue_inner(
+    alloc_result: &AllocationResult,
+    _target: &TargetConfig,
+    locals_size: i64,
+) -> Vec<MachineInstr> {
+    let frame_size = compute_frame_size_with_locals(alloc_result, locals_size);
     let mut instrs = Vec::new();
 
     if frame_size == 0 {
@@ -567,8 +621,26 @@ fn generate_prologue(alloc_result: &AllocationResult, _target: &TargetConfig) ->
 ///
 /// Reverses the prologue: restores callee-saved registers, restores ra and
 /// s0, deallocates the stack frame, and returns via the RET pseudo-instruction.
+/// Generates the function epilogue with locals included in the frame size.
+fn generate_epilogue_with_locals(
+    alloc_result: &AllocationResult,
+    target: &TargetConfig,
+    locals_size: i64,
+) -> Vec<MachineInstr> {
+    generate_epilogue_inner(alloc_result, target, locals_size)
+}
+
+#[allow(dead_code)]
 fn generate_epilogue(alloc_result: &AllocationResult, _target: &TargetConfig) -> Vec<MachineInstr> {
-    let frame_size = compute_frame_size(alloc_result);
+    generate_epilogue_inner(alloc_result, _target, 0)
+}
+
+fn generate_epilogue_inner(
+    alloc_result: &AllocationResult,
+    _target: &TargetConfig,
+    locals_size: i64,
+) -> Vec<MachineInstr> {
+    let frame_size = compute_frame_size_with_locals(alloc_result, locals_size);
     let mut instrs = Vec::new();
 
     if frame_size > 0 {
@@ -952,22 +1024,55 @@ impl CodeGen for Riscv64CodeGen {
             // Step 2: Perform linear scan register allocation
             let alloc_result = linear_scan_allocate(&mut intervals, &reg_info);
 
+            // Step 2.5: Estimate locals size for frame layout.
+            let locals_size = estimate_locals_size(function, target);
+
             // Step 3: Generate LP64D prologue (stack frame setup)
-            let prologue = generate_prologue(&alloc_result, target);
+            // Include locals in frame size so the stack has room for alloca'd variables.
+            let prologue = generate_prologue_with_locals(&alloc_result, target, locals_size);
 
             // Step 4: Run instruction selection (IR → RV64GC machine instrs)
             let mut selector = isel::Riscv64InstructionSelector::new(&alloc_result, target);
             let body_instrs = selector.select_function(function);
 
             // Step 5: Generate LP64D epilogue (stack frame teardown + return)
-            let epilogue = generate_epilogue(&alloc_result, target);
+            let epilogue = generate_epilogue_with_locals(&alloc_result, target, locals_size);
 
-            // Step 6: Concatenate prologue + body + epilogue
-            let mut all_instrs =
-                Vec::with_capacity(prologue.len() + body_instrs.len() + epilogue.len());
-            all_instrs.extend(prologue);
-            all_instrs.extend(body_instrs);
-            all_instrs.extend(epilogue);
+            // Step 6: Insert prologue at start, epilogue before each RET.
+            // The ISel emits RET for each `return` statement, but the epilogue
+            // (callee-saved restore, frame deallocation) must execute before RET.
+            // We replace each body RET with the epilogue sequence (which ends
+            // with its own RET).
+            let ret_opcode = isel::Riscv64Opcode::RET.as_u32();
+            let mut body = body_instrs;
+
+            // Find all RET positions in the body (process in reverse to preserve indices).
+            let ret_positions: Vec<usize> = body
+                .iter()
+                .enumerate()
+                .filter(|(_, instr)| instr.opcode == ret_opcode)
+                .map(|(i, _)| i)
+                .collect();
+
+            if !ret_positions.is_empty() {
+                // Replace each body RET with the full epilogue sequence.
+                for &pos in ret_positions.iter().rev() {
+                    body.remove(pos);
+                    for (j, epi_instr) in epilogue.iter().enumerate() {
+                        body.insert(pos + j, epi_instr.clone());
+                    }
+                }
+            } else {
+                // No RET in body — append epilogue at the end.
+                body.extend(epilogue);
+            }
+
+            // Insert prologue at the very beginning.
+            for (i, pro_instr) in prologue.iter().enumerate() {
+                body.insert(i, pro_instr.clone());
+            }
+
+            let all_instrs = body;
 
             // Step 7: Encode machine instructions to binary bytes
             let mut encoder = encoding::Riscv64Encoder::new();
@@ -1174,11 +1279,11 @@ mod tests {
     #[test]
     fn test_allocatable_int_register_count() {
         let info = riscv64_register_info();
-        // 32 GPRs - 5 special (x0, x1, x2, x3, x4) = 27 allocatable
+        // 32 GPRs - 5 special (x0, x1, x2, x3, x4) - 1 frame pointer (x8/s0) = 26 allocatable
         assert_eq!(
             info.int_regs.len(),
-            27,
-            "Expected 27 allocatable integer registers (32 - 5 special)"
+            26,
+            "Expected 26 allocatable integer registers (32 - 5 special - 1 FP)"
         );
     }
 
@@ -1196,13 +1301,16 @@ mod tests {
     #[test]
     fn test_callee_saved_int_registers() {
         let info = riscv64_register_info();
-        // LP64D callee-saved: s0-s1 (x8-x9), s2-s11 (x18-x27) = 12 registers
+        // LP64D callee-saved: s1 (x9), s2-s11 (x18-x27) = 11 registers
+        // NOTE: s0 (x8) is the frame pointer; it is saved/restored by the
+        // prologue/epilogue explicitly and is NOT in the allocatable pool,
+        // so it is also excluded from the callee_saved_int list.
         assert_eq!(
             info.callee_saved_int.len(),
-            12,
-            "Expected 12 callee-saved integer registers (s0-s11)"
+            11,
+            "Expected 11 callee-saved integer registers (s1, s2-s11; s0 is FP)"
         );
-        assert!(info.callee_saved_int.contains(&X8)); // s0
+        assert!(!info.callee_saved_int.contains(&X8)); // s0 is FP, not here
         assert!(info.callee_saved_int.contains(&X9)); // s1
         assert!(info.callee_saved_int.contains(&X18)); // s2
         assert!(info.callee_saved_int.contains(&X27)); // s11

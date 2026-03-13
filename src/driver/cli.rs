@@ -143,6 +143,13 @@ pub struct CliArgs {
     /// Whether the compilation is freestanding (`-ffreestanding`).
     pub freestanding: bool,
 
+    /// Cross-compilation sysroot directory (`--sysroot <dir>`).
+    /// When specified, system header and library search paths are resolved
+    /// relative to this directory rather than the host root filesystem.
+    /// For example, `--sysroot /usr/aarch64-linux-gnu` redirects system
+    /// include resolution to `/usr/aarch64-linux-gnu/usr/include`.
+    pub sysroot: Option<String>,
+
     /// Warnings accumulated from silently-discarded flags.
     pub discarded_flag_warnings: Vec<String>,
 
@@ -181,6 +188,7 @@ impl Default for CliArgs {
             function_sections: false,
             data_sections: false,
             freestanding: false,
+            sysroot: None,
             discarded_flag_warnings: Vec::new(),
             force_includes: Vec::new(),
             preprocess_only: false,
@@ -375,6 +383,20 @@ pub fn parse_args_from(args: &[String]) -> Result<CliArgs, String> {
             }
 
             // ---------------------------------------------------------------
+            // --sysroot: --sysroot=<dir> or --sysroot <dir>
+            // Redirects system header and library search paths through
+            // the specified root directory.
+            // ---------------------------------------------------------------
+            "--sysroot" => {
+                let next = i + 1;
+                if next >= args.len() {
+                    return Err("missing argument to '--sysroot'".to_string());
+                }
+                i = next;
+                cli.sysroot = Some(args[next].clone());
+            }
+
+            // ---------------------------------------------------------------
             // --help (optional GCC-compatible help)
             // ---------------------------------------------------------------
             "--help" | "-help" => {
@@ -399,6 +421,10 @@ pub fn parse_args_from(args: &[String]) -> Result<CliArgs, String> {
                 // --target=<triple> (attached form with equals)
                 if let Some(triple) = s.strip_prefix("--target=") {
                     cli.target = Some(triple.to_string());
+                }
+                // --sysroot=<dir> (attached form with equals)
+                else if let Some(dir) = s.strip_prefix("--sysroot=") {
+                    cli.sysroot = Some(dir.to_string());
                 }
                 // -o<file> (attached form)
                 else if s.starts_with("-o") && s.len() > 2 {
@@ -670,6 +696,7 @@ fn print_usage() {
     println!("  -fcf-protection       Enable Intel CET endbr64 (x86-64)");
     println!("  -static               Force static linking");
     println!("  --target <triple>     Set target architecture triple");
+    println!("  --sysroot <dir>       Set cross-compilation sysroot directory");
     println!("  --help                Display this help message");
     println!("  --version             Display compiler version");
     println!();

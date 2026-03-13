@@ -1313,16 +1313,19 @@ impl Aarch64InstructionSelector {
             _ => 8,
         };
         let aligned = (sz + 7) & !7;
-        self.stack_offset -= aligned;
-        let d = self.alloc_vreg();
-        self.set_operand(result, MachineOperand::Register(d));
-        self.emit_instr(
-            Aarch64Opcode::SUB,
-            vec![
-                MachineOperand::Register(d),
-                MachineOperand::Register(FP),
-                MachineOperand::Immediate((-self.stack_offset) as i64),
-            ],
+        self.stack_offset += aligned;
+        // Map alloca result directly to a FP-relative memory location.
+        // This avoids emitting a SUB instruction and using a register to hold
+        // the address — which would be clobbered across function calls if
+        // assigned to a caller-saved register. By using a Memory operand,
+        // loads and stores resolve directly to [FP, #-offset] which is stable
+        // across calls since FP is callee-saved.
+        self.set_operand(
+            result,
+            MachineOperand::Memory {
+                base: FP,
+                offset: -(self.stack_offset),
+            },
         );
         Ok(())
     }

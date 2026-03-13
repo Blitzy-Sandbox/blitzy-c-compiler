@@ -983,60 +983,27 @@ pub fn generate_prologue(
         return instrs;
     }
 
-    // Determine the frame allocation strategy based on size.
-    if layout.frame_size <= 504 {
-        // Small frame: STP x29, x30, [sp, #-frame_size]! (pre-indexed)
-        // This atomically allocates the frame and saves FP+LR.
-        instrs.push(MachineInstr::with_operands(
-            OP_STP_PRE,
-            vec![
-                MachineOperand::Register(FP),
-                MachineOperand::Register(LR),
-                MachineOperand::Register(SP),
-                MachineOperand::Immediate(-(layout.frame_size as i64)),
-            ],
-        ));
-
-        // MOV x29, sp (set frame pointer to current SP)
-        if layout.uses_frame_pointer {
-            instrs.push(MachineInstr::with_operands(
-                OP_MOV_RR,
-                vec![MachineOperand::Register(FP), MachineOperand::Register(SP)],
-            ));
-        }
-    } else if layout.frame_size <= 4095 {
-        // Medium frame: SUB sp, sp, #frame_size then STP at offset.
+    // Allocate the stack frame.
+    // Always use SUB + STP signed-offset approach for consistent layout.
+    // Pre-indexed STP puts FP/LR at [sp+0] which conflicts with the frame
+    // layout that places callee-saved registers at lower offsets. Using
+    // SUB + STP ensures FP/LR is placed at `fp_offset` as the layout expects.
+    // NOTE: All prologue/epilogue arithmetic instructions MUST include an
+    // explicit Immediate(64) size marker as the LAST operand. The encoder's
+    // sf_from_operands() scans operands in reverse and interprets Immediate(32)
+    // as "use 32-bit W-register mode". Without the marker, an instruction like
+    // SUB sp, sp, #32 would be encoded as 32-bit (W-register) instead of 64-bit.
+    if layout.frame_size <= 4095 {
+        // Small/medium frame: SUB sp, sp, #frame_size then STP at offset.
         instrs.push(MachineInstr::with_operands(
             OP_SUB_RI,
             vec![
                 MachineOperand::Register(SP),
                 MachineOperand::Register(SP),
                 MachineOperand::Immediate(layout.frame_size as i64),
+                MachineOperand::Immediate(64), // force 64-bit encoding
             ],
         ));
-
-        // STP x29, x30, [sp, #fp_offset]
-        instrs.push(MachineInstr::with_operands(
-            OP_STP_OFFSET,
-            vec![
-                MachineOperand::Register(FP),
-                MachineOperand::Register(LR),
-                MachineOperand::Register(SP),
-                MachineOperand::Immediate(layout.fp_offset as i64),
-            ],
-        ));
-
-        // ADD x29, sp, #fp_offset
-        if layout.uses_frame_pointer {
-            instrs.push(MachineInstr::with_operands(
-                OP_ADD_RI,
-                vec![
-                    MachineOperand::Register(FP),
-                    MachineOperand::Register(SP),
-                    MachineOperand::Immediate(layout.fp_offset as i64),
-                ],
-            ));
-        }
     } else {
         // Very large frame: use x16 (IP0) as scratch to load the size.
         emit_load_large_immediate(&mut instrs, X16, layout.frame_size as u64);
@@ -1048,28 +1015,50 @@ pub fn generate_prologue(
                 MachineOperand::Register(SP),
                 MachineOperand::Register(SP),
                 MachineOperand::Register(X16),
+                MachineOperand::Immediate(64), // force 64-bit encoding
             ],
         ));
+    }
 
-        // STP x29, x30, [sp, #fp_offset]
-        instrs.push(MachineInstr::with_operands(
-            OP_STP_OFFSET,
-            vec![
-                MachineOperand::Register(FP),
-                MachineOperand::Register(LR),
-                MachineOperand::Register(SP),
-                MachineOperand::Immediate(layout.fp_offset as i64),
-            ],
-        ));
+    // STP x29, x30, [sp, #fp_offset] (signed-offset)
+    instrs.push(MachineInstr::with_operands(
+        OP_STP_OFFSET,
+        vec![
+            MachineOperand::Register(FP),
+            MachineOperand::Register(LR),
+            MachineOperand::Memory {
+                base: SP,
+                offset: layout.fp_offset,
+            },
+        ],
+    ));
 
-        // ADD x29, sp, #fp_offset
-        if layout.uses_frame_pointer {
+    // ADD x29, sp, #fp_offset — set frame pointer to FP/LR save location.
+    // We use ADD instead of MOV because AArch64's MOV alias via ORR
+    // encodes register 31 as XZR (zero register), not SP. The ADD
+    // instruction correctly uses register 31 as SP in the base register
+    // position.
+    if layout.uses_frame_pointer {
+        if layout.fp_offset <= 4095 {
             instrs.push(MachineInstr::with_operands(
                 OP_ADD_RI,
                 vec![
                     MachineOperand::Register(FP),
                     MachineOperand::Register(SP),
                     MachineOperand::Immediate(layout.fp_offset as i64),
+                    MachineOperand::Immediate(64), // force 64-bit encoding
+                ],
+            ));
+        } else {
+            // Large fp_offset: use x16 as scratch.
+            emit_load_large_immediate(&mut instrs, X16, layout.fp_offset as u64);
+            instrs.push(MachineInstr::with_operands(
+                OP_ADD_RI,
+                vec![
+                    MachineOperand::Register(FP),
+                    MachineOperand::Register(SP),
+                    MachineOperand::Register(X16),
+                    MachineOperand::Immediate(64), // force 64-bit encoding
                 ],
             ));
         }
@@ -1082,8 +1071,7 @@ pub fn generate_prologue(
             vec![
                 MachineOperand::Register(r1),
                 MachineOperand::Register(r2),
-                MachineOperand::Register(SP),
-                MachineOperand::Immediate(offset as i64),
+                MachineOperand::Memory { base: SP, offset },
             ],
         ));
     }
@@ -1095,13 +1083,13 @@ pub fn generate_prologue(
             vec![
                 MachineOperand::Register(r1),
                 MachineOperand::Register(r2),
-                MachineOperand::Register(SP),
-                MachineOperand::Immediate(offset as i64),
+                MachineOperand::Memory { base: SP, offset },
             ],
         ));
     }
 
     // Save unpaired callee-saved registers with STR.
+    // Encoder expects: [Rt, Memory{base, offset}] for STR/STR_D.
     for &(reg, offset) in &layout.callee_saved_singles {
         let opcode = if is_fp_reg(reg) {
             OP_STR_FP_IMM
@@ -1112,8 +1100,7 @@ pub fn generate_prologue(
             opcode,
             vec![
                 MachineOperand::Register(reg),
-                MachineOperand::Register(SP),
-                MachineOperand::Immediate(offset as i64),
+                MachineOperand::Memory { base: SP, offset },
             ],
         ));
     }
@@ -1149,6 +1136,7 @@ pub fn generate_epilogue(
     }
 
     // Restore unpaired callee-saved registers (reverse order of saves).
+    // Encoder expects: [Rt, Memory{base, offset}] for LDR/LDR_D.
     for &(reg, offset) in layout.callee_saved_singles.iter().rev() {
         let opcode = if is_fp_reg(reg) {
             OP_LDR_FP_IMM
@@ -1159,83 +1147,75 @@ pub fn generate_epilogue(
             opcode,
             vec![
                 MachineOperand::Register(reg),
-                MachineOperand::Register(SP),
-                MachineOperand::Immediate(offset as i64),
+                MachineOperand::Memory { base: SP, offset },
             ],
         ));
     }
 
     // Restore callee-saved FPR pairs (reverse order).
+    // Encoder expects: [Rt, Rt2, Memory{base, offset}] for LDP_D.
     for &((r1, r2), offset) in layout.callee_saved_fpr_pairs.iter().rev() {
         instrs.push(MachineInstr::with_operands(
             OP_LDP_FP_OFFSET,
             vec![
                 MachineOperand::Register(r1),
                 MachineOperand::Register(r2),
-                MachineOperand::Register(SP),
-                MachineOperand::Immediate(offset as i64),
+                MachineOperand::Memory { base: SP, offset },
             ],
         ));
     }
 
     // Restore callee-saved GPR pairs (reverse order).
+    // Encoder expects: [Rt, Rt2, Memory{base, offset}] for LDP.
     for &((r1, r2), offset) in layout.callee_saved_gpr_pairs.iter().rev() {
         instrs.push(MachineInstr::with_operands(
             OP_LDP_OFFSET,
             vec![
                 MachineOperand::Register(r1),
                 MachineOperand::Register(r2),
-                MachineOperand::Register(SP),
-                MachineOperand::Immediate(offset as i64),
+                MachineOperand::Memory { base: SP, offset },
             ],
         ));
     }
 
-    // Restore FP+LR and deallocate frame.
-    if layout.frame_size <= 504 {
-        // Small frame: LDP x29, x30, [sp], #frame_size (post-indexed)
+    // Restore FP+LR at signed offset, then deallocate frame with ADD.
+    // Always use LDP signed-offset + ADD sp for consistent layout matching
+    // the prologue's SUB + STP approach.
+    instrs.push(MachineInstr::with_operands(
+        OP_LDP_OFFSET,
+        vec![
+            MachineOperand::Register(FP),
+            MachineOperand::Register(LR),
+            MachineOperand::Memory {
+                base: SP,
+                offset: layout.fp_offset,
+            },
+        ],
+    ));
+
+    // Deallocate frame: ADD sp, sp, #frame_size
+    if layout.frame_size <= 4095 {
         instrs.push(MachineInstr::with_operands(
-            OP_LDP_POST,
+            OP_ADD_RI,
             vec![
-                MachineOperand::Register(FP),
-                MachineOperand::Register(LR),
+                MachineOperand::Register(SP),
                 MachineOperand::Register(SP),
                 MachineOperand::Immediate(layout.frame_size as i64),
+                MachineOperand::Immediate(64), // force 64-bit encoding
             ],
         ));
     } else {
-        // Large frame: LDP at offset, then ADD sp.
+        // Very large frame: use x16 (IP0) as scratch.
+        emit_load_large_immediate(&mut instrs, X16, layout.frame_size as u64);
         instrs.push(MachineInstr::with_operands(
-            OP_LDP_OFFSET,
+            OP_ADD_RI,
             vec![
-                MachineOperand::Register(FP),
-                MachineOperand::Register(LR),
                 MachineOperand::Register(SP),
-                MachineOperand::Immediate(layout.fp_offset as i64),
+                MachineOperand::Register(SP),
+                MachineOperand::Register(X16),
+                MachineOperand::Immediate(64), // force 64-bit encoding
             ],
         ));
-
-        if layout.frame_size <= 4095 {
-            instrs.push(MachineInstr::with_operands(
-                OP_ADD_RI,
-                vec![
-                    MachineOperand::Register(SP),
-                    MachineOperand::Register(SP),
-                    MachineOperand::Immediate(layout.frame_size as i64),
-                ],
-            ));
-        } else {
-            // Very large frame: use x16 (IP0) as scratch.
-            emit_load_large_immediate(&mut instrs, X16, layout.frame_size as u64);
-            instrs.push(MachineInstr::with_operands(
-                OP_ADD_RI,
-                vec![
-                    MachineOperand::Register(SP),
-                    MachineOperand::Register(SP),
-                    MachineOperand::Register(X16),
-                ],
-            ));
-        }
     }
 
     // RET instruction (branches to x30 / LR).
@@ -1306,6 +1286,7 @@ pub fn generate_argument_loads(
                     // after our prologue is at SP + frame_size. The actual
                     // offset computation depends on the frame layout and is
                     // handled during final encoding.
+                    // Encoder expects: [Rt, Memory{base, offset}] for LDR/LDR_D.
                     let opcode = if ty.is_float() {
                         OP_LDR_FP_IMM
                     } else {
@@ -1315,8 +1296,10 @@ pub fn generate_argument_loads(
                         opcode,
                         vec![
                             MachineOperand::Register(dest),
-                            MachineOperand::Register(SP),
-                            MachineOperand::Immediate(*offset as i64),
+                            MachineOperand::Memory {
+                                base: SP,
+                                offset: *offset,
+                            },
                         ],
                     ));
                 }
@@ -1412,12 +1395,15 @@ pub fn generate_call_sequence(
                     }
                 } else {
                     // Stack argument: STR to outgoing arg area at current stack offset.
+                    // Encoder expects: [Rt, Memory{base, offset}] for STR_D.
                     instrs.push(MachineInstr::with_operands(
                         OP_STR_FP_IMM,
                         vec![
                             MachineOperand::Register(src),
-                            MachineOperand::Register(SP),
-                            MachineOperand::Immediate(stack_offset as i64),
+                            MachineOperand::Memory {
+                                base: SP,
+                                offset: stack_offset as i32,
+                            },
                         ],
                     ));
                     nsrn += 1;
@@ -1439,12 +1425,15 @@ pub fn generate_call_sequence(
                     }
                 } else {
                     // Stack argument: STR to outgoing arg area at current stack offset.
+                    // Encoder expects: [Rt, Memory{base, offset}] for STR.
                     instrs.push(MachineInstr::with_operands(
                         OP_STR_IMM,
                         vec![
                             MachineOperand::Register(src),
-                            MachineOperand::Register(SP),
-                            MachineOperand::Immediate(stack_offset as i64),
+                            MachineOperand::Memory {
+                                base: SP,
+                                offset: stack_offset as i32,
+                            },
                         ],
                     ));
                     ngrn += 1;
@@ -2012,20 +2001,26 @@ mod tests {
         let alloc = empty_alloc_result();
         let prologue = generate_prologue(&func, &alloc, &target);
 
-        // Should have at least STP (frame alloc + FP/LR save) + MOV (FP setup).
+        // Prologue uses SUB+STP signed-offset for consistent frame layout.
         assert!(!prologue.is_empty(), "Prologue should not be empty");
 
-        // First instruction should be STP (pre-indexed) for small frames.
+        // First instruction: SUB sp, sp, #frame_size
         assert_eq!(
-            prologue[0].opcode, OP_STP_PRE,
-            "First instr should be STP pre-indexed"
+            prologue[0].opcode, OP_SUB_RI,
+            "First instr should be SUB (stack allocation)"
         );
 
-        // Second instruction should be MOV x29, sp (frame pointer setup).
-        if prologue.len() > 1 {
+        // Second instruction: STP x29, x30, [sp, #offset]
+        assert_eq!(
+            prologue[1].opcode, OP_STP_OFFSET,
+            "Second instr should be STP (FP/LR save)"
+        );
+
+        // Third instruction: ADD x29, sp, #fp_offset (frame pointer setup)
+        if prologue.len() > 2 {
             assert_eq!(
-                prologue[1].opcode, OP_MOV_RR,
-                "Second instr should be MOV FP, SP"
+                prologue[2].opcode, OP_ADD_RI,
+                "Third instr should be ADD FP, SP, #offset"
             );
         }
     }
