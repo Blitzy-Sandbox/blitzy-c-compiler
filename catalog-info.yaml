@@ -1,0 +1,29 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: blitzy-c-compiler
+  description: "One-prompt C11 compiler in pure Rust — four-architecture backend, integrated linker, and DWARF v4 debug info"
+  tags:
+    - rust
+    - library
+    - in-progress
+  labels:
+    blitzy.com/status: in-progress
+    blitzy.com/language: rust
+  annotations:
+    github.com/project-slug: Blitzy-Sandbox/blitzy-c-compiler
+    backstage.io/source-location: url:https://github.com/Blitzy-Sandbox/blitzy-c-compiler/tree/main/
+  links:
+    - url: https://github.com/Blitzy-Sandbox/blitzy-c-compiler
+      title: GitHub Repository
+    - url: https://github.com/Blitzy-Sandbox/blitzy-c-compiler/pull/1
+      title: "PR #1: Complete C11 Compiler in Pure Rust"
+      icon: github
+    - url: https://github.com/Blitzy-Sandbox/blitzy-c-compiler/tree/main/blitzy/documentation
+      title: Blitzy Documentation
+      icon: docs
+spec:
+  type: library
+  lifecycle: experimental
+  owner: blitzy-sandbox
+  system: blitzy-sandbox-projects
