@@ -1,0 +1,5 @@
+site_name: 'blitzy-c-compiler'
+nav:
+  - Home: index.md
+plugins:
+  - techdocs-core
