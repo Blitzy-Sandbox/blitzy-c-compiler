@@ -1,0 +1,24 @@
+[package]
+name = "bcc"
+version = "0.1.0"
+edition = "2021"
+description = "A complete C11 compiler written in pure Rust targeting Linux ELF output across four architectures (x86-64, i686, AArch64, RISC-V 64) with integrated preprocessor, assembler, and linker"
+license = "MIT"
+build = "build.rs"
+
+# Zero external dependencies — uses only the Rust standard library (std).
+# This is an absolute constraint: no crates from crates.io or any other registry.
+# Every piece of functionality (parsing, code generation, ELF emission, DWARF
+# encoding, archive reading) is implemented using only std.
+[dependencies]
+
+[features]
+# Gate long-running Linux kernel validation tests behind a feature flag.
+# Enable with: cargo test --features linux_validation
+linux_validation = []
+
+[profile.release]
+opt-level = 3
+lto = true
+debug = false
+overflow-checks = false
